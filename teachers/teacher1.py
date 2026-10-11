@@ -3,7 +3,25 @@ import json
 import urllib.request
 import urllib.error
 import re
+import sys
 from typing import Dict, Any
+
+# Правило слияния записей — ОДНО на все каналы (core/records.py).
+# Путь добавляем явно: учитель запускается отдельным процессом и не обязан
+# запускаться из корня проекта.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+try:
+    from core.records import merge_entity
+except Exception as _exc:
+    # Молча дублировать правило нельзя: каждая копия теряет данные по-своему.
+    # Поэтому вариант «только новая запись» громко анонсирован и явно хуже.
+    print(f"[teacher] core.records недоступен ({_exc}) — слияние ВЫКЛЮЧЕНО, "
+          "новая запись будет перезаписывать старую", file=sys.stderr, flush=True)
+
+    def merge_entity(prev, new):
+        return new if isinstance(new, dict) else (prev or {})
 
 class AgentTeacherV2:
     """
@@ -92,13 +110,21 @@ class AgentTeacherV2:
         if in_str:
             text += '"'
         return text + "".join("}" if c == "{" else "]" for c in reversed(stack))
+
+    def _load_world(self) -> dict:
         """Загружает весь мир из единого файла."""
         if os.path.exists(self.world_filepath):
             try:
                 with open(self.world_filepath, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                # Повреждённый файл Вселенной — не «пустой мир»: молча вернув
+                # пустоту, мы на следующем сохранении перезаписали бы файлы
+                # знания пустышкой.
+                print(f"[teacher]: lipid_world.json НЕ читаем ({e}) — "
+                      "мир считается ПОВРЕЖДЁННЫМ, запись блокируется",
+                      file=sys.stderr, flush=True)
+                raise
         return {"entities": {}, "relations": []}
 
     def write_json_file(self, filename: str, content: str) -> str:
@@ -117,7 +143,12 @@ class AgentTeacherV2:
                 base = data["base_entity"]
                 concept = base.get("concept", "").lower().strip()
                 if concept:
-                    world["entities"][concept] = base
+                    # Присваивание целиком стирало всё, что у сущности уже
+                    # было: наблюдения из рассказов, provenance, выученные
+                    # свойства. Повторный вопрос про известное слово выглядел
+                    # как успех, а внутри был откат базы.
+                    world["entities"][concept] = merge_entity(
+                        world["entities"].get(concept), base)
 
             # Добавляем или обновляем производную сущность
             if "derived_entity" in data:

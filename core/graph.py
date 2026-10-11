@@ -24,14 +24,25 @@ class Node:
         self.action_profile = [0, 0, 0]
         # Синапсы: {target_name: {"rel_type": int, "weight": int}}
         self.out_synapses_typed: Dict[str, dict] = {}
+        # Откуда узел взялся: "teacher:llm", "teacher:wiki", "text:<tag>",
+        # "user". Не косметика: знание, извлечённое из одного рассказа,
+        # обязано быть ОТЛИЧНО от онтологии, проверенной двумя источниками,
+        # иначе одна выдумка Gemma навсегда станет фактом ядра.
+        self.source = ""
+        # Цитата-основание (фрагмент текста или строка ответа). Пусто = «источник
+        # не поименован», такие знания в ответах надо помечать явно.
+        self.evidence = ""
 
-    def connect_to(self, target_node: 'Node', rel_type: int, weight: int = 255):
-        """Создает типерированную направленную связь к target_node."""
+    def connect_to(self, target_node: 'Node', rel_type: int, weight: int = 255,
+                   source: str = ""):
+        """Создает типированную направленную связь к target_node."""
         clamped_weight = max(0, min(255, weight))
         self.out_synapses_typed[target_node.name] = {
             "rel_type": rel_type,
             "weight": clamped_weight
         }
+        if source:
+            self.out_synapses_typed[target_node.name]["source"] = source
 
     def __repr__(self):
         return f"<Node '{self.name}' type={self.node_type} synapses={len(self.out_synapses_typed)}>"
@@ -56,7 +67,8 @@ class GraphMemory:
         self.lemmas = LemmaResolver()
         self._lemmas_attached = False
 
-    def get_or_create_node(self, name: str, node_type: int = NodeType.ENTITY) -> Node:
+    def get_or_create_node(self, name: str, node_type: int = NodeType.ENTITY,
+                           source: str = "", evidence: str = "") -> Node:
         """Возвращает существующий узел или создает новый."""
         clean_name = name.lower().strip()
         if clean_name not in self.nodes:
@@ -65,7 +77,15 @@ class GraphMemory:
             self.index.add(clean_name, self.nodes[clean_name].sdr)
             if self._lemmas_attached:
                 self.lemmas.add(clean_name)
-        return self.nodes[clean_name]
+        node = self.nodes[clean_name]
+        # Происхождение дописываем, а НЕ перезаписываем: узел мог родиться из
+        # Вики, а встретиться в рассказе. «Где впервые взято» важнее, чем
+        # «где последний раз упомянуто».
+        if source and not node.source:
+            node.source = source
+        if evidence and not node.evidence:
+            node.evidence = evidence
+        return node
 
     # ── узнавание формы слова ──────────────────────────────
     def sync_lemmas(self):

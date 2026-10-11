@@ -11,6 +11,7 @@ from teachers.teacher_wiki import WikiTeacher      # Канал 2: интерн�
 # Импортируем нейроморфное ядро (SDR / STDP / Гормоны)
 from core.cortex import Hormones
 from core.graph import GraphMemory
+from brain.learner import Learner
 from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
 from core.storage import NodeType, RelationType
@@ -61,6 +62,80 @@ class Lipid2Brain:
         # Индекс форм строится ОДИН раз после загрузки графа, а не на запрос:
         # кодирование имён — единственная дорогая операция в резолвере.
         self.core.sync_lemmas()
+
+        # ОБУЧЕНИЕ ИЗ ТЕКСТА. Отдельный модуль, а не метод мозга: у него своя
+        # ответственность (что извлечь и как записать, не испортив известное),
+        # и зависимости он получает функциями — иначе тесты таскали бы
+        # llama.cpp и 230 МБ эмбеддингов.
+        self.learner = Learner(
+            load_world=self._load_world,
+            save_world=self._save_world,
+            core=self.core,
+            known_forms=self._resolve_known_form,
+            teacher=self._teacher_entity_for_learner,
+        )
+        # Связи, выученные из рассказов, живут в lipid_world.json (наблюдения),
+        # а не в памяти процесса. Без этого шага обучение длилось бы «до
+        # закрытия окна»: граф собирается из JSON и связей в нём нет.
+        n = self.learner.replay_observations(self._load_world())
+        if n:
+            print(f"[Brain]: восстановлено из наблюдений: {n} связей")
+            self.core.sync_lemmas()
+
+    def _resolve_known_form(self, word: str):
+        """Форма слова -> имя известной сущности (ядро, затем Вселенная)."""
+        hit = self.core.resolve_name(word)
+        if hit:
+            return hit
+        return self.lemmas_world.resolve_name(word)
+
+    def _teacher_entity_for_learner(self, lemma: str):
+        """
+        Плоская сущность для Learner из любого канала знаний.
+        Учитель говорит «не знаю» иначе, чем падает, и это различие важно:
+        провал — повод заметить проблему, «не знаю» — нормальный ответ.
+        """
+        found = self.find_in_memory(lemma)
+        if found:
+            ent = found.get("derived_entity") or found.get("base_entity") or {}
+            if ent:
+                return self._flatten_entity(ent)
+        data = self._trigger_curiosity_and_learn(lemma)
+        if not data:
+            return None
+        ent = data.get("derived_entity") or data.get("base_entity") or {}
+        return self._flatten_entity(ent) if ent else None
+
+    @staticmethod
+    def _flatten_entity(ent: dict) -> dict:
+        """
+        ЗАПИСЬ УЧИТЕЛЯ -> ПЛОСКАЯ Сущность.
+        Формат lipid_world.json дублируется в teachers/teacher1.py
+        (base/derived + delta_properties), teachers/teacher_wiki.py (свойства
+        вида 'текст (N)'), _learn_from_user и core/graph.py. Читать только
+        hierarchy/properties — значит тихо терять delta_properties и полные
+        тексты Вики. Одна нормализация на все четыре формата.
+        """
+        import re as _re
+        props = list(ent.get("properties") or [])
+        for extra in (ent.get("delta_properties") or []):
+            if extra and extra not in props:
+                props.append(extra)
+        props = [_re.sub(r"\s*\(\d+\)$", "", str(p)).strip() for p in props
+                 if str(p).strip()]
+        if ent.get("summary") and ent["summary"] not in props:
+            props.append(ent["summary"])
+        acts = []
+        for a in (ent.get("actions") or []):
+            name = a if isinstance(a, str) else (a or {}).get("name", "")
+            if name:
+                acts.append(name)
+        hierarchy = list(ent.get("hierarchy") or [])
+        parent = (ent.get("parent_concept") or "").lower().strip()
+        if parent and parent != ent.get("concept", "").lower().strip() \
+                and parent not in hierarchy:
+            hierarchy.insert(0, parent)
+        return {"hierarchy": hierarchy, "properties": props, "actions": acts}
 
     # ── СИНХРОНИЗАЦИЯ МИРА И ЯДРА ──────────────────────────
 
@@ -315,6 +390,27 @@ class Lipid2Brain:
         derived = learned_data.get("derived_entity", {})
         if derived and derived.get("concept"):
             self._integrate_entity_into_core(derived["concept"].lower().strip(), derived)
+
+    # ── ОБУЧЕНИЕ ───────────────────────────────────────────
+
+    def learn_from_text(self, text: str, source: str = "text",
+                        allow_teacher: bool = True):
+        """
+        Learning mode: текст -> знания в графе + измеримый отчёт.
+        Отчёт обязателен: без чисел нельзя сказать, стала ли система умнее
+        после правки правил, а «выглядит работающим» — не измерение.
+        """
+        rep = self.learner.learn_from_text(text, source=source,
+                                           allow_teacher=allow_teacher)
+        # Учились — значит мир изменился: резолвер форм Вселенной обязан
+        # увидеть новые имена, иначе следующее предложение спросит LLM про
+        # уже выученное слово.
+        self.lemmas_world.attach(sorted(self._load_world().get("entities", {})))
+        if rep.learned_concepts:
+            self.hormones.dopamine = 255
+        if rep.unknown:
+            self.hormones.cortisol = min(255, self.hormones.cortisol + 40)
+        return rep
 
     # ── ГЛАВНАЯ ТОЧКА ВХОДА ────────────────────────────────
 

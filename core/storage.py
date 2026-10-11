@@ -5,6 +5,7 @@ from enum import IntEnum
 from typing import Dict, List, Optional
 from core.sdr import SDR1024
 from core.encoder import get_encoder
+from core.records import merge_entity   # noqa: F401 — правило слияния ОДНО на все каналы
 
 # ==============================================================================
 # ENUM-КОДЫ ДЛЯ МАКСИМАЛЬНОЙ ЭКОНОМИИ ПАМЯТИ
@@ -20,6 +21,21 @@ class RelationType(IntEnum):
     CAN_DO = 2        # Доступное действие (кошка -> мяукать)
     SYNONYM_OF = 3    # Алиас / Синоним (гиппопотам -> бегемот)
     CAUSES = 4        # Причинно-следственная связь (упасть -> разбить)
+    # ---- извлечено из предложения (core/extract.py) ----
+    # Индекс 3 занимает SYNONYM_OF, поэтому новые отношения идут с 5: старые
+    # файлы и сохранённые веса не сдвигаются ни на единицу.
+    IS_ROLE = 5       # «Вася — это инженер» (совпадение с IS_A разрешено)
+    LOCATED_IN = 6    # «кошка на подоконнике» (падеж/предлог, не IS_A)
+    OBJECT_OF = 7     # объект действия: «съела -> рыбу»
+    PART_OF = 8       # составь/принадлежность: «хвост -> собака»
+    INSTRUMENT = 9    # Тв.п. орудие: «открывает -> мышь»
+    RECIPIENT = 10    # Дат.п. одуш. получатель: «дал -> кошке»
+    PURPOSE = 11      # инфинитив цели: «пришёл -> увидеть»
+    ABOUT = 12        # «для/про/о»: «корм для кошки»
+    HAS_PART = 13     # владение/часть: «у кошки есть хвост»
+    CIRCUMSTANCE = 14 # обстоятельство времени: «светит -> днём»
+    CONDITION = 15    # условие/мера: «кипит при -> градусе»
+    VALUE = 16        # величина/мера: «весит -> килограмм»
 
 # ==============================================================================
 # СТРУКТУРА ХРАНИЛИЩА (STORAGE MANAGER)
@@ -71,15 +87,28 @@ class StorageManager:
                 "action_profile": getattr(node, 'action_profile', [0, 0, 0]),
                 "synapses": []
             }
+            # ПРОИСХОЖДНИЕ ЗНАНИЯ. Знание из рассказа и знание из Википелии
+            # равноценны только пока их не пришлось проверить. Без source
+            # через месяц невозможно отличить факт от правдоподобной выдумки
+            # локалки, а именно это решает, можно ли на знание опираться.
+            source = getattr(node, 'source', '')
+            if source:
+                node_data["source"] = source
+            evidence = getattr(node, 'evidence', '')
+            if evidence:
+                node_data["evidence"] = evidence
 
             # Сохраняем исходящие синапсы
             if hasattr(node, 'out_synapses_typed'):
                 for target_name, syn_info in node.out_synapses_typed.items():
-                    node_data["synapses"].append({
+                    syn = {
                         "target_label": target_name,
                         "rel_type": syn_info["rel_type"],
                         "weight": syn_info["weight"]
-                    })
+                    }
+                    if syn_info.get("source"):
+                        syn["source"] = syn_info["source"]
+                    node_data["synapses"].append(syn)
             else:
                 # Фоллбэк для старых синапсов без типа
                 for target_name, weight in node.out_synapses.items():
