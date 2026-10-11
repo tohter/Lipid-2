@@ -6,7 +6,7 @@ from core.storage import NodeType, RelationType
 
 
 # ─────────────────────────────────────────────────────────────
-# ГОМЕОСТАЗ И ГОРМОНЫ (из kurwa.py, адаптировано под граф)
+# ГОМЕОСТАЗ И ГОРМОНЫ (перенесено из архивного монолита в legacy/)
 # ─────────────────────────────────────────────────────────────
 
 @dataclasses.dataclass
@@ -31,7 +31,7 @@ class Hormones:
 
 class PredictiveCortex:
     """
-    Соединяет SDR (sdr.py) + Граф (graph.py) + Биохимию (kurwa.py)
+    Соединяет SDR (core/sdr.py) + Граф (core/graph.py) + Биохимию (этот модуль)
     в единую петлю: восприятие → предсказание → ошибка → пластичность.
 
     Учитель (LLMTeacher) вызывается ТОЛЬКО при полностью неизвестном концепте.
@@ -129,7 +129,10 @@ class PredictiveCortex:
         # 1. Распознавание текущего концепта
         best_node, best_overlap = self._recall(input_sdr)
 
-        if best_overlap < self.UNKNOWN_THRESHOLD:
+        # Точное имя в графе — это узнавание сильнее любого SDR-шума.
+        recognized_exactly = input_word in self.graph.nodes
+
+        if best_overlap < self.UNKNOWN_THRESHOLD and not recognized_exactly:
             # Полностью неизвестен → bootstrap
             self.stats["unknowns"] += 1
             self.hormones.norepinephrine = min(255, self.hormones.norepinephrine + 160)
@@ -145,8 +148,9 @@ class PredictiveCortex:
 
         # 3. Сравнение предсказания с реальностью
         if predicted_node is not None:
+            # Совпадение = либо точное имя, либо SDR-перекрытие выше порога.
             match_overlap = predicted_node.sdr.overlap(actual_next_sdr)
-            hit = match_overlap >= self.HIT_THRESHOLD
+            hit = match_overlap >= self.HIT_THRESHOLD or predicted_node.name == actual_next
         else:
             match_overlap = 0
             hit = False
@@ -216,7 +220,7 @@ class PredictiveCortex:
         self.hormones.cortisol       = min(255, self.hormones.cortisol       + 100)
         self.homeostasis.predictability = max(0, self.homeostasis.predictability - 25)
 
-        # Ослабляем только НЕВЕРНЫЙ предсказанный синапс (как в kurwa.py)
+        # Ослабляем только НЕВЕРНЫЙ предсказанный синапс
         if pred_node is not None:
             syn = src_node.out_synapses_typed.get(pred_node.name)
             if syn:
@@ -243,6 +247,83 @@ class PredictiveCortex:
                 print(f"   💡 НОВЫЙ СИНАПС: «{src_node.name}»→«{actual_word}» "
                       f"[вес={self.NEW_SYNAPSE_WEIGHT}]")
 
+    def _ask_teacher(self, word: str):
+        """
+        Duck-typed запрос к Учителю. Учителя в проекте РАЗНЫЕ по интерфейсу:
+          - AgentTeacherV2  -> run_agent(base_concept, derived_concept, filename), ничего не возвращает
+          - WikiTeacher     -> fetch_concept(word) -> {"base_entity": {...}, "derived_entity": {...}}
+        Возвращает dict в формате GraphMemory.integrate_knowledge либо None.
+        Никакой путь Учителя не должен ронять предиктивный цикл.
+        """
+        if self.teacher is None:
+            return None
+
+        raw = None
+        try:
+            for method in ("fetch_concept_properties", "fetch_concept", "run"):
+                fn = getattr(self.teacher, method, None)
+                if callable(fn):
+                    raw = fn(word)
+                    break
+            else:
+                # Учитель умеет только писать во Вселенную (AgentTeacherV2) —
+                # дергаем run_agent и забираем результат из графа всезнания.
+                run = getattr(self.teacher, "run_agent", None)
+                if callable(run):
+                    run(base_concept=word, derived_concept=word)
+                    raw = self._read_teacher_world(word)
+        except Exception as exc:                       # сеть/LLM/парсинг — не роняем цикл
+            print(f"   ⚠️  Учитель молчит ({type(exc).__name__}: {exc})")
+            return None
+
+        return self._normalize_teacher_knowledge(raw)
+
+    def _read_teacher_world(self, word: str):
+        """Вычитывает концепт из Единой Вселенной, если Учитель пишет только туда."""
+        path = getattr(self.teacher, "world_filepath", None)
+        if not path:
+            return None
+        try:
+            import json, os
+            if not os.path.exists(path):
+                return None
+            with open(path, "r", encoding="utf-8") as f:
+                world = json.load(f)
+            return world.get("entities", {}).get(word.lower().strip())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalize_teacher_knowledge(raw):
+        """
+        Приводит ответы любого Учителя к одному виду:
+            {"concept", "category", "properties", "actions"}
+        Иначе integrate_knowledge проглатывает ответ молча.
+        """
+        if not isinstance(raw, dict):
+            return None
+        if "base_entity" in raw:                        # формат Вселенной (Wiki/LLM)
+            raw = raw.get("base_entity") or {}
+        if not raw or "concept" not in raw:
+            return None
+
+        hierarchy = raw.get("hierarchy") or []
+        category = raw.get("category") or (hierarchy[0] if hierarchy else "")
+
+        actions = []
+        for act in raw.get("actions", []) or []:
+            if isinstance(act, dict):
+                actions.append(act.get("name", ""))
+            elif isinstance(act, str):
+                actions.append(act)
+
+        return {
+            "concept": str(raw["concept"]).lower().strip(),
+            "category": str(category).lower().strip() if category else "",
+            "properties": [str(p).lower().strip() for p in raw.get("properties", []) or [] if p],
+            "actions": [a.lower().strip() for a in actions if a],
+        }
+
     def _bootstrap_unknown(self, word: str, verbose: bool) -> Node:
         """
         Концепт полностью неизвестен.
@@ -251,7 +332,7 @@ class PredictiveCortex:
         if self.teacher is not None:
             if verbose:
                 print(f"   📡 Bootstrap: запрос к Учителю для «{word}»...")
-            knowledge = self.teacher.fetch_concept_properties(word)
+            knowledge = self._ask_teacher(word)
             if knowledge:
                 self.graph.integrate_knowledge(knowledge, weight=180)
                 node = self.graph.nodes.get(word.lower())

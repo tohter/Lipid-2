@@ -206,7 +206,7 @@ class WikiTeacher:
         # фоллбэк: до первой точки (грубо)
         if "." in text:
             return text.split(".")[0].strip()
-        return text[:200].rstrip().stri
+        return text[:200].rstrip().strip()
 
     def _extract_properties(self, extract: str) -> list:
         """

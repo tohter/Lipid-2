@@ -1,5 +1,12 @@
 import json
+import os
+import sys
 from typing import Dict, List, Tuple, Optional
+
+# Позволяет запускать модуль как скрипт (python3 core/graph.py), а не только как пакет.
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from core.sdr import SDR1024
 from core.storage import StorageManager, NodeType, RelationType
 

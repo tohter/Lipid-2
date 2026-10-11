@@ -24,7 +24,16 @@ class RelationType(IntEnum):
 # СТРУКТУРА ХРАНИЛИЩА (STORAGE MANAGER)
 # ==============================================================================
 class StorageManager:
-    def __init__(self, json_path: str = "lipid_db.json", binary_path: str = "lipid_db.lipid"):
+    def __init__(self, json_path: str = None, binary_path: str = None):
+        # По умолчанию храним всё в data/memory/, чтобы не сорить в корень проекта.
+        if json_path is None or binary_path is None:
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            mem_dir = os.path.join(root, "data", "memory")
+            os.makedirs(mem_dir, exist_ok=True)
+            if json_path is None:
+                json_path = os.path.join(mem_dir, "lipid_db.json")
+            if binary_path is None:
+                binary_path = os.path.join(mem_dir, "lipid_db.lipid")
         self.json_path = json_path
         self.binary_path = binary_path
 
