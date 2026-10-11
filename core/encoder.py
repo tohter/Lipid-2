@@ -383,8 +383,14 @@ def get_encoder(force: BaseEncoder = None) -> BaseEncoder:
     Кодировщик выбирается один раз на процесс: SDR узла обязан совпадать с SDR
     того же слова, полученным часом позже, иначе кэш и .lipid распадаются.
 
-    LIPID2_SDR_BACKEND = letterhash | embedding (по умолчанию embedding,
-    с тихим откатом на letterhash, если модели/numpy нет).
+    LIPID2_SDR_BACKEND = letterhash | embedding (по умолчанию embedding).
+
+    ОТКАТ НА LETTERHASH НЕ ТИХИЙ И НЕ БЕСПЛАТНЫЙ. Буквенный хэш — это НЕ
+    «упрощённый режим», а сломанный режим:Overlap несвязанных слов в нём ВЫШЕ,
+    чем синонимов (кошка~кот = 3, кошка~табуретка = 4), то есть вся логика
+    узнавания в коре и памяти становится ложью. Молчаливый откат был самым
+    опасным местом проекта: запуск системным python3 (где нет numpy) давал
+    РАБОТАЮЩЕЕ приложение с неработающим смыслом.
     """
     global _ENCODER
     if force is not None:
@@ -394,6 +400,15 @@ def get_encoder(force: BaseEncoder = None) -> BaseEncoder:
         if _ENCODER is not None:
             return _ENCODER
         want = _env("LIPID2_SDR_BACKEND", "embedding").strip().lower()
+        if want not in ("embedding", "letterhash"):
+            print(f"[SDR]: неизвестный LIPID2_SDR_BACKEND='{want}', использую embedding")
+            want = "embedding"
+        if want == "letterhash":
+            # Явный выбор — не ошибка, но и не «нормальный режим»: пусть будет
+            # видно, что система осознанно переведена в несемантический режим.
+            _warn_letterhash("выбрано явно: LIPID2_SDR_BACKEND=letterhash", explicit=True)
+            _ENCODER = LetterHashEncoder()
+            return _ENCODER
         if want == "embedding" and HAS_NUMPY:
             try:
                 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -402,9 +417,48 @@ def get_encoder(force: BaseEncoder = None) -> BaseEncoder:
                     lazy=False)
                 return _ENCODER
             except EncodeError as exc:
-                print(f"[SDR] semantic-бэкенд недоступен ({exc}); откат на letterhash")
+                reason = str(exc)
+            except Exception as exc:
+                reason = f"{type(exc).__name__}: {exc}"
+            _warn_letterhash(reason)
+        elif want == "embedding":
+            _warn_letterhash("нет numpy/torch в этом интерпретаторе")
         _ENCODER = LetterHashEncoder()
         return _ENCODER
+
+
+def letterhash_reason() -> str:
+    """Почему сейчас буквенный хэш — для GUI и диагностики, без угадывания."""
+    return _FALLBACK_REASON
+
+
+def _warn_letterhash(reason: str, explicit: bool = False):
+    """Один раз на процесс, но ГРОМКО: см. docstring get_encoder."""
+    global _FALLBACK_ANNOUNCED, _FALLBACK_REASON
+    _FALLBACK_REASON = reason
+    if explicit:
+        # Явный выбор не печатаем как аварию, но и молчать нельзя.
+        print(f"[SDR]: выбран буквенный хэш ({reason}). Смысл НЕ кодируется.")
+        return
+    if _FALLBACK_ANNOUNCED:
+        return
+    _FALLBACK_ANNOUNCED = True
+    import sys
+    sys.stderr.write(
+        "\n" + "!" * 74 + "\n"
+        "⚠️  SDR РАБОТАЕТ НА БУКВЕННОМ ХЭШЕ — СМЫСЛ НЕ КОДИРУЕТСЯ\n"
+        f"   причина: {reason}\n"
+        "   overlap у несвязанных слов будет ВЫШЕ, чем у синонимов\n"
+        "   (кошка~кот = 3, кошка~табуретка = 4). Узнавание, bootstrap и\n"
+        "   пороги в этом режиме бессмысленны, но приложение запустится.\n"
+        "   Запускайте окружение проекта:\n"
+        "       .venv/bin/python run.py\n"
+        "   (в системном python3 нет numpy/torch/sentence-transformers)\n"
+        + "!" * 74 + "\n")
+
+
+_FALLBACK_ANNOUNCED = False
+_FALLBACK_REASON = "не инициализирован"
 
 
 def reset_encoder():

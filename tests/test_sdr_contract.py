@@ -12,10 +12,12 @@
 Внимание: эмбеддинговые тесты тянут SentenceTransformer, первые секунды долгие.
 """
 import os
+import subprocess
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 from core.sdr import SDR1024, prewarm, clear_cache
 from core.encoder import (LetterHashEncoder, EmbeddingEncoder, get_encoder,
@@ -57,6 +59,31 @@ class TestStructuralInvariants(unittest.TestCase):
     def test_deterministic(self):
         self.assertEqual(list(self._mask("кошка")), list(self._mask("кошка")),
                          "кодировщик недетерминирован — кэш графа и .lipid рассинхронятся")
+
+    def test_deterministic_across_processes(self):
+        """
+        Внутрипроцессный детерминизм тривиален: массивы лежат в одной памяти.
+        Опасность в ДРУГОМ процессе — тот же код, но новый import, новая
+        калибровка, новый RandomState. Если бы отпечаток разъехался, граф,
+        сохранённый сегодня, завтра перестал бы узнавать СОБСТВЕННЫЕ узлы — и
+        выглядело бы это как «память деградировала», а не как смена кодировщика.
+        """
+        words = ["флюгер", "кошка", "шизокарпий", "табуретка"]
+        want = "|".join(",".join(map(str, self._mask(w).nonzero()[0]))
+                        for w in words)
+
+        probe = ("import warnings; warnings.filterwarnings('ignore'); "
+                 f"import sys; sys.path.insert(0, {ROOT!r}); "
+                 "from core.sdr import SDR1024; "
+                 "print('|'.join(','.join(map(str, SDR1024(w).active_indices()))"
+                 f" for w in {words!r}))")
+        out = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                             text=True, timeout=900, cwd=ROOT)
+        self.assertEqual(out.returncode, 0, f"дочерний процесс упал: {out.stderr[-400:]}")
+        got = out.stdout.strip().splitlines()[-1]
+        self.assertEqual(got, want,
+                         "SDR зависит от процесса: сохранённый граф перестанет "
+                         "узнавать свои узлы после перезапуска")
 
     def test_case_and_space_insensitive(self):
         self.assertEqual(list(self._mask("  КоШка ")), list(self._mask("кошка")))

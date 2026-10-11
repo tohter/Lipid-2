@@ -2,6 +2,8 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext
 import threading
 from brain.lipid2_brain import Lipid2Brain
+from core.sdr import encoder_info
+from core.encoder import letterhash_reason
 
 
 class Lipid2GUI:
@@ -17,6 +19,7 @@ class Lipid2GUI:
         self._init_context_menu()
         self._build_ui()
         self._update_hormone_bars()
+        self._report_encoder()
 
     def _init_context_menu(self):
         """Создание универсального контекстного меню (ПКМ) для копипаста."""
@@ -136,6 +139,28 @@ class Lipid2GUI:
         self.chat_area.see(tk.END)
         self.chat_area.config(state="disabled")
 
+    def _report_encoder(self):
+        """
+        какая SDR-схема реально работает — это НЕ косметика.
+
+        На буквенном хэше приложение выглядит здоровым, но смысл не кодируется,
+        и пользователь узнаёт об этом только по бессмысленным ответам. Предупреждение
+        выводится в то место, куда пользователь смотрит.
+        """
+        try:
+            name, semantic, cfg = encoder_info()
+        except Exception as exc:
+            self._append_chat("Lipid-2", f"⚠️ Не удалось определить SDR-кодировщик: {exc}")
+            return
+        if semantic:
+            self._append_chat("LIPID-2", f"SDR: {name} (семантический, cfg={cfg}). Готов.")
+        else:
+            self._append_chat(
+                "LIPID-2",
+                "⛔ КРИТИЧНО: SDR работает на БУКВЕННОМ ХЭШЕ — смысл НЕ кодируется, "
+                "узнавание и пороги бессмысленны.\n"
+                f"   Причина: {letterhash_reason()}")
+
     def _update_hormone_bars(self):
         """Синхронизация полос гормонов с состоянием Мозга."""
         self.nor_bar["value"] = self.brain.noradrenaline
@@ -155,7 +180,15 @@ class Lipid2GUI:
         self._append_chat("Вы", query)
 
         def worker():
-            response = self.brain.process_input(query)
+            # try/except ОБЯЗАТЕЛЕН: без него любое исключение из мозга (LLM
+            # отвалился, файл памяти побит) молча убивает поток, и пользователь
+            # остаётся с отправленным запросом и НИКАКИМ ответом — выглядит как
+            # зависание, а не как ошибка.
+            try:
+                response = self.brain.process_input(query)
+            except Exception as exc:
+                response = (f"⛔ Сбой обработки: {type(exc).__name__}: {exc}\n"
+                            "   Подробности в консоли, запущенной из терминала.")
             self.root.after(0, lambda: self._append_chat("Lipid-2", response))
 
         threading.Thread(target=worker, daemon=True).start()

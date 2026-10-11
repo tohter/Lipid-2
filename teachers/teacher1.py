@@ -22,7 +22,76 @@ class AgentTeacherV2:
         os.makedirs(self.memory_dir, exist_ok=True)
         self.world_filepath = os.path.join(self.memory_dir, "lipid_world.json")
 
-    def _load_world(self) -> Dict[str, Any]:
+    @staticmethod
+    def _parse_tool_args(raw) -> dict:
+        """
+        Разбор аргументов tool-call от локальной модели.
+
+        Прежний код делал `json.loads(...) except: pass` и ОСТАВЛЯЛ строку, после
+        чего `tool_map[fn](**fn_args)` падал с «argument after ** must be a
+        mapping, not str», а внешний `except` разрЫвал весь цикл агента. То есть
+        одно кривое слово модели превращалось в «Учитель ничего не сделал».
+
+        Локальные модели РЕГУЛЯРНО выдают аргументы с обрывком по max_tokens, в
+        ```json-обёртке или с хвостовой запятой, поэтому тут разбор с
+        восстановлением, а не строгий json.loads.
+        """
+        if raw is None:
+            return {}
+        if isinstance(raw, dict):
+            return raw
+        if not isinstance(raw, str):
+            return {}
+        text = raw.strip()
+        for _ in range(3):        # снимаем markdown-обёртку, она бывает вложенной
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text).strip()
+        if not text:
+            return {}
+        for candidate in (text,
+                          AgentTeacherV2._clip_json(text),
+                          re.sub(r",\s*([}\]])", r"\1", text)):
+            if not candidate:
+                continue
+            try:
+                val = json.loads(candidate)
+            except Exception:
+                continue
+            if isinstance(val, dict):
+                return val
+            if isinstance(val, list) and val and isinstance(val[0], dict):
+                return val[0]
+        return {}
+
+    @staticmethod
+    def _clip_json(text: str) -> str:
+        """
+        Дочитать обрезанный по max_tokens JSON: добавляем недостающие } и ].
+        Лучше половина знания, полученная и исправленная на следующем шаге, чем
+        молча уроненный агент.
+        """
+        stack, in_str, esc = [], False, False
+        for ch in text:
+            if esc:
+                esc = False
+                continue
+            if ch == "\\":
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch in "{[":
+                stack.append(ch)
+            elif ch in "}]":
+                if stack and ((ch == "}" and stack[-1] == "{") or
+                              (ch == "]" and stack[-1] == "[")):
+                    stack.pop()
+        if in_str:
+            text += '"'
+        return text + "".join("}" if c == "{" else "]" for c in reversed(stack))
         """Загружает весь мир из единого файла."""
         if os.path.exists(self.world_filepath):
             try:
@@ -235,29 +304,40 @@ class AgentTeacherV2:
 
                     for tool_call in tool_calls:
                         fn_name = tool_call["function"]["name"]
-                        fn_args = tool_call["function"]["arguments"]
+                        fn_args = self._parse_tool_args(
+                            tool_call["function"].get("arguments"))
 
-                        if isinstance(fn_args, str):
-                            try:
-                                fn_args = json.loads(fn_args)
-                            except Exception:
-                                pass
+                        print(f" -> Вызов инструмента: {fn_name}({list(fn_args)[:3]})")
 
-                        print(f" -> Вызов инструмента: {fn_name}(...)")
-
-                        if fn_name in tool_map:
-                            res = tool_map[fn_name](**fn_args)
+                        if fn_name not in tool_map:
+                            # Неизвестный инструмент — НЕ выходим из цикла: модель
+                            # должна получить об этом сообщение и исправиться.
+                            res = f"[Tool Error]: неизвестный инструмент '{fn_name}'"
                             print(f"    {res}")
+                        else:
+                            try:
+                                res = tool_map[fn_name](**fn_args)
+                            except TypeError as exc:
+                                # Кривые аргументы — это НОРМА для локальной модели,
+                                # а не катастрофа. Раньше здесь был `pass`, из-за чего
+                                # строка уходила в **kwargs и роняла весь агент.
+                                res = (f"[Tool Error]: аргументы не подходят "
+                                       f"({exc}). Передай "
+                                       f"{fn_name} строго по схеме.")
+                            except Exception as exc:
+                                res = f"[Tool Error]: {type(exc).__name__}: {exc}"
+                        print(f"    {res}")
 
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call.get("id", f"call_{step}"),
-                                "content": str(res)
-                            })
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.get("id", f"call_{step}"),
+                            "content": str(res)
+                        })
 
             except urllib.error.URLError as e:
                 print(f"[DEBUG ERROR]: Ошибка подключения/таймаут: {e.reason}")
                 break
             except Exception as e:
                 print(f"[DEBUG ERROR]: {e}")
+                break
                 break
