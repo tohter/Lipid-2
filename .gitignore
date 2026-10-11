@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.lipid
+lipid_db.json
+data/memory/*.json.bak
+.venv/
