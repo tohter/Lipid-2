@@ -4,6 +4,7 @@ import os
 from enum import IntEnum
 from typing import Dict, List, Optional
 from core.sdr import SDR1024
+from core.encoder import get_encoder
 
 # ==============================================================================
 # ENUM-КОДЫ ДЛЯ МАКСИМАЛЬНОЙ ЭКОНОМИИ ПАМЯТИ
@@ -41,11 +42,18 @@ class StorageManager:
         """
         Сохраняет граф памяти в читаемый JSON-формат.
         """
+        enc = get_encoder()
         export_data = {
             "meta": {
-                "version": "2.0",
+                "version": "2.1",
                 "project": "Lipid-2",
-                "total_nodes": len(nodes)
+                "total_nodes": len(nodes),
+                # SDR сохраняется как 16 uint64. Эти биты осмысленны ТОЛЬКО
+                # вместе с кодировщиком, который их породил. Без метки граф,
+                # собранный буквенным хэшем, молча дочитался бы эмбеддинговым
+                # — и все веса синапсов оказались бы привязаны к чужим векторам.
+                "sdr_encoder": enc.name,
+                "sdr_encoder_config": enc.config_hash(),
             },
             "nodes": []
         }
@@ -104,6 +112,15 @@ class StorageManager:
             with open(self.json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             print(f"[Storage]: Успешно загружен JSON '{self.json_path}' (Узлов: {data['meta']['total_nodes']})")
+            meta = data.get("meta", {})
+            saved_cfg = meta.get("sdr_encoder_config")
+            cur = get_encoder()
+            if saved_cfg and saved_cfg != cur.config_hash():
+                print("⚠️  [Storage]: ВНИМАНИЕ: файл сохранён ДРУГИМ SDR-кодировщиком "
+                      f"({meta.get('sdr_encoder')}/{saved_cfg}), чем сейчас "
+                      f"({cur.name}/{cur.config_hash}). Сохранённые 1024-битные "
+                      "векторы несовместимы — узнавание будет неверным. "
+                      "Пересоберите граф или верните LIPID2_SDR_BACKEND прежний.")
             return data
         except Exception as e:
             print(f"[Storage Error]: Ошибка загрузки JSON: {e}")

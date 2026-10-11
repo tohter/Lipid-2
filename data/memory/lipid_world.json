@@ -1,4 +1,12 @@
 {
-  "entities": {},
+  "entities": {
+    "флюгер": {
+      "concept": "флюгер",
+      "parent_rel": "IS_A",
+      "delta_properties": [
+        "стандартный"
+      ]
+    }
+  },
   "relations": []
 }

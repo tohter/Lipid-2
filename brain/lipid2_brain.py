@@ -11,6 +11,8 @@ from teachers.teacher_wiki import WikiTeacher      # Канал 2: интерн�
 # Импортируем нейроморфное ядро (SDR / STDP / Гормоны)
 from core.cortex import Hormones
 from core.graph import GraphMemory
+from core.sdr import prewarm, encoder_info
+from core.lemma import LemmaResolver
 from core.storage import NodeType, RelationType
 
 
@@ -50,21 +52,51 @@ class Lipid2Brain:
         # Нейроморфное ядро (SDR + STDP + гормоны)
         self.core = GraphMemory()
         self.hormones = Hormones()
+        # Резолвер форм по именам ВСЕЛЕННОЙ (мир шире ядра: там есть сущности,
+        # ещё не интегрированные в граф).
+        self.lemmas_world = LemmaResolver()
 
         # Загружаем существующие знания мира в граф ядра
         self._sync_world_to_core()
+        # Индекс форм строится ОДИН раз после загрузки графа, а не на запрос:
+        # кодирование имён — единственная дорогая операция в резолвере.
+        self.core.sync_lemmas()
 
     # ── СИНХРОНИЗАЦИЯ МИРА И ЯДРА ──────────────────────────
 
     def _sync_world_to_core(self):
         """Переносит сущности из lipid_world.json в нейроморфный граф ядра."""
         world = self._load_world()
+        entities = world.get("entities", {})
+
+        # Сначала имена пачкой в SDR-кэш: без этого 10^4 узлов = 10^4 обращений
+        # к эмбеддинг-модели по одному слову.
+        names = set(entities.keys())
+        for data in entities.values():
+            names.update(data.get("hierarchy", []) or [])
+            names.update(data.get("properties", []) or [])
+            for act in data.get("actions", []) or []:
+                if isinstance(act, dict):
+                    names.add(act.get("name", ""))
+                elif act:
+                    names.add(str(act))
+            if data.get("parent_concept"):
+                names.add(data["parent_concept"])
+        names = sorted(n for n in names if isinstance(n, str) and n)
+        prewarm(names)
+        # Мир шире ядра: в нём есть сущности, ещё не ставшие узлами. Резолвер
+        # мира нужен, чтобы «свойства флюгера» нашло сущность «флюгер», даже
+        # если узел ещё не интегрирован.
+        self.lemmas_world.attach(sorted(entities.keys()))
+
         count = 0
-        for concept, data in world.get("entities", {}).items():
+        for concept, data in entities.items():
             self._integrate_entity_into_core(concept, data)
             count += 1
         if count:
-            print(f"[Lipid-2] Ядро загружено: {count} сущностей из Вселенной.")
+            enc_name, semantic, cfg = encoder_info()
+            print(f"[Lipid-2] Ядро загружено: {count} сущностей из Вселенной. "
+                  f"SDR-кодировщик: {enc_name} (семантический={semantic}, cfg={cfg}).")
 
     def _integrate_entity_into_core(self, concept: str, data: dict):
         """Записывает одну сущность из мира в граф ядра (SDR-узел + синапсы)."""
@@ -114,19 +146,49 @@ class Lipid2Brain:
             json.dump(world, f, ensure_ascii=False, indent=2)
 
     def find_in_memory(self, concept: str) -> Optional[Dict[str, Any]]:
-        """Быстрый поиск сущности и её родительских связей в Графе Вселенной."""
+        """
+        Быстрый поиск сущности и её родительских связей в Графе Вселенной.
+
+        Ищем НЕ только по точной строке. Раньше «свойства флюгера» промахивалось
+        по узлу «флюгер» — сравнение было по точному ключу, хотя семантический
+        кодировщик эти формы не различает. Следствие: каждый падеж каждого слова
+        выглядел как новая сущность и гнал повторный (платный, медленный) запрос
+        к LLM за копией уже имеющегося знания.
+
+        Порядок: точное имя → морфологическое сведение через ядро. Создание узлов
+        здесь не производится: промах резолвера обратим, слияние узлов — нет.
+        """
         concept_clean = concept.lower().strip()
         world = self._load_world()
         entities = world.get("entities", {})
 
-        if concept_clean in entities:
-            entity_data = entities[concept_clean]
-            if "parent_concept" in entity_data:
-                parent_data = entities.get(entity_data["parent_concept"], {})
-                return {"base_entity": parent_data, "derived_entity": entity_data}
+        if concept_clean not in entities:
+            # 1) форма слова, которую ядро уже знает
+            hit = self.core.resolve_name(concept_clean)
+            if hit and hit in entities:
+                concept_clean = hit
             else:
-                return {"base_entity": entity_data, "derived_entity": {}}
-        return None
+                # 2) форма другого слова ВСЕЛЕННОЙ, которую ядро ещё не видело
+                hit = self.lemmas_world.resolve_name(concept_clean)
+                if hit and hit in entities:
+                    concept_clean = hit
+
+        if concept_clean not in entities:
+            return None
+
+        entity_data = entities[concept_clean]
+        if "parent_concept" in entity_data:
+            parent_data = entities.get(entity_data["parent_concept"], {})
+            found = {"base_entity": parent_data, "derived_entity": entity_data}
+        else:
+            found = {"base_entity": entity_data, "derived_entity": {}}
+        # КАНОННОЕ имя, под которым знание реально лежит. Обработчики обязаны
+        # сверяться с НИМ, а не со словом из запроса: иначе «что такое кошки»
+        # находит запись «кошка», потом сравнивает "кошка" == "кошки", не
+        # совпадает — и отвечает «недостаточно данных», хотя данные только что
+        # достал. Именно эта несостыковка и выдавала пустые определения.
+        found["matched_concept"] = concept_clean
+        return found
 
     # ── ТРЁХКАНАЛЬНОЕ САМООБУЧЕНИЕ ─────────────────────────
 
@@ -236,8 +298,10 @@ class Lipid2Brain:
         }
 
         world = self._load_world()
-        world["entities"][concept.lower().strip()] = data["base_entity"]
+        key = concept.lower().strip()
+        world["entities"][key] = data["base_entity"]
         self._save_world(world)
+        data["matched_concept"] = key
         return data
 
     def _integrate_learned_data(self, learned_data: dict):
@@ -289,13 +353,26 @@ class Lipid2Brain:
             if not data:
                 return f"[Lipid-2]: Я искал значение '{concept}', но все источники знаний не дали ответа."
 
+        # Дальше работаем с КАНОННИКОМ, а не с формой из запроса.
+        concept = data.get("matched_concept", concept)
         base_ent = data.get("base_entity", {})
         derived_ent = data.get("derived_entity", {})
 
-        if derived_ent.get("concept") == concept:
-            parent = derived_ent.get("parent_concept", "базовый вид")
+        # degenerate derived: LLM очень любит на вопрос «что такое X» возвращать
+        # derived_concept == base_concept. Тогда производная запись несёт ТОЛЬКО
+        # обрывок (parent_rel, пустой delta_properties), а настоящая иерархия
+        # лежит в base. Прежний порядок «сначала derived» выдавал «Флюгер — это
+        # флюгер со свойствами: .» — то есть честный провал, замаскированный под
+        # ответ. Производную ветку смотрим ТОЛЬКО когда это действительно
+        # производная запись (другое слово либо непустая дельта).
+        real_derived = (derived_ent.get("concept") == concept
+                        and base_ent.get("concept") != concept)
+
+        if real_derived:
+            parent = derived_ent.get("parent_concept") or base_ent.get("concept")                 or "базовый вид"
             delta = ", ".join(derived_ent.get("delta_properties", []))
-            return f"[Lipid-2]: {concept.capitalize()} — это {parent} со свойствами: {delta}."
+            if delta:
+                return f"[Lipid-2]: {concept.capitalize()} — это {parent} со свойствами: {delta}."
 
         if base_ent.get("concept") == concept:
             hierarchy = base_ent.get("hierarchy", [])
@@ -320,14 +397,14 @@ class Lipid2Brain:
             if not data:
                 return f"[Lipid-2]: Не могу определить свойства '{concept}'."
 
+        concept = data.get("matched_concept", concept)
         base_ent = data.get("base_entity", {})
         derived_ent = data.get("derived_entity", {})
 
-        props = []
+        props = list(base_ent.get("properties", []) or [])
         if derived_ent.get("concept") == concept:
-            props = base_ent.get("properties", []) + derived_ent.get("delta_properties", [])
-        elif base_ent.get("concept") == concept:
-            props = base_ent.get("properties", [])
+            props += [p for p in derived_ent.get("delta_properties", []) or []
+                      if p not in props]
 
         props_str = ", ".join(props) if props else "нет данных"
         return f"[Lipid-2]: Свойства сущности '{concept}': [{props_str}]."

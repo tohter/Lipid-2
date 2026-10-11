@@ -1,6 +1,16 @@
 __pycache__/
 *.pyc
+*.egg-info/
+.venv/
+.DS_Store
+
+# Вывод работы: графы и бинарники пересоздаются, в VCS им не место
 *.lipid
 lipid_db.json
-data/memory/*.json.bak
-.venv/
+data/memory/*.bak
+data/memory/sdr_calibration.pkl
+data/memory/lipid_world.json
+
+# Артефакты экспериментов (53 МБ эмбеддингов), воспроизводятся скриптами
+experiments/*.npy
+experiments/*.pkl

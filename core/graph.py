@@ -7,7 +7,9 @@ from typing import Dict, List, Tuple, Optional
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.sdr import SDR1024
+from core.sdr import SDR1024, prewarm
+from core.index import SdrIndex
+from core.lemma import LemmaResolver
 from core.storage import StorageManager, NodeType, RelationType
 
 class Node:
@@ -46,6 +48,13 @@ class GraphMemory:
     def __init__(self):
         self.nodes: Dict[str, Node] = {}
         self.storage = StorageManager()
+        # SDR-индекс: аргмакс перекрытия матрицей, а не Python-циклом по узлам.
+        self.index = SdrIndex()
+        # Резолвер поверхностных форм («флюгера» -> «флюгер»). Работает по
+        # float-эмбеддингу, а НЕ по перекрытию SDR: на 20 битах морфология не
+        # различима (замеры — experiments/RESULTS.md, раздел 6).
+        self.lemmas = LemmaResolver()
+        self._lemmas_attached = False
 
     def get_or_create_node(self, name: str, node_type: int = NodeType.ENTITY) -> Node:
         """Возвращает существующий узел или создает новый."""
@@ -53,7 +62,63 @@ class GraphMemory:
         if clean_name not in self.nodes:
             self.nodes[clean_name] = Node(clean_name, node_type=node_type)
             self.nodes[clean_name].id = len(self.nodes)
+            self.index.add(clean_name, self.nodes[clean_name].sdr)
+            if self._lemmas_attached:
+                self.lemmas.add(clean_name)
         return self.nodes[clean_name]
+
+    # ── узнавание формы слова ──────────────────────────────
+    def sync_lemmas(self):
+        """
+        Индексирует все имена узлов для сведения форм. Вызывать пачкой —
+        кодирование имён дорогое, по одному его гонять нельзя.
+        """
+        if not self.nodes:
+            return 0
+        self.lemmas.attach(list(self.nodes.keys()))
+        self._lemmas_attached = True
+        return len(self.lemmas)
+
+    def resolve(self, word: str) -> Optional[Node]:
+        """
+        Узел по слову ЛЮБОЙ формы: сначала точное имя, потом морфологическое
+        сведения. НИКОГДА не создаёт узел.
+
+        Почему это отдельная операция, а не побочный эффект get_or_create_node:
+        сведения формы по косинусу 0.85 обратимо, пока это только ОТВЕТ ПОИСКА.
+        Если бы узел схлопывался в момент создания, «выражать» и «выразить»
+        слились бы в графе без следа и без возможности разобрать ошибку. Здесь
+        же узел остаётся на месте — ошибку можно увидеть и откатить.
+        """
+        word = word.lower().strip()
+        if not word:
+            return None
+        node = self.nodes.get(word)
+        if node is not None:
+            return node
+        if not self._lemmas_attached:
+            # Ленивая инициализация: молча возвращать None было бы ловушкой —
+            # заблывает один вызов sync_lemmas(), и вся система «вдруг» перестаёт
+            # понимать падежи, без ошибки и без объяснения.
+            self.sync_lemmas()
+        name = self.lemmas.resolve_name(word)
+        return self.nodes.get(name) if name else None
+
+    def resolve_name(self, word: str) -> Optional[str]:
+        node = self.resolve(word)
+        return node.name if node else None
+
+    def prewarm_sdr(self):
+        """
+        Пачечное кодирование всех имён узлов. Без этого загрузка графа на 10^4
+        узлов — это 10^4 отдельных вызовов эмбеддинг-модели вместо одного.
+        """
+        if not self.nodes:
+            return 0
+        n = prewarm(list(self.nodes.keys()))
+        if n:
+            print(f"[Graph]: SDR прогрев {n} имён пачкой.")
+        return n
 
     def add_synonym(self, word: str, canonical_word: str):
         """
@@ -94,7 +159,7 @@ class GraphMemory:
 
     def resolve_canonical_node(self, concept_name: str) -> Node:
         """Проваливается сквозь синонимы к каноническому узлу."""
-        node = self.nodes.get(concept_name.lower().strip())
+        node = self.resolve(concept_name)
         if not node:
             return None
 
@@ -106,16 +171,9 @@ class GraphMemory:
         return node
 
     def recall_by_sdr(self, input_sdr: SDR1024, top_k: int = 3) -> List[Tuple[str, int, float]]:
-        """Поиск по SDR перекрытию."""
-        results = []
-        for name, node in self.nodes.items():
-            overlap = input_sdr.overlap(node.sdr)
-            sim = input_sdr.similarity(node.sdr)
-            if overlap > 0:
-                results.append((name, overlap, sim))
-
-        results.sort(key=lambda x: x[1], reverse=True)
-        return results[:top_k]
+        """Поиск по SDR перекрытию (через индекс)."""
+        return [(name, ov, ov / float(SDR1024.TARGET_ON_BITS))
+                for name, ov in self.index.topk(input_sdr, top_k) if ov > 0]
 
     def save_to_disk(self):
         """Сохраняет JSON и автоматически компилирует в .lipid бинарник."""

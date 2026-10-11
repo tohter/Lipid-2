@@ -55,7 +55,41 @@ class AgentTeacherV2:
                 derived = data["derived_entity"]
                 concept = derived.get("concept", "").lower().strip()
                 if concept:
-                    world["entities"][concept] = derived
+                    # САМОЕ ЧАСТОЕ: базовый и производный концепт — одно слово
+                    # (запросили «флюгер», производного нет). Прежний код писал
+                    # base, а СРАЗУ ПОСЛЕ него перезаписывал ту же ячейку
+                    # вырожденным derived — и иерархия, свойства и действия
+                    # базовой сущности МОЛЧА СТИРАЛИСЬ. Отсюда пустые «свойства»
+                    # и «флюгер — это флюгер».
+                    #
+                    # Правила слияния ЖЁСТКИЕ: derived имеет право ДОБАВИТЬ
+                    # delta_properties и parent_concept, но не имеет права
+                    # СТЕРЕТЬ то, что уже есть у base. LLM пишет эти два блока
+                    # в разном составе от запуска к запуску, и полагаться на
+                    # «сейчас она положила hierarchy в derived» нельзя.
+                    prev = world["entities"].get(concept)
+                    if isinstance(prev, dict):
+                        merged = dict(prev)
+                        for k, v in derived.items():
+                            if k in ("hierarchy", "properties", "actions"):
+                                have = merged.get(k) or []
+                                add = v or []
+                                merged[k] = have + [x for x in add if x not in have]
+                            elif k == "delta_properties":
+                                merged[k] = list(merged.get(k) or []) + \
+                                    [x for x in (v or [])
+                                     if x not in (merged.get(k) or [])]
+                            elif not merged.get(k):
+                                merged[k] = v
+                        world["entities"][concept] = merged
+                    else:
+                        world["entities"][concept] = derived
+
+            # Самоссылка parent_concept == concept — мусор, он превращает
+            # «X — это X» в вечный цикл обхода иерархии.
+            ent = world["entities"].get(concept) if concept else None
+            if isinstance(ent, dict) and ent.get("parent_concept", "").lower().strip() == concept:
+                del ent["parent_concept"]
 
             with open(self.world_filepath, "w", encoding="utf-8") as f:
                 json.dump(world, f, ensure_ascii=False, indent=2)
