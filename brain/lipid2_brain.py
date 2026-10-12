@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import time
 from typing import Dict, Any, Optional
 
 # Импортируем вынесенный IR-парсер
@@ -15,8 +16,10 @@ from brain.learner import Learner
 from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
+from core.records import (meaningful_categories, merge_entity, same_word,
+                            strip_self_name)
+from core.worldfile import default_memory_dir, read_world, write_world
 from core.storage import NodeType, RelationType
-from core.worldfile import read_world, write_world
 
 
 class Lipid2Brain:
@@ -34,20 +37,21 @@ class Lipid2Brain:
     """
 
     def __init__(self, memory_dir: str = None):
-        if memory_dir is None:
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self.memory_dir = os.path.join(project_root, "data", "memory")
-        else:
-            self.memory_dir = memory_dir
-
-        os.makedirs(self.memory_dir, exist_ok=True)
-        self.world_filepath = os.path.join(self.memory_dir, "lipid_world.json")
+        self.memory_dir, self.world_filepath = default_memory_dir(memory_dir)
 
         # Модули ввода
         self.ir_parser = IRParser()
 
         # Три канала знаний (host локалки настраиваемый, по умолчанию 8080)
         llm_host = os.environ.get("LIPID2_LLM_HOST", "http://localhost:8080")
+        # Переключатели каналов. Смысл не в экономии, а в ЧЕСТНОСТИ: снятая
+        # галочка обязана означать «этот канал не трогает НИЧЕГО», включая путь
+        # ответа на вопрос. До этого флаг «спрашивать Учителя» действовал только
+        # на обучение, и ответ на незнакомое слово всё равно уходил в Gemma на
+        # ~70 с (ЗАМЕРЕНО на GUI-прогоне: 70 с и «ответ без вызова инструмента»).
+        self.use_llm_teacher = True
+        self.use_wiki_teacher = True
+        self.ask_user_enabled = True
         self.teacher_llm = AgentTeacherV2(host=llm_host, memory_dir=self.memory_dir)
         self.teacher_wiki = WikiTeacher(memory_dir=self.memory_dir)
         self.ask_user_callback = None      # колбэк: (вопрос) -> ответ пользователя, ставится из GUI
@@ -299,21 +303,29 @@ class Lipid2Brain:
         learned_data = None
 
         # ── КАНАЛ 1: Локальный Учитель (LLM) ──
-        print("   [Канал 1] Локальный Учитель (Gemma)...")
-        self._say(f"канал 1: спрашиваю локальную модель про «{concept}»")
-        try:
-            self.teacher_llm.run_agent(base_concept=concept, derived_concept=concept,
-                                       filename="lipid_world.json")
-            learned_data = self.find_in_memory(concept)
-            self._say(f"канал 1: {'нашёл' if learned_data else 'НЕ нашёл'} «{concept}»")
-            if learned_data:
-                print("   \u2714 Знание получено от локальной LLM.")
-        except Exception as e:
-            print(f"   \u2716 Локалка недоступна: {e}")
-            learned_data = None
+        if not self.use_llm_teacher:
+            self._say("канал 1 ВЫКЛЮЧЕН (переключатель «спрашивать Учителя») — "
+                      "LLM не вызывается")
+        else:
+            print("   [Канал 1] Локальный Учитель (Gemma)...")
+            self._say(f"канал 1: спрашиваю локальную модель про «{concept}»")
+            try:
+                self.teacher_llm.run_agent(
+                    base_concept=concept, derived_concept=concept,
+                    filename="lipid_world.json")
+                learned_data = self.find_in_memory(concept)
+                self._say(f"канал 1: {'нашёл' if learned_data else 'НЕ нашёл'} "
+                          f"«{concept}»")
+                if learned_data:
+                    print("   \u2714 Знание получено от локальной LLM.")
+            except Exception as e:
+                print(f"   \u2716 Локалка недоступна: {e}")
+                learned_data = None
 
         # ── КАНАЛ 2: Интернет (Википедия) ──
-        if not learned_data:
+        if not learned_data and not self.use_wiki_teacher:
+            self._say("канал 2 ВЫКЛЮЧЕН — интернет не опрашивается")
+        if not learned_data and self.use_wiki_teacher:
             print("   [Канал 2] Интернет (Википедия)...")
             self._say(f"канал 1 пуст — ищу в интернете «{concept}»")
             try:
@@ -330,7 +342,10 @@ class Lipid2Brain:
                 learned_data = None
 
         # ── КАНАЛ 3: Вопрос пользователю ──
-        if not learned_data:
+        if not learned_data and not self.ask_user_enabled:
+            self._say("спросить пользователя запрещено (переключатель снят) — "
+                      "знание осталось ненайденным")
+        if not learned_data and self.ask_user_enabled:
             print("   [Канал 3] Вопрос пользователю...")
             self._say(f"каналы знания пусты — спрашиваю у пользователя «{concept}»")
             # ДВА пути спросить: явный колбэк (исторический API) и общий
@@ -355,6 +370,7 @@ class Lipid2Brain:
         if learned_data:
             self.hormones.norepinephrine = 20
             self.hormones.dopamine = 255
+            self._forget_unknown(concept, learned_data)
             self._say(f"выучено: «{concept}» вошло в граф")
             print(f"🎉 [ДОФАМИН] Успех! Граф пополнен сущностью '{concept}'.\n")
             # Интегрируем новые знания в нейроморфное ядро
@@ -391,13 +407,19 @@ class Lipid2Brain:
         if not parts:
             return None
 
-        category = parts[0]
-        properties = parts[1:]
+        # «Пчела — летаемое насекомое» — полный ответ, но его первая половина
+        # повторяет заголовок. Без среза категория остаётся всей фразой, и
+        # ответ склеивается из двух имён: ЗАМЕРЕНО в GUI-прогоне —
+        # «Пчела — это Пчела — летаемое насекомое».
+        category = strip_self_name(concept, parts[0])
+        properties = [strip_self_name(concept, p) for p in parts[1:]]
+        properties = [p for p in properties if p]
 
         data = {
             "base_entity": {
                 "concept": concept,
-                "hierarchy": [category],
+                "hierarchy": [category] if category else [],
+                "definition": strip_self_name(concept, answer_clean),
                 "properties": properties,
                 "actions": [],
             },
@@ -406,10 +428,50 @@ class Lipid2Brain:
 
         world = self._load_world()
         key = concept.lower().strip()
-        world["entities"][key] = data["base_entity"]
+        record = dict(data["base_entity"])
+        record["provenance"] = [{"source": "user", "evidence": answer[:200],
+                                 "at": int(time.time())}]
+        record["learned_from"] = "user"
+        # merge_entity, а не присваивание: ответ пользователя беднее статьи,
+        # и прямое присваивание стирало ранее выученные свойства того же слова
+        # (то же правило, что для Википедии и Учителя — см. core/records.py).
+        world["entities"][key] = merge_entity(world["entities"].get(key), record)
+        world["unknown_words"].pop(key, None)
         self._save_world(world)
         data["matched_concept"] = key
         return data
+
+    def _forget_unknown(self, concept: str, learned_data: dict) -> None:
+        """
+        Слово получило значение — запись в unknown_words обязана исчезнуть.
+
+        unknown_words — это список НЕЗНАНИЯ. Пока слово стоит там и в
+        entities, файл утверждает про одно и то же слово «не знаю» и «вот что
+        оно такое», а панель памяти показывает «сущностей 6 · неизвестных 8»
+        там, где неизвестных должно быть меньше. Удаляются и формы слова: они
+        попали в список тем же поиском, который их теперь находит.
+        """
+        keys = {concept.lower().strip()}
+        base = (learned_data or {}).get("base_entity") or {}
+        if base.get("concept"):
+            keys.add(str(base["concept"]).lower().strip())
+        matched = (learned_data or {}).get("matched_concept")
+        if matched:
+            keys.add(str(matched).lower().strip())
+        try:
+            world = self._load_world()
+            unknowns = world.setdefault("unknown_words", {})
+            doomed = [k for k in unknowns
+                      if k in keys or same_word(k, concept)
+                      or any(same_word(k, o) for o in keys)]
+            for k in doomed:
+                del unknowns[k]
+            if doomed:
+                self._save_world(world)
+                self._say(f"убрано из неизвестных: {', '.join(doomed)}")
+        except Exception as exc:
+            # Не критично для знания, но и не «тихо»: чистка не выполнена.
+            self._say(f"⚠️ unknown_words не почистился: {type(exc).__name__}: {exc}")
 
     def _integrate_learned_data(self, learned_data: dict):
         """Записывает вновь полученные знания (из любого источника) в ядро."""
@@ -474,6 +536,56 @@ class Lipid2Brain:
 
     # ── ОБРАБОТЧИКИ ────────────────────────────────────────
 
+    _DEF_MAX_CHARS = 320
+
+    @staticmethod
+    def _definition_phrase(concept: str, definition: str) -> str:
+        """
+        Сжать определение Википедии в одну фразу, которую можно ПРОЧИТАТЬ.
+
+        ЗАМЕРЕНО на живом определении «экосистема»: дословный перенос первого
+        предложения статьи давал
+            «Экосистема — Экосистема, или экологическая система (от др.-греч.
+             οἶκος — жилище, местопребывание и σύστημα — «целое, составленное
+             из частей; соединение») — основная природная единица...»
+        То есть ядро повторяло название дважды и вставляло этимологическую
+        справку посреди ответа. Это не «красивее сделать»: в таком виде определение
+        не читается в окне вообще, а полезная часть тонет на 200-м символе.
+
+        Правила (каждое — по находке, не по вкусу):
+          1. выкинуть этимологическую скобку «(от ...)/(...греч...)/(...лат...)»;
+          2. если определение НАЧИНАЕТСЯ с самого концепта (в любой форме) —
+             отрезать всё до первого « — », иначе ответ = «X — X, ...»;
+             отрезаем только если остаток самодостаточен (>= 15 символов,
+             иначе есть риск оставить «вот так» вместо определения);
+             порог 40 был первой догадкой и ломал короткий ответ
+             «Флюгер — прибор для измерения направления ветра»: остаток 39
+             символов не проходил, и двойное название возвращалось;
+          3. обрезать по границе слова на _DEF_MAX_CHARS с многоточием.
+        """
+        text = " ".join((definition or "").split())
+        if not text:
+            return "."
+        # 1. этимология
+        text = re.sub(r"\(\s*(?:от|из|букв.)[^)]{0,200}\)\s*", " ", text)
+        text = re.sub(r"\(\s*(?:др.-греч|лат|греч|нем|англ|фр)[^)]{0,200}\)", " ", text,
+                      flags=re.I)
+        text = " ".join(text.split())
+
+        # 2. убрать самоповтор в начале — общее правило из core/records.py,
+        # то же самое чистит и ответ пользователя (иначе «X — это X, ...»
+        # возвращалось с другой стороны: от пользователя, а не из Вики).
+        text = strip_self_name(concept, text, min_rest=15)
+
+        # 3. обрезка по границе слова
+        if len(text) > Lipid2Brain._DEF_MAX_CHARS:
+            head = text[:Lipid2Brain._DEF_MAX_CHARS]
+            cut = head.rfind(" ")
+            if cut > 120:
+                head = head[:cut]
+            text = head.rstrip(" ,;:—-") + "…"
+        return text if text.endswith((".", "!", "?", "…")) else text + "."
+
     def _handle_definition(self, concept: str) -> str:
         data = self.find_in_memory(concept)
         if not data:
@@ -503,20 +615,41 @@ class Lipid2Brain:
                 return f"[Lipid-2]: {concept.capitalize()} — это {parent} со свойствами: {delta}."
 
         if base_ent.get("concept") == concept:
-            hierarchy = base_ent.get("hierarchy", [])
+            hierarchy = meaningful_categories(concept, base_ent.get("hierarchy", []))
+            definition = str(base_ent.get("definition", "") or "").strip()
+
+            # Приоритет определения над категорией — ЗАМЕРЕНО, а не «архитектурно»:
+            # в lipid_world.json из 6 сущностей 4 имели в иерархии форму самого
+            # себя ('экосистема' -> 'экосистемы'), потому что категории Вики
+            # включают множество того же понятия. Из-за этого на уже скачанную
+            # статью окно выдавало «Экосистема — это экосистемы»: ответ-обманка,
+            # скрывающий, что у нас в файле лежит готовое определение.
+            if definition:
+                return (f"[Lipid-2]: {concept.capitalize()} — "
+                        + self._definition_phrase(concept, definition))
+
             if hierarchy:
                 if len(hierarchy) == 1:
                     # одиночная категория (например, от пользователя)
                     return f"[Lipid-2]: {concept.capitalize()} — это {hierarchy[0]}."
-                # последний элемент иерархии = самый общий корень
-                return f"[Lipid-2]: {concept.capitalize()} — это {hierarchy[-1]}, категория: {' -> '.join(hierarchy)}."
+                # КАТЕГОРИИ Вики ничем не упорядочены, «самый общий корень»
+                # из них не выбирается: h[-1] оказался ближайшим к истине
+                # только случайно. Берём первую — она ближе всего к предмету.
+                return (f"[Lipid-2]: {concept.capitalize()} — это {hierarchy[0]}"
+                        + (f" (категории: {' -> '.join(hierarchy)})."
+                           if len(hierarchy) > 1 else "."))
 
-            # из интернета: есть 'title' и 'definition'
-            definition = base_ent.get("definition", "")
-            if definition:
-                return f"[Lipid-2]: {concept.capitalize()} — {definition}."
+            props = base_ent.get("properties", []) or []
+            if props:
+                return (f"[Lipid-2]: Определения у '{concept}' нет, но известно "
+                        f"о свойствах: {', '.join(props)}.")
 
-        return f"[Lipid-2]: Недостаточно онтологических данных для определения '{concept}'."
+            # Ни определения, ни категорий, ни свойств. Это НЕ «данных мало»,
+            # это «данных нет»: раньше сюда попадали редко, потому что
+            # тавтологическая иерархия делала пустоту неотличимой от знания.
+            return (f"[Lipid-2]: О '{concept}' в памяти есть только само слово — "
+                    f"знания нет. Спроси ещё раз с включённым Учителем "
+                    f"или подскажи сам.")
 
     def _handle_properties(self, concept: str) -> str:
         data = self.find_in_memory(concept)
@@ -535,6 +668,10 @@ class Lipid2Brain:
                       if p not in props]
 
         props_str = ", ".join(props) if props else "нет данных"
+        if not props:
+            # «Свойства: [нет данных]» на пустой записи читается как ответ.
+            return (f"[Lipid-2]: О '{concept}' свойств не записано — только "
+                    f"факт, что такое слово существует.")
         return f"[Lipid-2]: Свойства сущности '{concept}': [{props_str}]."
 
     def _handle_interaction(self, subjects: list) -> str:

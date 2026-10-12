@@ -54,6 +54,26 @@ def _complain(text: str) -> None:
     sys.stderr.flush()
 
 
+def default_memory_dir(memory_dir: str = None, filename: str = "lipid_world.json"):
+    """
+    Каталог памяти: явный аргумент -> LIPID2_MEMORY_DIR -> <проект>/data/memory.
+
+    Переменная окружения обязана читаться в ОДНОМ месте. Её отсутствие в brain
+    стоило того, что сквозной прогон GUI (с LIPID2_MEMORY_DIR=/tmp/...) писал в
+        РАБОЧУЮ память: «учебные» пчела и цветок осели в настоящем
+        lipid_world.json, потому что мозг переменную не знал, а тест — знал.
+    Возвращает (каталог, путь_к_файлу) — путь считается сразу, чтобы у всех
+    писателей он был буквально один и тот же.
+    """
+    if not memory_dir:
+        memory_dir = os.environ.get("LIPID2_MEMORY_DIR")
+    if not memory_dir:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        memory_dir = os.path.join(root, "data", "memory")
+    os.makedirs(memory_dir, exist_ok=True)
+    return memory_dir, os.path.join(memory_dir, filename)
+
+
 def atomic_write_json(path: str, data: dict) -> None:
     """
     Записать JSON так, чтобы читатель не мог увидеть полупустой файл.

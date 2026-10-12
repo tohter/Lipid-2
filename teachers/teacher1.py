@@ -26,10 +26,20 @@ except Exception as _exc:
 try:
     # Атомарная запись: json.dump в открытый на "w" файл при обрыве процесса
     # оставляет ОБОРВАННЫЙ JSON — следующая загрузка считает мир повреждённым.
-    from core.worldfile import write_world
+    from core.worldfile import write_world, default_memory_dir
 except Exception as _exc:                              # pragma: no cover
     print(f"[teacher] core.worldfile недоступен ({_exc}) — запись НЕатомарная", file=sys.stderr, flush=True)
     write_world = None
+
+    def default_memory_dir(memory_dir=None, filename="lipid_world.json"):
+        """Каталог памяти без core.worldfile — тот же порядок источников."""
+        if not memory_dir:
+            memory_dir = os.environ.get("LIPID2_MEMORY_DIR")
+        if not memory_dir:
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            memory_dir = os.path.join(root, "data", "memory")
+        os.makedirs(memory_dir, exist_ok=True)
+        return memory_dir, os.path.join(memory_dir, filename)
 
 try:
     import shutil
@@ -55,14 +65,9 @@ class AgentTeacherV2:
     def __init__(self, host: str = "http://localhost:8080", memory_dir: str = None):
         self.host = host.rstrip('/')
         self.endpoint = f"{self.host}/v1/chat/completions"
-        if memory_dir is None:
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self.memory_dir = os.path.join(project_root, "data", "memory")
-        else:
-            self.memory_dir = memory_dir
+        self.memory_dir, self.world_filepath = default_memory_dir(memory_dir)
             
-        os.makedirs(self.memory_dir, exist_ok=True)
-        self.world_filepath = os.path.join(self.memory_dir, "lipid_world.json")
+
 
     def _say(self, message: str) -> None:
         """

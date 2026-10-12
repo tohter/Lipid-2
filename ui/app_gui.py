@@ -50,7 +50,8 @@ if ROOT not in sys.path:
 
 from core.logchannel import ask_handler, status, subscribe, unsubscribe
 from core.sdr import encoder_info
-from ui.presenter import (AnswerBridge, JobController, Journal, format_report,
+from ui.presenter import (AnswerBridge, JobController, Journal, KIND_ANSWER,
+                           answer_row, format_report,
                           summarize_report)
 
 BG = "#2d2d2d"
@@ -67,7 +68,8 @@ KIND_COLORS = {
     "ok": "#4ecdc4",
     "warn": "#e5c07b",
     "error": "#ff6b6b",
-    "report": "#9cdcfe",
+    "report": "#9cdcfe",       # отчёты обучения — голубой
+    "answer": "#e5c07b",       # ответ Аманды — отдельный цвет, не «отчёт»
     "ask": "#c586c0",
     "user": "#dcdcaa",
 }
@@ -270,6 +272,9 @@ class Lipid2GUI:
 
     def _attach_brain(self, brain):
         self.brain = brain
+        # Состояние галочек на момент подключения мозга: окно могло быть
+        # настроено раньше, чем ядро поднялось.
+        self._push_channel_flags()
         brain.ask_user_callback = self._ask_user_via_bridge
         ask_handler(self.bridge.handler)          # канал 3 получает путь наружу
         status("ядро готово — можно учить и спрашивать")
@@ -449,6 +454,27 @@ class Lipid2GUI:
     def _sync_flags(self, attr, var):
         """Галочка нажата в UI-потоке — перекладываем значение в обычный bool."""
         setattr(self, attr, bool(var.get()))
+        self._push_channel_flags()
+
+    def _push_channel_flags(self):
+        """
+        Переключатели окна обязаны доходить до МОЗГА, а не только до обучения.
+
+        ЗАМЕРЕНО: флаг «спрашивать Учителя» читался только в do_learn, поэтому
+        ответ на незнакомое слово всё равно уходил в Gemma и висел ~70 с
+        (потом «ответ без вызова инструмента»). Снятая галочка должна значить
+        «канал не трогает НИЧЕГО» — иначе она не переключатель, а украшение.
+        """
+        brain = self.brain
+        if brain is None:
+            return
+        try:
+            brain.use_llm_teacher = bool(self.teacher_enabled)
+            brain.use_wiki_teacher = bool(self.teacher_enabled)
+            brain.ask_user_enabled = bool(self.ask_enabled)
+        except Exception as exc:
+            self.journal.add(f"⚠ переключатели каналов не дошли до мозга: "
+                             f"{type(exc).__name__}: {exc}", "warn")
 
     def _build_bottom(self):
         self.ask_bar = tk.Frame(self.root, bg="#3a2b12")
@@ -581,8 +607,10 @@ class Lipid2GUI:
 
         def work():
             answer = self.brain.process_input(text)
-            self._ui_q.put(("chat", ("Lipid-2", answer, "report")))
-            self.journal.add(f"ответ: {answer[:300]}", "report")
+            # ОТВЕТ — не отчёт. chat-виджет рисует реплику, журнал — строку
+            # ответа своим цветом; отчёт обучения выглядит иначе (см. presenter).
+            self._ui_q.put(("chat", ("Lipid-2", answer, KIND_ANSWER)))
+            self.journal.add(*answer_row(answer))
 
         self.jobs.start(work, label=f"вопрос: {text[:60]}")
 

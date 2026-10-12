@@ -68,6 +68,22 @@ REL_ALIAS = {"IS_ROLE": "IS_A"}
 ROLE_TO_NODETYPE = {"subject": NodeType.ENTITY, "property": NodeType.PROPERTY,
                     "action": NodeType.ACTION}
 
+# Два разных состояния «не знаю» (см. цикл обучения ниже): молча смешивать их
+# нельзя — «спросили и не нашли» трогать больше не надо, «не спрашивали» надо
+# спросить при первой возможности.
+ASKED_EMPTY = "asked_empty"
+NOT_ASKED = "not_asked"
+
+
+def _mark_unknown(rep: "LearningReport", lemma: str) -> None:
+    """Одно место для счёта «осталось неизвестным»: поле unknown означает
+    именно ИТОГ урока, а не «слово было незнакомым». Раньше в него попадали и
+    выученные слова, поэтому отчёт говорил «неизвестных 1» про слово, которое
+    только что выучил, и «распознано 0%» — про успешно пройденный урок."""
+    rep.unknown_words += 1
+    if lemma not in rep.unknown:
+        rep.unknown.append(lemma)
+
 
 @dataclass
 class LearningReport:
@@ -90,15 +106,27 @@ class LearningReport:
     new_concepts: List[str] = field(default_factory=list)
     learned_concepts: List[str] = field(default_factory=list)
     unknown: List[str] = field(default_factory=list)
+    # Сколько слов ПРИШЛО незнакомыми (в т.ч. те, что удалось выучить). Нужно
+    # вместе с unknown_words, иначе «распознано 0 из 1» рядом с «неизвестных 0»
+    # выглядит как вранье отчёта, а не как «не знал — выучил».
+    seen_unknown_words: int = 0
+    # Слова, оставленные неизвестными БЕЗ вопроса Учителю: канал был выключен
+    # или исчерпан лимит. Это НЕ «мы не нашли» — это «мы не искали», и их надо
+    # выучить позже. Терять это различие = терять слова навсегда.
+    not_asked: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
     quality: Dict[str, bool] = field(default_factory=dict)
+
+    @property
+    def not_asked_words(self) -> int:
+        return len(self.not_asked)
 
     def as_text(self) -> str:
         acc = (self.known_words / self.content_words) if self.content_words else 0.0
         lines = [
             "📚 Обучение из текста",
             f"  предложений: {self.sentences}   значимых слов: {self.content_words}"
-            f"   распознано: {self.known_words} ({acc:.0%})   незнакомых: {self.unknown_words}",
+            f"   распознано: {self.known_words} ({acc:.0%})   незнакомых: {self.seen_unknown_words}   выучено сейчас: {self.teacher_success}",
             f"  фактов извлечено: {self.facts}   новых наблюдений: {self.observations_new}"
             f"   подтверждено существующих: {self.observations_seen}",
             f"  сущностей создано: {self.entities_created}   дополнено: {self.entities_updated}",
@@ -117,6 +145,8 @@ class LearningReport:
                          + ", ".join(self.new_concepts[:12]))
         if self.unknown:
             lines.append("  осталось неизвестным: " + ", ".join(self.unknown[:12]))
+        lines.append(f"  из них НЕ спрашивали: {self.not_asked_words}"
+                     + (f" — {', '.join(self.not_asked[:8])}" if self.not_asked else ""))
         for n in self.notes[:6]:
             lines.append("  ! " + n)
         return "\n".join(lines)
@@ -202,25 +232,33 @@ class Learner:
                 continue
             _status(f"изучаю слово «{lemma}»")
             unknowns_seen = unknowns.get(lemma)
-            if unknowns_seen:
+            if unknowns_seen and unknowns_seen.get("status") == ASKED_EMPTY:
+                # Спрашивали и ничего не нашли — повторно НЕ гоним Учителя:
+                # ответ LLM стоит секунды-минуты, и без этого правила каждое
+                # упоминание слова платит за поиск заново.
                 unknowns_seen["count"] = int(unknowns_seen.get("count", 1)) + 1
-                rep.unknown_words += 1
-                rep.unknown.append(lemma)
+                unknowns_seen["last_seen"] = int(time.time())
+                _mark_unknown(rep, lemma)
                 info["canon"] = None
                 continue
-            rep.unknown_words += 1
-            rep.unknown.append(lemma)
             entity = None
-            if allow_teacher and self.teacher is not None \
-                    and rep.teacher_calls < self.max_teacher_calls:
-                rep.teacher_calls += 1
-                _status(f"ищу значение «{lemma}» у Учителя "
-                        f"({rep.teacher_calls}/{self.max_teacher_calls})")
-                try:
-                    entity = self.teacher(lemma)
-                except Exception as exc:
-                    rep.notes.append(f"учитель по «{lemma}» упал: {type(exc).__name__}")
-                    entity = None
+            asked = False
+            if allow_teacher and self.teacher is not None:
+                if rep.teacher_calls < self.max_teacher_calls:
+                    asked = True
+                    rep.teacher_calls += 1
+                    _status(f"ищу значение «{lemma}» у Учителя "
+                            f"({rep.teacher_calls}/{self.max_teacher_calls})")
+                    try:
+                        entity = self.teacher(lemma)
+                    except Exception as exc:
+                        rep.notes.append(f"учитель по «{lemma}» упал: {type(exc).__name__}")
+                        entity = None
+                else:
+                    rep.notes.append(
+                        f"«{lemma}»: лимит обращений к Учителя "
+                        f"({self.max_teacher_calls}) исчерпан — слово оставлено "
+                        f"КАК НЕСПРОШЕННОЕ, его ещё предстоит выучить")
             if entity and (entity.get("hierarchy") or entity.get("properties")):
                 rep.teacher_success += 1
                 _status(f"«{lemma}» получено: {(entity.get('hierarchy') or ['?'])[0]}, "
@@ -229,13 +267,41 @@ class Learner:
                                    info["evidence"], rep)
                 info["canon"] = lemma
                 rep.learned_concepts.append(lemma)
+                rep.seen_unknown_words += 1
+                # Выучили — значит слово больше НЕ неизвестное. Оставлять его
+                # в unknown_words нельзя: файл начинает утверждать про одно и то
+                # же слово «не знаю» и «вот что оно такое», а GUI показывает обе
+                # счётчика рядом («сущностей N · неизвестных M») и выглядит
+                # сломанным. ЗАМЕРЕНО: после «Пчела опыляет цветок на лугу»
+                # пчела и цветок остались в обоих списках.
+                if lemma in unknowns:
+                    del unknowns[lemma]
             else:
-                # Сущность НЕ создаём (правило 2), но слово помним: иначе тот
-                # же вопрос гонит LLM при каждом упоминании.
-                _status(f"«{lemma}» осталось неизвестным — записано в unknown_words")
-                unknowns[lemma] = {"first_seen": int(time.time()), "count": 1,
-                                   "evidence": info["evidence"][:200],
-                                   "source": source}
+                # Сущность НЕ создаём (правило 2), но слово помним.
+                # СТАТУС пишется, потому что два случая выглядят одинаково, а
+                # обращаться с ними надо по-разному:
+                #   ASKED_EMPTY — спрашивали, ответа нет: больше не спрашиваем;
+                #   NOT_ASKED   — не спрашивали (канал выключен или лимит):
+                #                 слово ОБЯЗАНО быть спрошено позже.
+                # Без этого различия «снял галочку на одном уроке» означало
+                # «слово запрещено учить всегда»: первая тренировка с выключенным
+                # каналом ставила всем встреченным словам пожизненный диагноз.
+                # ЗАМЕРЕНО на GUI-прогоне: «опылять/пчела/цветок» остались
+                # неизвестными навсегда, хотя Учитель был просто выключен.
+                _mark_unknown(rep, lemma)
+                _status(f"«{lemma}» осталось неизвестным "
+                        + ("(спросили — пусто)" if asked else "(НЕ спрашивали)"))
+                entry = dict(unknowns.get(lemma) or {"first_seen": int(time.time())})
+                entry.update({
+                    "count": int(entry.get("count", 0)) + 1,
+                    "last_seen": int(time.time()),
+                    "evidence": info["evidence"][:200],
+                    "source": source,
+                    "status": ASKED_EMPTY if asked else NOT_ASKED,
+                })
+                unknowns[lemma] = entry
+                if not asked:
+                    rep.not_asked.append(lemma)
                 info["canon"] = None
 
         # 2) связи
@@ -245,7 +311,10 @@ class Learner:
                 self._apply_fact(fact, sf, resolve, entities, observations,
                                  source, rep)
 
-        self._commit(world)
+        # resolved=выученные: удаление из unknown_words — ТОЖЕ изменение,
+        # которое обязано пережить слияние, иначе «чужой писатель» resurrect-ит
+        # старую запись и файл снова враньё про одно и то же слово.
+        self._commit(world, resolved=rep.learned_concepts)
         rep.facts = sum(len(sf.facts) for sf in sentences)
         _status(f"записано: фактов {rep.observations_new}, подтверждено "
                 f"{rep.observations_seen}, пропущено {rep.skipped}")
@@ -294,7 +363,7 @@ class Learner:
             n += 1
         return n
 
-    def _commit(self, world: dict) -> None:
+    def _commit(self, world: dict, resolved=()) -> None:
         """
         СОХРАНЕНИЕ = ПЕРЕЧИТАТЬ И СЛИТЬ, а не «перезаписать свой снимок».
 
@@ -332,6 +401,12 @@ class Learner:
                 fu[key] = u
             else:
                 cur["count"] = max(int(cur.get("count", 1)), int(u.get("count", 1)))
+        # Удаление — это тоже правка. Без этого шага снятие статуса «не знаю»
+        # пропадало: слияние видело старую запись чужого снимка и возвращало
+        # её, так что выученное слово снова числилось неизвестным.
+        for key in resolved:
+            if key in fu and key not in (world.get("unknown_words") or {}):
+                del fu[key]
         self.save_world(fresh)
 
     # ── ВНУТРЕННЕЕ ─────────────────────────────────────────
