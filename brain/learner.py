@@ -108,6 +108,13 @@ class LearningReport:
         ]
         if self.learned_concepts:
             lines.append("  выучено: " + ", ".join(self.learned_concepts[:12]))
+        if self.new_concepts:
+            # Не дубль learned_concepts: learned_concepts — слова, которых не было
+            # в лексиконе; new_concepts — сущности, созданные ИМЕННО из этого
+            # источника. Разница видна на переучивании: слово уже знакомо, а
+            # сущность появилась новая (или наоборот).
+            lines.append("  сущностей из этого источника: "
+                         + ", ".join(self.new_concepts[:12]))
         if self.unknown:
             lines.append("  осталось неизвестным: " + ", ".join(self.unknown[:12]))
         for n in self.notes[:6]:

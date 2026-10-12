@@ -16,6 +16,7 @@ from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
 from core.storage import NodeType, RelationType
+from core.worldfile import read_world, write_world
 
 
 class Lipid2Brain:
@@ -217,18 +218,23 @@ class Lipid2Brain:
     # ── РАБОТА С ВСЕЛЕННОЙ ─────────────────────────────────
 
     def _load_world(self) -> Dict[str, Any]:
-        """Загружает текущую оперативную память Вселенной с диска."""
-        if os.path.exists(self.world_filepath):
-            try:
-                with open(self.world_filepath, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {"entities": {}, "relations": []}
+        """
+        Загружает текущую оперативную память Вселенной с диска.
+
+        Чтение вынесено в core.worldfile: раньше «битый JSON» и «файла нет»
+        давали одинаковый результат — пустой мир. При последующем merge
+        («перечитать и слить») это СТИРАЕТ Вселенную, а не дополняет её.
+        Теперь битый файл сохраняется рядом и событие громко пишется в stderr.
+        """
+        return read_world(self.world_filepath)
 
     def _save_world(self, world: dict):
-        with open(self.world_filepath, "w", encoding="utf-8") as f:
-            json.dump(world, f, ensure_ascii=False, indent=2)
+        """
+        Атомарная запись. Открытие на "w" уссекает файл сразу: закрытие окна
+        во время обучения оставляло на диске оборванный JSON, то есть потерю
+        всей памяти из-за одного нажатия.
+        """
+        write_world(self.world_filepath, world)
 
     def find_in_memory(self, concept: str) -> Optional[Dict[str, Any]]:
         """

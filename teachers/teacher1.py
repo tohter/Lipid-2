@@ -24,6 +24,19 @@ except Exception as _exc:
         return new if isinstance(new, dict) else (prev or {})
 
 try:
+    # Атомарная запись: json.dump в открытый на "w" файл при обрыве процесса
+    # оставляет ОБОРВАННЫЙ JSON — следующая загрузка считает мир повреждённым.
+    from core.worldfile import write_world
+except Exception as _exc:                              # pragma: no cover
+    print(f"[teacher] core.worldfile недоступен ({_exc}) — запись НЕатомарная", file=sys.stderr, flush=True)
+    write_world = None
+
+try:
+    import shutil
+except Exception:                                      # pragma: no cover
+    shutil = None
+
+try:
     # Канал статуса — чистый stdlib, поэтому учителю он разрешён (в отличие от
     # torch/numpy): учитель может жить в отдельном процессе и в другой venv.
     from core.logchannel import status as _status
@@ -143,6 +156,20 @@ class AgentTeacherV2:
                 print(f"[teacher]: lipid_world.json НЕ читаем ({e}) — "
                       "мир считается ПОВРЕЖДЁННЫМ, запись блокируется",
                       file=sys.stderr, flush=True)
+                if shutil is not None:
+                    # копия битых байтов: «разобраться потом» возможно, только
+                    # пока их не перезаписали
+                    try:
+                        target = self.world_filepath + ".broken"
+                        n = 1
+                        while os.path.exists(target):
+                            target = f"{self.world_filepath}.broken{n}"
+                            n += 1
+                        shutil.copyfile(self.world_filepath, target)
+                        print(f"[teacher]: битая копия сохранена: {target}",
+                              file=sys.stderr, flush=True)
+                    except OSError:
+                        pass
                 raise
         return {"entities": {}, "relations": []}
 
@@ -210,8 +237,11 @@ class AgentTeacherV2:
             if isinstance(ent, dict) and ent.get("parent_concept", "").lower().strip() == concept:
                 del ent["parent_concept"]
 
-            with open(self.world_filepath, "w", encoding="utf-8") as f:
-                json.dump(world, f, ensure_ascii=False, indent=2)
+            if write_world is not None:
+                write_world(self.world_filepath, world)
+            else:
+                with open(self.world_filepath, "w", encoding="utf-8") as f:
+                    json.dump(world, f, ensure_ascii=False, indent=2)
 
             written = [c for c in (base.get("concept", "") if "base_entity" in data else "",
                                    (data.get("derived_entity") or {}).get("concept", "")) if c]

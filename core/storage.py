@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 from core.sdr import SDR1024
 from core.encoder import get_encoder
 from core.records import merge_entity   # noqa: F401 — правило слияния ОДНО на все каналы
+from core.worldfile import atomic_write_json
 
 # ==============================================================================
 # ENUM-КОДЫ ДЛЯ МАКСИМАЛЬНОЙ ЭКОНОМИИ ПАМЯТИ
@@ -121,8 +122,8 @@ class StorageManager:
             export_data["nodes"].append(node_data)
 
         try:
-            with open(self.json_path, "w", encoding="utf-8") as f:
-                json.dump(export_data, f, ensure_ascii=False, indent=2)
+            # атомарно: оборванный экспорт хуже, чем «не экспортировано»
+            atomic_write_json(self.json_path, export_data)
             print(f"[Storage]: Граф успешно сохранен в JSON: '{self.json_path}' ({len(nodes)} узлов)")
             return True
         except Exception as e:

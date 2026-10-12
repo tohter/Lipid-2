@@ -19,3 +19,7 @@ data/memory/lipid_world.json
 # Артефакты экспериментов (53 МБ эмбеддингов), воспроизводятся скриптами
 experiments/*.npy
 experiments/*.pkl
+# копия нечитаемого файла Вселенной (core/worldfile): приватные данные,
+# в VCS не нужен, но на диске обязан пережить перезапись
+*.broken
+*.broken*.json

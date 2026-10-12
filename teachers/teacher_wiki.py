@@ -36,6 +36,19 @@ except Exception as _exc:                              # pragma: no cover
     def _status(message, **_kw):
         print(f"[l2] {message}", flush=True)
 
+try:
+    from core.records import merge_entity
+    from core.worldfile import read_world, write_world
+except Exception as _exc:                              # pragma: no cover
+    # Писать во Вселенную без правила слияния опаснее, чем не писать: каждый
+    # такой «merge» — это молчаливое стирание известного. Отказ явный.
+    import sys as _sys
+    print(f"[wiki] ⛔ core.records / core.worldfile недоступны ({_exc}) — "
+          "запись во Вселенную ОТКЛЮЧЕНА, знания не сохраняются",
+          file=_sys.stderr, flush=True)
+    merge_entity = None
+    read_world = write_world = None
+
 
 class WikiTeacher:
     """Внешний интернет-учитель через REST API русской Википедии."""
@@ -318,15 +331,35 @@ class WikiTeacher:
             "hierarchy": base.get("hierarchy", []),
             "properties": base.get("properties", []),
             "actions": base.get("actions", []),
+            "provenance": [f"wiki:{base.get('title', concept)}"],
         }
-        world["entities"][concept] = clean_base
+        # merge_entity, а не присваивание. core/records.py объявлен ЕДИНСТВЕННЫМ
+        # местом, где решается, что имеет право перезаписать известное; здесь же
+        # было `world[concept] = clean_base`, то есть вопрос про уже известное
+        # слово стирал наблюдения, provenance и ранее выученные свойства. Запись
+        # Википедии беднее по составу, чем ответ локальной модели, — значит откат
+        # был почти гарантирован: «спросили ещё раз» = «забыли больше».
+        if merge_entity is not None:
+            world["entities"][concept] = merge_entity(
+                world["entities"].get(concept), clean_base)
+        else:
+            world["entities"][concept] = clean_base
 
         derived = concept_data.get("derived_entity", {})
         if derived and derived.get("concept"):
-            world["entities"][derived["concept"].lower().strip()] = derived
+            dkey = derived["concept"].lower().strip()
+            if dkey != concept:
+                # base и derived про одно слово — merge_entity уже сложил всё,
+                # вырожденный derived поверх богатой записи писать нельзя
+                world["entities"][dkey] = (
+                    merge_entity(world["entities"].get(dkey), derived)
+                    if merge_entity is not None else derived)
 
-        with open(self.world_filepath, "w", encoding="utf-8") as f:
-            json.dump(world, f, ensure_ascii=False, indent=2)
+        if write_world is not None:
+            write_world(self.world_filepath, world)
+        else:
+            with open(self.world_filepath, "w", encoding="utf-8") as f:
+                json.dump(world, f, ensure_ascii=False, indent=2)
 
         self._say(f"Википедия: статья «{base.get('concept', concept)}» прочитана, "
                   f"свойств: {len(clean_base['properties'])}, действий: {len(clean_base['actions'])}")
@@ -334,6 +367,8 @@ class WikiTeacher:
         return True
 
     def _load_world(self) -> dict:
+        if read_world is not None:
+            return read_world(self.world_filepath)
         if os.path.exists(self.world_filepath):
             try:
                 with open(self.world_filepath, "r", encoding="utf-8") as f:

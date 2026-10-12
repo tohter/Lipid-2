@@ -307,6 +307,9 @@ class EmbeddingEncoder(BaseEncoder):
         store = self._ensure_bits()
         return {"words": len(store) if store else 0,
                 "hits": self.bits_hits, "misses": self.bits_misses,
+                # ОТКУДА реально взялись би́ты: «20 000 слов» неотличимо от
+                # «20 000 слов из чужого файла», если не показать источник.
+                "loaded_from": getattr(store, "loaded_from", None),
                 "path": self._bits_file() if store else None,
                 "reason": self.bits_reason,
                 "dense_cache_words": len(self._emb_cache)}
