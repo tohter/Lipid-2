@@ -9,6 +9,11 @@ __pycache__/
 lipid_db.json
 data/memory/*.bak
 data/memory/sdr_calibration.pkl
+data/memory/sdr_calibration_*.pkl
+# побитовый кэш SDR (core/bitsstore.py): производный артефакт, зависит от
+# версии кодировщика, регенерируется; в VCS бессмыслен и опасен чужими битами
+data/memory/sdr_words.bin
+data/memory/*.tmp
 data/memory/lipid_world.json
 
 # Артефакты экспериментов (53 МБ эмбеддингов), воспроизводятся скриптами

@@ -39,6 +39,8 @@ except ImportError:                                   # pragma: no cover
     np = None
     HAS_NUMPY = False
 
+from core.bitsstore import BITS_BYTES, BitsStore, pack_bits, unpack_bits
+
 TOTAL_BITS = 1024
 NUM_U64 = TOTAL_BITS // 64
 TARGET_ON_BITS = 20
@@ -94,6 +96,27 @@ class BaseEncoder:
                 if blk >> k & 1:
                     mask[w * 64 + k] = 1
         return mask
+
+
+# 128-байтовая запись -> маска numpy. Без двойного цикла по 1024 позициям:
+# активных бит ровно 20, их и перебираем (на 30 000 слов разница — минуты).
+def _blob_to_mask_np(blob: bytes):
+    mask = np.zeros(TOTAL_BITS, dtype=np.uint8)
+    for w, blk in enumerate(struct.unpack("<16Q", blob)):
+        while blk:
+            low = blk & -blk
+            mask[w * 64 + (low.bit_length() - 1)] = 1
+            blk ^= low
+    return mask
+
+
+def _mask_to_blob_np(mask) -> bytes:
+    idx = np.flatnonzero(mask)
+    words = [0] * NUM_U64
+    for b in idx:
+        b = int(b)
+        words[b // 64] |= (1 << (b % 64))
+    return struct.pack("<16Q", *words)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -169,7 +192,7 @@ class EmbeddingEncoder(BaseEncoder):
 
     def __init__(self, model_name: str = None, n_hyper: int = None, seed: int = None,
                  on_bits: int = TARGET_ON_BITS, calibration_texts: Sequence[str] = None,
-                 cache_path: str = None, lazy: bool = True):
+                 cache_path: str = None, bits_path: str = None, lazy: bool = True):
         if not HAS_NUMPY:
             raise EncodeError("EmbeddingEncoder требует numpy (pip install numpy)")
         self.model_name = model_name or _env("LIPID2_SDR_MODEL", DEFAULT_MODEL)
@@ -177,13 +200,23 @@ class EmbeddingEncoder(BaseEncoder):
         self.seed = int(seed or _env("LIPID2_SDR_SEED", DEFAULT_SEED))
         self.on_bits = int(on_bits)
         self.cache_path = cache_path
+        self.bits_path = bits_path
         self._model = None
         self._R = None
         self._mean = None
         self._calib_texts = list(calibration_texts) if calibration_texts else None
         self._lock = threading.RLock()
-        self._emb_cache = {}          # text -> np.ndarray (dense), LRU-подобный
+        self._emb_cache = {}          # text -> np.ndarray (dense), ЛИНЕЙНЫЙ кэш
         self._cache_dirty = False
+        # Битовый кэш (core/bitsstore): переносимый слой, нужный и онлайн-ядру.
+        self._bits: BitsStore | None = None
+        self._bits_ready = False
+        self.bits_hits = 0
+        self.bits_misses = 0
+        self.bits_reason: str | None = None
+        # Плотный кэш в памяти ДЕРЖИТСЯ, но на диск больше не пишется:
+        # 30 000 × 384 float32 = 44 МБ pickle против 3.7 МБ битов. Смысл
+        # калибровки — среднее направление (384 float), а не память о векторах.
         if not lazy:
             self._warm()
 
@@ -223,6 +256,61 @@ class EmbeddingEncoder(BaseEncoder):
         return os.path.join(root, "data", "memory",
                             f"sdr_calibration_{self.config_hash()}.pkl")
 
+    def _bits_file(self):
+        if self.bits_path:
+            return self.bits_path
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(root, "data", "memory", "sdr_words.bin")
+
+    def _ensure_bits(self):
+        """
+        Ленивая подготовка битового кэша. Не УМЕЕТ ронять кодирование: отсутствие
+        кэша стоит секунд, падение — всего ответа.
+        """
+        if self._bits_ready:
+            return self._bits
+        self._bits_ready = True
+        try:
+            store = BitsStore(cfg_hash=self.config_hash(), on_bits=self.on_bits,
+                              total_bits=TOTAL_BITS, path=self._bits_file())
+            n = store.load()
+            self.bits_reason = store.reason
+            # ГРОМКО — только про АНОМАЛИЮ (чужой cfg, обрезанный файл, ошибка
+            # чтения). «Файла ещё нет» — ШТАТНОЕ состояние первого запуска:
+            # всё считается правильно, просто без ускорения. Орать об этом на
+            # каждом старте значит приучить пользователя не замечать warnings,
+            # а настоящий (чужой кодировщик) придёт в том же потоке.
+            if store.reason and "файла ещё нет" not in store.reason:
+                import sys as _sys
+                _sys.stderr.write(f"[SDR] битовый кэш ОТВЕРГНУТ: {store.reason}\n")
+            self._bits = store
+            return store
+        except Exception as exc:
+            self._bits = None
+            self.bits_reason = f"{type(exc).__name__}: {exc}"
+            return None
+
+    def warm_from(self, other: "EmbeddingEncoder") -> None:
+        """
+        Перенять модель, гиперплоскости и среднее с ДРУГОГО кодировщика.
+        Нужно тестам: загрузка SentenceTransformer ~9 с, калибровка ~12 с, а
+        проверять кэш надо много раз. Приватный API тестов, НЕ рабочий путь.
+        """
+        with self._lock:
+            other._warm()
+            self._model = other._model
+            self._R = other._R
+            self._mean = other._mean
+
+    def bits_stats(self) -> dict:
+        """Состояние битового кэша — для отчётов и GUI (не для глаз в логе)."""
+        store = self._ensure_bits()
+        return {"words": len(store) if store else 0,
+                "hits": self.bits_hits, "misses": self.bits_misses,
+                "path": self._bits_file() if store else None,
+                "reason": self.bits_reason,
+                "dense_cache_words": len(self._emb_cache)}
+
     def _load_calibration(self):
         path = self._calibration_file()
         if os.path.exists(path):
@@ -231,7 +319,9 @@ class EmbeddingEncoder(BaseEncoder):
                     blob = pickle.load(fh)
                 if blob.get("config_hash") == self.config_hash():
                     self._mean = np.asarray(blob["mean"], dtype=np.float32)
-                    self._emb_cache = dict(blob.get("emb", {}))
+                    # «emb» больше НЕ читаем и НЕ пишем: см. __init__ и
+                    # core/bitsstore.py. Старый файл с 44 МБ векторов после
+                    # первого же flush перезапишется маленьким.
                     return
             except Exception:
                 pass                                    # битый кэш -> пересчитаем
@@ -291,8 +381,7 @@ class EmbeddingEncoder(BaseEncoder):
         try:
             with open(path, "wb") as fh:
                 pickle.dump({"config_hash": self.config_hash(),
-                             "mean": self._mean,
-                             "emb": self._emb_cache}, fh, protocol=4)
+                             "mean": self._mean}, fh, protocol=4)
             self._cache_dirty = False
         except OSError:
             pass
@@ -300,6 +389,9 @@ class EmbeddingEncoder(BaseEncoder):
     def flush(self):
         if self._cache_dirty:
             self._save_calibration()
+        store = self._ensure_bits()
+        if store is not None:
+            store.flush()
 
     # ── ядро ────────────────────────────────────────────────
     def _raw_encode(self, texts: Sequence[str]) -> "np.ndarray":
@@ -349,14 +441,48 @@ class EmbeddingEncoder(BaseEncoder):
         if not live:
             return out
         self._warm()
-        sub = [texts[i] for i in live]
-        E = self.centered(sub)
+
+        # ── сначала битовый кэш ────────────────────────────────
+        # Модель (15 мс/слово) — единственная дорогая операция. Удар в кэш
+        # стоит микросекунды и НЕ трогает torch. Это же и путь онлайн-ядра:
+        # там модели вообще нет, есть только эта таблица.
+        store = self._ensure_bits()
+        positions: dict = {}
+        for i in live:
+            positions.setdefault(texts[i], []).append(i)
+        need: List[str] = []
+        for word in positions:
+            blob = store.get(word) if store is not None else None
+            if blob is not None and len(blob) == BITS_BYTES:
+                for i in positions[word]:
+                    out[i] = _blob_to_mask_np(blob)
+                    self.bits_hits += 1
+            else:
+                self.bits_misses += 1
+                need.append(word)
+        if not need:
+            return out
+
+        # Ключ кэша обязан считаться ПОСЛЕ нормализации (texts уже lower/strip):
+        # иначе он разваливается на «Кошка»/«кошка» и копит мусор.
+        E = self.centered(need)
         proj = E @ self._R.T
         k = min(self.on_bits, proj.shape[1])
         idx = np.argpartition(-proj, k - 1, axis=1)[:, :k]
         # Индекс гиперплоскости == номер бита (n_hyper <= TOTAL_BITS), коллизий нет:
         # ровно k различных активных бит.
-        out[np.arange(len(live))[:, None], idx] = 1
+        # need — УНИКАЛЬНЫЕ слова, а строк вывода может быть больше (повторы);
+        # соответствие строк idx и строк out держится на occ/rep, а не на порядке.
+        occ = [i for r, w in enumerate(need) for i in positions[w]]
+        rep = [r for r, w in enumerate(need) for _ in positions[w]]
+        out[np.asarray(occ)[:, None], idx[np.asarray(rep)]] = 1
+        if store is not None:
+            try:
+                for r, word in enumerate(need):
+                    store.put(word, pack_bits(sorted(int(b) for b in idx[r])))
+            except Exception:
+                # Битый кэш не имеет права стоить ответа: би́ты уже в `out`.
+                pass
         return out
 
 
@@ -414,7 +540,11 @@ def get_encoder(force: BaseEncoder = None) -> BaseEncoder:
                 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 _ENCODER = EmbeddingEncoder(
                     cache_path=os.path.join(root, "data", "memory", "sdr_calibration.pkl"),
+                    bits_path=os.path.join(root, "data", "memory", "sdr_words.bin"),
                     lazy=False)
+                # Калибровка уже дала flush; битовый кэш тоже обязан попасть
+                # на диск, иначе следующий процесс заплатит моделью за всё.
+                _ENCODER.flush()
                 return _ENCODER
             except EncodeError as exc:
                 reason = str(exc)

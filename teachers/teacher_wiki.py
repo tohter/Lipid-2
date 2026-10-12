@@ -26,6 +26,16 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
+try:
+    from core.logchannel import status as _status
+except Exception as _exc:                              # pragma: no cover
+    import sys as _sys
+    print(f"[wiki] core.logchannel недоступен ({_exc}) — статус только в stdout",
+          file=_sys.stderr, flush=True)
+
+    def _status(message, **_kw):
+        print(f"[l2] {message}", flush=True)
+
 
 class WikiTeacher:
     """Внешний интернет-учитель через REST API русской Википедии."""
@@ -81,6 +91,9 @@ class WikiTeacher:
         os.makedirs(self.memory_dir, exist_ok=True)
         self.world_filepath = os.path.join(self.memory_dir, "lipid_world.json")
 
+    def _say(self, message: str) -> None:
+        _status(message)
+
     # ── ПУБЛИЧНЫЙ ИНТЕРФЕЙС ─────────────────────────────────
 
     def fetch_concept(self, concept: str) -> dict:
@@ -93,8 +106,10 @@ class WikiTeacher:
         if not concept_clean:
             return {}
 
+        self._say(f"ищу в Википедии: «{concept_clean}»")
         page = self._fetch_page(concept_clean)
         if not page:
+            self._say(f"в Википедии ничего не найдено по «{concept_clean}»")
             return {}
 
         title, extract, categories = page
@@ -313,7 +328,9 @@ class WikiTeacher:
         with open(self.world_filepath, "w", encoding="utf-8") as f:
             json.dump(world, f, ensure_ascii=False, indent=2)
 
-        print(f"[WikiTeacher]: Интернет-знание записано в Вселенную: '{concept}'")
+        self._say(f"Википедия: статья «{base.get('concept', concept)}» прочитана, "
+                  f"свойств: {len(clean_base['properties'])}, действий: {len(clean_base['actions'])}")
+        self._say(f"Википедия: запись во Вселенную: «{concept}»")
         return True
 
     def _load_world(self) -> dict:

@@ -50,6 +50,7 @@ if __package__ in (None, ""):        # прямой запуск: python brain/l
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 
 from core.extract import Fact, SimpleExtractor
+from core.logchannel import status as _status
 from core.morph import Morph
 from core.records import merge_entity
 from core.storage import NodeType, RelationType
@@ -158,6 +159,7 @@ class Learner:
         if not Morph.available:
             rep.notes.append("pymorphy3 недоступен: разбор на эвристике, "
                              "часть фактов будет потеряна")
+            _status("⚠️ морфология деградировала на эвристику (нет pymorphy3)")
 
         world = self.load_world()
         entities = world.setdefault("entities", {})
@@ -174,6 +176,8 @@ class Learner:
 
         sentences = self.extractor.extract_text(text)
         rep.sentences = len(sentences)
+        _status(f"разобрал текст: {rep.sentences} предложений, "
+                f"{sum(len(sf.facts) for sf in sentences)} возможных фактов")
 
         # 1) словарь: кого мы знаем, кого нет
         vocab: Dict[str, dict] = {}
@@ -189,6 +193,7 @@ class Learner:
                 rep.known_words += 1
                 info["canon"] = canon
                 continue
+            _status(f"изучаю слово «{lemma}»")
             unknowns_seen = unknowns.get(lemma)
             if unknowns_seen:
                 unknowns_seen["count"] = int(unknowns_seen.get("count", 1)) + 1
@@ -202,6 +207,8 @@ class Learner:
             if allow_teacher and self.teacher is not None \
                     and rep.teacher_calls < self.max_teacher_calls:
                 rep.teacher_calls += 1
+                _status(f"ищу значение «{lemma}» у Учителя "
+                        f"({rep.teacher_calls}/{self.max_teacher_calls})")
                 try:
                     entity = self.teacher(lemma)
                 except Exception as exc:
@@ -209,6 +216,8 @@ class Learner:
                     entity = None
             if entity and (entity.get("hierarchy") or entity.get("properties")):
                 rep.teacher_success += 1
+                _status(f"«{lemma}» получено: {(entity.get('hierarchy') or ['?'])[0]}, "
+                        f"свойств {len(entity.get('properties') or [])}")
                 self._store_entity(entities, lemma, entity, source,
                                    info["evidence"], rep)
                 info["canon"] = lemma
@@ -216,6 +225,7 @@ class Learner:
             else:
                 # Сущность НЕ создаём (правило 2), но слово помним: иначе тот
                 # же вопрос гонит LLM при каждом упоминании.
+                _status(f"«{lemma}» осталось неизвестным — записано в unknown_words")
                 unknowns[lemma] = {"first_seen": int(time.time()), "count": 1,
                                    "evidence": info["evidence"][:200],
                                    "source": source}
@@ -223,12 +233,15 @@ class Learner:
 
         # 2) связи
         for sf in sentences:
+            _status(f"раскладываю предложение: «{sf.sentence[:80]}»")
             for fact in sf.facts:
                 self._apply_fact(fact, sf, resolve, entities, observations,
                                  source, rep)
 
         self._commit(world)
         rep.facts = sum(len(sf.facts) for sf in sentences)
+        _status(f"записано: фактов {rep.observations_new}, подтверждено "
+                f"{rep.observations_seen}, пропущено {rep.skipped}")
         rep.low_confidence = sum(1 for sf in sentences for f in sf.facts
                                  if f.confidence < self.min_confidence)
         rep.new_concepts = sorted({k for k in entities

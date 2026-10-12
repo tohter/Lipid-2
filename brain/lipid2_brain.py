@@ -14,6 +14,7 @@ from core.graph import GraphMemory
 from brain.learner import Learner
 from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
+from core.logchannel import status as _status, request as _ask
 from core.storage import NodeType, RelationType
 
 
@@ -88,6 +89,15 @@ class Lipid2Brain:
         if hit:
             return hit
         return self.lemmas_world.resolve_name(word)
+
+    def _say(self, message: str) -> None:
+        """
+        Шаг работы мозга в общий канал статуса (core.logchannel).
+
+        В stdout это шло и раньше, но GUI stdout НЕ читает: пока Учитель
+        перебирает шаги, окно стоит мёртвым 30-60 с, и это выглядит зависанием.
+        """
+        _status(message)
 
     def _teacher_entity_for_learner(self, lemma: str):
         """
@@ -275,6 +285,7 @@ class Lipid2Brain:
         """
         print(f"\n⚡ [НОРАДРЕНАЛИН] Внимание! Неизвестная сущность '{concept}'!")
         print(f"🧠 [Lipid-2]: Мой граф не содержит '{concept}'. Ищу знание...")
+        self._say(f"не знаю «{concept}» — ищу знание в трёх каналах")
 
         self.hormones.norepinephrine = 255
         self.hormones.dopamine = 10
@@ -283,10 +294,12 @@ class Lipid2Brain:
 
         # ── КАНАЛ 1: Локальный Учитель (LLM) ──
         print("   [Канал 1] Локальный Учитель (Gemma)...")
+        self._say(f"канал 1: спрашиваю локальную модель про «{concept}»")
         try:
             self.teacher_llm.run_agent(base_concept=concept, derived_concept=concept,
                                        filename="lipid_world.json")
             learned_data = self.find_in_memory(concept)
+            self._say(f"канал 1: {'нашёл' if learned_data else 'НЕ нашёл'} «{concept}»")
             if learned_data:
                 print("   \u2714 Знание получено от локальной LLM.")
         except Exception as e:
@@ -296,11 +309,14 @@ class Lipid2Brain:
         # ── КАНАЛ 2: Интернет (Википедия) ──
         if not learned_data:
             print("   [Канал 2] Интернет (Википедия)...")
+            self._say(f"канал 1 пуст — ищу в интернете «{concept}»")
             try:
                 wiki = self.teacher_wiki.fetch_concept(concept)
                 if wiki and wiki.get("base_entity", {}).get("concept"):
                     if self.teacher_wiki.write_to_world(wiki):
                         learned_data = self.find_in_memory(concept)
+                self._say(f"канал 2: {'нашёл' if learned_data else 'НЕ нашёл'} "
+                          f"«{concept}» в Википедии")
                 if learned_data:
                     print("   \u2714 Знание получено из интернета.")
             except Exception as e:
@@ -310,26 +326,36 @@ class Lipid2Brain:
         # ── КАНАЛ 3: Вопрос пользователю ──
         if not learned_data:
             print("   [Канал 3] Вопрос пользователю...")
+            self._say(f"каналы знания пусты — спрашиваю у пользователя «{concept}»")
+            # ДВА пути спросить: явный колбэк (исторический API) и общий
+            # обратный канал core.logchannel. Второй нужен, чтобы вопрос дошёл
+            # до пользователя даже там, где колбэк забыли подключить, — иначе
+            # «спросить пользователя» остаётся обработчиком на бумаге.
+            user_answer = None
             if self.ask_user_callback is not None:
                 user_answer = self.ask_user_callback(concept)
-                if user_answer:
-                    learned_data = self._learn_from_user(concept, user_answer)
-                    if learned_data:
-                        print("   \u2714 Знание получено от пользователя.")
-                else:
-                    print("   \u2716 Пользователь не дал знания.")
+            if not user_answer:
+                user_answer = _ask(f"Что такое «{concept}»? "
+                                   "Напиши коротко: категория; свойства; действия.")
+            if user_answer:
+                learned_data = self._learn_from_user(concept, user_answer)
+                if learned_data:
+                    print("   \u2714 Знание получено от пользователя.")
+                    self._say(f"записано с твоих слов: «{concept}»")
             else:
-                print("   \u2716 Нет колбэка к пользователю (GUI не подключён).")
+                print("   \u2716 Пользователь не дал знания.")
 
         # ── Результат ──
         if learned_data:
             self.hormones.norepinephrine = 20
             self.hormones.dopamine = 255
+            self._say(f"выучено: «{concept}» вошло в граф")
             print(f"🎉 [ДОФАМИН] Успех! Граф пополнен сущностью '{concept}'.\n")
             # Интегрируем новые знания в нейроморфное ядро
             self._integrate_learned_data(learned_data)
         else:
             self.hormones.cortisol = min(255, self.hormones.cortisol + 120)
+            self._say(f"⚠️ «{concept}» осталось неизвестным: все каналы пусты")
             print(f"😔 [КОРТИЗОЛ] Все источники исчерпаны. Сущность '{concept}' осталась неизвестной.\n")
 
         return learned_data

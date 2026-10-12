@@ -23,6 +23,17 @@ except Exception as _exc:
     def merge_entity(prev, new):
         return new if isinstance(new, dict) else (prev or {})
 
+try:
+    # Канал статуса — чистый stdlib, поэтому учителю он разрешён (в отличие от
+    # torch/numpy): учитель может жить в отдельном процессе и в другой venv.
+    from core.logchannel import status as _status
+except Exception as _exc:                              # pragma: no cover
+    print(f"[teacher] core.logchannel недоступен ({_exc}) — статус только в stdout",
+          file=sys.stderr, flush=True)
+
+    def _status(message, **_kw):
+        print(f"[l2] {message}", flush=True)
+
 class AgentTeacherV2:
     """
     Продвинутый Учитель Lipid-2.
@@ -39,6 +50,14 @@ class AgentTeacherV2:
             
         os.makedirs(self.memory_dir, exist_ok=True)
         self.world_filepath = os.path.join(self.memory_dir, "lipid_world.json")
+
+    def _say(self, message: str) -> None:
+        """
+        Шаг работы учителя в общий канал. В stdout шло и раньше, но GUI stdout
+        не читает: пока агент думает, окно стояло мёртвым. Теперь тот же текст
+        видит пользователь, а не только терминал.
+        """
+        _status(message)
 
     @staticmethod
     def _parse_tool_args(raw) -> dict:
@@ -194,6 +213,11 @@ class AgentTeacherV2:
             with open(self.world_filepath, "w", encoding="utf-8") as f:
                 json.dump(world, f, ensure_ascii=False, indent=2)
 
+            written = [c for c in (base.get("concept", "") if "base_entity" in data else "",
+                                   (data.get("derived_entity") or {}).get("concept", "")) if c]
+            if written:
+                self._say("Учитель записал во Вселенную: " + ", ".join(written))
+
             return f"[Tool Success]: Новые знания успешно записаны в единую Вселенную '{self.world_filepath}'."
         except Exception as e:
             return f"[Tool Error]: Ошибка обновления Вселенной: {e}"
@@ -242,8 +266,8 @@ class AgentTeacherV2:
         ]
 
     def run_agent(self, base_concept: str = "кошка", derived_concept: str = "кот", filename: str = "lipid_world.json"):
-        print(f"=== ЗАПУСК УЧИТЕЛЯ V2 (Анализ: '{base_concept}' -> '{derived_concept}') ===")
-        print(f"Целевая база знаний: lipid_world.json\n")
+        self._say(f"Учитель: онтологический разбор «{base_concept}» → «{derived_concept}»")
+        self._say("цель записи: lipid_world.json")
 
         system_prompt = (
             "Ты — главный аналитик онтологии нейроморфной системы Lipid-2.\n"
@@ -302,7 +326,8 @@ class AgentTeacherV2:
 
         max_steps = 6
         for step in range(1, max_steps + 1):
-            print(f"--- [Шаг {step}] Запрос к локалке ---")
+            self._say(f"Учитель: шаг {step}/{max_steps} — запрос к локальной модели "
+                      f"({self.host})")
 
             payload = {
                 "messages": messages,
@@ -330,7 +355,9 @@ class AgentTeacherV2:
 
                     if not tool_calls:
                         content = message.get("content", "").strip()
-                        print(f"\n[Ответ Учителя]:\n{content}")
+                        self._say("Учитель закончил рассуждение (ответ без вызова инструмента)")
+                        if content:
+                            self._say(f"Вывод учителя: {content[:300]}")
                         break
 
                     for tool_call in tool_calls:
@@ -338,13 +365,13 @@ class AgentTeacherV2:
                         fn_args = self._parse_tool_args(
                             tool_call["function"].get("arguments"))
 
-                        print(f" -> Вызов инструмента: {fn_name}({list(fn_args)[:3]})")
+                        self._say(f"инструмент: {fn_name}({', '.join(str(k) for k in list(fn_args)[:3])})")
 
                         if fn_name not in tool_map:
                             # Неизвестный инструмент — НЕ выходим из цикла: модель
                             # должна получить об этом сообщение и исправиться.
                             res = f"[Tool Error]: неизвестный инструмент '{fn_name}'"
-                            print(f"    {res}")
+                            self._say(f"⚠️ {res}")
                         else:
                             try:
                                 res = tool_map[fn_name](**fn_args)
@@ -357,7 +384,7 @@ class AgentTeacherV2:
                                        f"{fn_name} строго по схеме.")
                             except Exception as exc:
                                 res = f"[Tool Error]: {type(exc).__name__}: {exc}"
-                        print(f"    {res}")
+                        self._say(f"   ↳ {str(res)[:200]}")
 
                         messages.append({
                             "role": "tool",
@@ -366,9 +393,9 @@ class AgentTeacherV2:
                         })
 
             except urllib.error.URLError as e:
-                print(f"[DEBUG ERROR]: Ошибка подключения/таймаут: {e.reason}")
+                self._say(f"⛔ Учитель: локальная модель недоступна ({e.reason}) — "
+                          "проверяй llama.cpp на 8080")
                 break
             except Exception as e:
-                print(f"[DEBUG ERROR]: {e}")
-                break
+                self._say(f"⛔ Учитель: {type(e).__name__}: {e}")
                 break
