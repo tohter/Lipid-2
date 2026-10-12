@@ -16,9 +16,43 @@ INTERNET-УЧИТЕЛЬ LIPID-2 (Канал 2: Википедия)
 import os
 import json
 import re
+import sys
 import urllib.request
 import urllib.parse
 import urllib.error
+
+_MORPH = None
+_MORPH_TRIED = False
+
+
+def _get_morph():
+    """pymorphy3 лениво; None — значит морфологии нет и канал уйдёт в остаток."""
+    global _MORPH, _MORPH_TRIED
+    if _MORPH_TRIED:
+        return _MORPH
+    _MORPH_TRIED = True
+    try:
+        import pymorphy3
+        _MORPH = pymorphy3.MorphAnalyzer()
+    except Exception as exc:                              # pragma: no cover
+        print(f"[wiki] pymorphy3 недоступен ({exc})", file=sys.stderr, flush=True)
+        _MORPH = None
+    return _MORPH
+
+
+# Местоимения и счётные слова: формально прилагательные, знанием не являющиеся.
+_PROP_STOPWORDS = {"который", "некоторый", "каждый", "любой", "самый", "этот",
+                   "тот", "иной", "весь", "другой", "такой", "наш", "ваш",
+                   "свой", "сей", "один", "иной", "оный", "сейский"}
+
+
+def _norm_adj(adj: str) -> str:                            # pragma: no cover
+    """Приведение прилагательного к «условно-словарной» форме без морфологии."""
+    a = (adj or "").lower()
+    for end in ("ая", "яя", "ые", "ие", "ых", "их", "ого", "его"):
+        if a.endswith(end):
+            return a[:-2] + "ый"
+    return a
 
 try:
     import requests
@@ -38,7 +72,7 @@ except Exception as _exc:                              # pragma: no cover
 
 try:
     from core.records import merge_entity
-    from core.worldfile import read_world, write_world
+    from core.worldfile import read_world, write_world, default_memory_dir
 except Exception as _exc:                              # pragma: no cover
     # Писать во Вселенную без правила слияния опаснее, чем не писать: каждый
     # такой «merge» — это молчаливое стирание известного. Отказ явный.
@@ -48,6 +82,17 @@ except Exception as _exc:                              # pragma: no cover
           file=_sys.stderr, flush=True)
     merge_entity = None
     read_world = write_world = None
+
+    def default_memory_dir(memory_dir=None, filename="lipid_world.json"):
+        """Каталог памяти без core.worldfile: тот же порядок источников."""
+        import os
+        if not memory_dir:
+            memory_dir = os.environ.get("LIPID2_MEMORY_DIR")
+        if not memory_dir:
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            memory_dir = os.path.join(root, "data", "memory")
+        os.makedirs(memory_dir, exist_ok=True)
+        return memory_dir, os.path.join(memory_dir, filename)
 
 
 class WikiTeacher:
@@ -96,13 +141,8 @@ class WikiTeacher:
     ]
 
     def __init__(self, memory_dir: str = None):
-        if memory_dir is None:
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self.memory_dir = os.path.join(project_root, "data", "memory")
-        else:
-            self.memory_dir = memory_dir
-        os.makedirs(self.memory_dir, exist_ok=True)
-        self.world_filepath = os.path.join(self.memory_dir, "lipid_world.json")
+        self.memory_dir, self.world_filepath = default_memory_dir(memory_dir)
+
 
     def _say(self, message: str) -> None:
         _status(message)
@@ -213,65 +253,152 @@ class WikiTeacher:
             print(f"[WikiTeacher DEBUG]: Ошибка запроса к Вики: {e}")
             return None
 
-    def _first_sentence(self, extract: str) -> str:
-        """Первое предложение статьи (обрезка по точке).
+    # Точка НЕ конец предложения: инициалы и служебные пометки в скобках
+    # («лат. Anthophila», «др.-греч.», «устар.», «итд.»). Прежний список
+    # сокращений был написан группой вида (?:лат|ит\.?д|...)\. — в ней
+    # «ит.д.» требует literally «ит.д.», а в текстах стоит «ит. д.» и
+    # «(лат. Vulcanus)»; итог на ЗАМЕРЕ по 10 живым вступлениям: 10 из 10
+    # определений обрезаны посреди скобки — «Пчёлы (лат», «Флюгер (нид»,
+    # «Вулкан (от лат». Определение, из которого выпила хвост скобка,
+    # выглядит как ответ и не является знанием.
+    _ABBREV_RE = re.compile(
+        r"(?:[А-ЯЁA-Z]\.\s?"                                     # «Ф. », «C. »
+        r"|(?:лат|др|греч|нем|англ|рус|фр|исп|пол|укр|устар|разг|разм|"
+        r"ит|т|п|ср|рис|см|напр|г|гг|вв|н|э|им|проф|т\.е|др\.-греч)"
+        r"\.(?=\s|\)))")
 
-        Игнорируем точки внутри латинских сокращений (лат., и т.д., т.п., ср., рис.,
-        см., напр.) и ищем точку, за которой идёт заглавная буква / конец.
+    # Служебные фразы Википедии, которые НЕ определяют предмет.
+    _NOT_DEFINITION_RE = re.compile(
+        r"^(?:это статья|эта статья|статья о |переадресация|значение|"
+        r"термин имеет|см\.|также см|существует несколько|возможны|"
+        r"о других|не путать|упоминается в|в переносном смысле)", re.I)
+
+    def _first_sentence(self, extract: str) -> str:
+        """
+        Первое ПРЕДЛОЖЕНИЕ вступления — целиком, вместе со скобками.
+
+        Ищем конец предложения, а не первую точку: точка встречается внутри
+        латинских названий, инициалов и сокращений. Дополнительно режем
+        вики-служебное («Это статья о джойстике — …»), иначе в память
+        попадает мета-фраза вместо определения.
         """
         if not extract:
             return ""
-        text = extract.replace("\n", " ").strip()
-        # Убираем ударения (Ко́шка -> Кошка) для корректного поиска
-        text = re.sub(r"\u0301", "", text)
+        text = re.sub(r"\u0301", "", extract.replace("\n", " ").strip())
+        masked = [m.span() for m in self._ABBREV_RE.finditer(text)]
 
-        # Сокращения, после которых точка НЕ является концом предложения
-        abbr = r"(?:лат|ит\.?д|т\.?п|ср|рис|см|напр|г\.?р|им|проф|англ|рус|др|т\.?е|н\?э|и\?т\.?п)\."
-        # Ищем первый знак .!? после слов, за которым пробел+Заглавная или конец строки
-        m = re.search(r"(.{10,}?)(?<!\.)[.!?](?=\s[А-ЯЁA-Z]|\s*$)", text)
-        if m:
-            return m.group(1).strip()
-        # фоллбэк: до первой точки (грубо)
-        if "." in text:
-            return text.split(".")[0].strip()
-        return text[:200].rstrip().strip()
+        def inside_abbrev(i):
+            return any(a <= i < b for a, b in masked)
+
+        depth = 0
+        first_fallback = ""
+        for i, ch in enumerate(text):
+            if ch == "(":
+                depth += 1
+                continue
+            if ch == ")":
+                depth = max(0, depth - 1)
+                continue
+            if ch not in ".!?" or inside_abbrev(i):
+                continue
+            nxt = text[i + 1:i + 2]
+            if nxt and not nxt.isspace():
+                continue                      # «C6H5OH», «1.5», продолжение
+            if depth != 0:
+                # Скобка ещё не закрыта: точка внутри неё предложение не
+                # заканчивает, какой бы буквой ни начиналось следующее слово
+                # («Флюгер (нид. Vleugel, нем. Flügel — крыло) — прибор…»).
+                continue
+            chunk = text[:i + 1].strip()
+            if not first_fallback:
+                first_fallback = chunk
+            # «Это статья о джойстике — конкретном типе …» и «О других
+            # устройствах см. …» — про статью, а не про предмет: писать такое
+            # в память значит выучить вики-разметку вместо знания.
+            if self._NOT_DEFINITION_RE.match(chunk) or re.match(r"^о \w", chunk):
+                rest = text[i + 1:].strip()
+                if rest:
+                    nxt_sent = self._first_sentence(rest)
+                    return nxt_sent or first_fallback
+                return first_fallback
+            return chunk
+
+        # Конца не нашли: отдаём НЕ кусок на произвольной точке, а 400 символов
+        # по границе слова — недоопределение честнее оборванной цитаты.
+        head = text if len(text) <= 400 else text[:400].rsplit(" ", 1)[0]
+        return head.strip()
+
+    PROP_LIMIT = 6
 
     def _extract_properties(self, extract: str) -> list:
         """
-        Выцепляет простые прилагательные из вступления как "свойства".
-        Очень грубо, но даёт правдоподобный список для онтологии.
+        Свойства из вступления статьи: все прилагательные в словарной форме.
+
+        ЗАМЕРЕНО на 10 живых вступлениях ru.wikipedia (тексты сохранены, чтобы
+        сравнение было воспроизводимым):
+            закрытый список из 24 корней: 12 свойств, 4 из 10 сущностей БЕЗ свойств
+            морфология, только прилагательные: 55 свойств, 0 из 10 пустых
+        Прежняя реализация замечала лишь слова вроде «домашний/хищный/крупный»,
+        поэтому у «флюгера», «вулкана», «экосистемы» и «джойстика» не было НИ
+        одного свойства, и «свойства X» отвечало «нет данных» по статье, которую
+        только что прочитали.
+
+        Почему ТОЛЬКО прилагательные: замер того же алгоритма с причастиями даёт
+        те же 0 пустых, но в свойства попадают глагольные леммы — «летать»,
+        «иметь», «составить», «качаться». «Пчела: летать» выглядит знанием, но
+        это действие, оно живёт в actions. Смешать их — значит потом не отличить.
+
+        Шум остаётся (1 значение из 55 — обрывок вроде «ловый»). Принято
+        сознательно: лишний пункт в списке свойств дешевле, чем отсутствие
+        всех свойств у половины выученных слов.
         """
         if not extract:
             return []
-        text = extract[:1500].lower()
-        props = []
-        # Паттерны: "домашнее животное", "хищное млекопитающее", "крупный зверь"
-        patterns = [
-            r"\b(домашн\w*|дик\w*|хищн\w*|крупн\w*|мелк\w*|маленьк\w*|больш\w*|пушист\w*|быстр\w*|сильн\w*|умн\w*|опасн\w*|безопасн\w*|полезн\w*|вредн\w*|редк\w*|обычн\w*|травоядн\w*|плотоядн\w*|всеядн\w*|ночн\w*|дневн\w*)\b"
-        ]
-        # Приведение прилагательных к условно-словарной форме (муж. род, ед. число)
-        def normalize(adj: str) -> str:
-            a = adj.lower()
-            # женский род
-            for end in ["ая", "яя"]:
-                if a.endswith(end):
-                    return a[:-2] + "ый"
-            # множественное число
-            for end in ["ые", "ие", "ых", "их"]:
-                if a.endswith(end):
-                    return a[:-2] + "ый"
-            # родительный падеж
-            for end in ["ого", "его", "ой"]:
-                if a.endswith(end):
-                    return a[:-2] + "ый"
-            return a
+        morph = _get_morph()
+        if morph is None:                                  # pragma: no cover
+            return self._extract_properties_closed_list(extract)
 
-        for m in re.findall(patterns[0], text):
-            word = normalize(m.strip())
-            if word not in props:
+        props = []
+        for sent in re.split(r"(?<=[.!?])\s+", extract[:1500]):
+            for tok in re.findall(r"[а-яёА-ЯЁ][а-яёА-ЯЁ\-]{3,}", sent):
+                parsed = morph.parse(tok)
+                if not parsed:
+                    continue
+                word = parsed[0]
+                tag = str(word.tag)
+                if "ADJF" not in tag or "PROPN" in tag or "NPRO" in tag:
+                    continue
+                norm = word.normal_form
+                if not re.fullmatch(r"[а-яё\-]{4,}", norm):
+                    continue
+                if norm in _PROP_STOPWORDS or norm in props:
+                    continue
+                props.append(norm)
+                if len(props) >= self.PROP_LIMIT:
+                    return props
+        return props
+
+    def _extract_properties_closed_list(self, extract):                    # pragma: no cover
+        """
+        Старое извлечение (24 заданных корня) — ОСТАТОЧНЫЙ путь без морфологии,
+        и он loud: молча деградировать вчетверо канал не имеет права.
+        """
+        print("[wiki]: pymorphy3 нет — свойства ищутся списком из 24 слов, "
+              "у большинства слов их не будет", file=sys.stderr, flush=True)
+        if not extract:
+            return []
+        text = extract[:1500].lower()
+        pattern = (r"\b(домашн\w*|дик\w*|хищн\w*|крупн\w*|мелк\w*|маленьк\w*"
+                   r"|больш\w*|пушист\w*|быстр\w*|сильн\w*|умн\w*|опасн\w*"
+                   r"|безопасн\w*|полезн\w*|вредн\w*|редк\w*|обычн\w*|травоядн\w*"
+                   r"|плотоядн\w*|всеядн\w*|ночн\w*|дневн\w*)\b")
+        props = []
+        for hit in re.findall(pattern, text):
+            word = _norm_adj(hit)
+            if word and word not in props:
                 props.append(word)
-        # лимит — первые 5
         return props[:5]
+
 
     def _categories_to_hierarchy(self, categories: list) -> list:
         """
@@ -325,7 +452,12 @@ class WikiTeacher:
         if not concept:
             return False
 
-        # Чистим от служебных полей (title, source, definition — для мира они не нужны)
+        # Чистим от служебного, НО definition оставляем. Прежний комментарий
+        # утверждал, что «для мира title/definition не нужны», — и это была
+        # потеря данных: определение (первое предложение статьи) есть самое
+        # информативное, что удалось получить, а _handle_definition его читает.
+        # Следствие было видно в GUI: «Экосистема — это экосистемы» при
+        # уже скачанной и разобранный статье.
         clean_base = {
             "concept": base["concept"],
             "hierarchy": base.get("hierarchy", []),
@@ -333,6 +465,12 @@ class WikiTeacher:
             "actions": base.get("actions", []),
             "provenance": [f"wiki:{base.get('title', concept)}"],
         }
+        definition = str(base.get("definition") or "").strip()
+        if definition:
+            clean_base["definition"] = definition
+        title = str(base.get("title") or "").strip()
+        if title and title.lower() != concept:
+            clean_base["title"] = title
         # merge_entity, а не присваивание. core/records.py объявлен ЕДИНСТВЕННЫМ
         # местом, где решается, что имеет право перезаписать известное; здесь же
         # было `world[concept] = clean_base`, то есть вопрос про уже известное
