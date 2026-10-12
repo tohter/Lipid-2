@@ -121,7 +121,11 @@ class TestTwoKindsOfUnknown(unittest.TestCase):
 
     def test_limit_is_reported_as_not_asked(self):
         """Лимит обращений — это «не спросили», а не «не нашли».
-        Молча закрыть слово статусом asked_empty значило бы потерять его."""
+        Молча закрыть слово статусом asked_empty значило бы потерять его.
+
+        Глагол «мнёт» вunknown_words НЕ попадает: он изучается действием, а не
+        сущностью, поэтому в списке остаётся ровно одно существительное.
+        """
         asked = {"абрикос": {"hierarchy": ["фрукт"], "properties": ["сладкий"]},
                  "мять": {"hierarchy": ["действие"]},
                  "баклажан": {"hierarchy": ["овощ"]}}
@@ -132,8 +136,8 @@ class TestTwoKindsOfUnknown(unittest.TestCase):
                                  allow_teacher=True)
         self.assertEqual(len(t.calls), 1,
                          f"лимит {lr.max_teacher_calls} нарушен: {t.calls}")
-        self.assertEqual(len(rep.not_asked), 2,
-                         "исчерпание лимита выдало неспрошеные слова за «не найдено»")
+        self.assertIn("баклажан", rep.not_asked,
+                      "исчерпание лимита выдало неспрошеное слово за «не найдено»")
         self.assertTrue(any("лимит" in n.lower() for n in rep.notes),
                         "лимит исчерпан молча")
         unknowns = self._read()["unknown_words"]
@@ -141,9 +145,146 @@ class TestTwoKindsOfUnknown(unittest.TestCase):
         # неспрошеные остаются со статусом not_asked.
         self.assertNotIn("абрикос", unknowns,
                          "выученное слово осталось в списке незнания")
-        rest = sorted(v.get("status") for v in unknowns.values())
-        self.assertEqual(rest, ["not_asked", "not_asked"],
-                         f"статусы расставлены неверно: {unknowns}")
+        self.assertEqual(unknowns["баклажан"]["status"], "not_asked",
+                         f"статус расставлен неверно: {unknowns}")
+
+    def test_disabled_channels_never_become_asked_empty(self):
+        """
+        Все каналы выключены — ни одно слово НЕ имеет права получить
+        asked_empty: мы НИЧЕГО не спрашивали, а файл не имеет права писать
+        «мы искали и не нашли». ЗАМЕРЕНО: при трёх снятых галочках каждый
+        встреченный слово получало пожизненный asked_empty.
+        """
+        from brain.learner import ASKED_EMPTY
+        t = StubTeacher({})
+        rep = self._learner(t).learn_from_text("Зюзя сидит на табурете.",
+                                               source="t", allow_teacher=False)
+        unknowns = self._read()["unknown_words"]
+        self.assertTrue(unknowns, "нечего проверять — слова не записаны")
+        for key, rec in unknowns.items():
+            self.assertNotEqual(rec.get("status"), ASKED_EMPTY,
+                                f"«{key}» помечено испрошенным без вопроса")
+        self.assertEqual(rep.teacher_calls, 0,
+                         "обращение к каналу засчитано, хотя канала не было")
+
+
+class TestVerbsAreNotEntities(unittest.TestCase):
+    """
+    Глагол — отношение, а не «сущность, у которой не нашли иерархию».
+
+    Дефект ЗАМЕРЕН дважды. На «Вода гасит пламя»learner спрашивал «гасить»
+    как сущность; канал 1 падал на Internal Server Error, слово получало
+    asked_empty и больше никогда не спрашивалось. На «Гладкий шар катится по
+    столу» «катиться» уезжало в Википедию за онтологией, которой для глагола
+    не существует.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="l2verb-")
+        self.path = os.path.join(self.dir, "lipid_world.json")
+        write_world(self.path, {"entities": {}, "observations": {},
+                                "unknown_words": {}})
+
+    def _read(self):
+        return read_world(self.path)
+
+    def _learner(self, teacher=None):
+        from brain.learner import Learner
+        return Learner(load_world=self._read,
+                       save_world=lambda w: write_world(self.path, w),
+                       teacher=teacher)
+
+    def test_verb_not_asked_as_entity(self):
+        """Глагол НЕ гоняется через «онтологическую сущность»."""
+        t = StubTeacher({})
+        self._learner(t).learn_from_text("Вода гасит пламя.", source="t")
+        self.assertNotIn("гасить", t.calls,
+                         "глагол спросили как сущность — категориальная ошибка")
+
+    def test_verb_never_gets_asked_empty(self):
+        """Провал поиска «сущности» не имеет права вешаться на глагол."""
+        self._learner(StubTeacher({})).learn_from_text("Вода гасит пламя.",
+                                                        source="t")
+        unknowns = self._read()["unknown_words"]
+        self.assertNotIn("гасить", unknowns,
+                         "глагол записан как невыученная сущность")
+
+    def test_verb_becomes_action_node(self):
+        """Глагол закрепляется узлом ACTION с участниками предложения."""
+        rep = self._learner(StubTeacher({})).learn_from_text(
+            "Вода гасит пламя.", source="t")
+        ent = self._read()["entities"].get("гасить")
+        self.assertIsInstance(ent, dict, "ACTION-узел глагола не создан")
+        self.assertEqual(ent.get("kind"), "action")
+        self.assertEqual(ent.get("hierarchy"), ["действие"])
+        self.assertEqual(ent["participants"]["agent"], ["вода"])
+        self.assertEqual(ent["participants"]["object"], ["пламя"])
+        self.assertIn("гасить", rep.learned_actions,
+                      "действие не попало в отдельную строку отчёта")
+        self.assertNotIn("гасить", rep.learned_concepts,
+                         "действие записано в выученные СУЩНОСТИ")
+
+    def test_unknown_profile_is_announced_not_invented(self):
+        """
+        Профиля K/M/S в справочнике нет — его НЕ ВЫДУМЫВАЮТ, а громко говорят.
+        Выдуманное число молча породило бы ложные предсказания предиктивного
+        цикла, и проверить это было бы нечем.
+        """
+        from core.actions import profile_of
+        self.assertIsNone(profile_of("гасить"),
+                          "справочник внезапно обогатился неподтверждённым числом")
+        rep = self._learner(StubTeacher({})).learn_from_text(
+            "Вода гасит пламя.", source="t")
+        self.assertNotIn("action_profile", self._read()["entities"]["гасить"])
+        self.assertTrue(any("профиля" in n for n in rep.notes),
+                        f"отсутствие профиля промолчано: {rep.notes}")
+
+    def test_known_verb_keeps_reference_profile(self):
+        """
+        Из справочника профиль берётся ДОСЛОВНО — перенос чисел не исказить.
+
+        ЗАМЕРЕНО: форма «летит» даёт лемму «лететь», которой в справочнике нет
+        (есть «летать»). Склеивать эти леммы молча я не вправе: справочник
+        заполнялся по инфинитивам, и каждая новая форма обязана приходить с
+        замером, а не «похоже, это то же действие». Пока это значит, что
+        «летит» закрепится ACTION-узлом БЕЗ профиля — и скажет об этом в notes.
+        """
+        from core.actions import profile_of
+        self._learner(StubTeacher({})).learn_from_text(
+            "Птица летает над лугом.", source="t")
+        prof = profile_of("летать")
+        self.assertEqual(prof, [235, 70, 5],
+                         "числа справочника изменены — это договор, а не догадка")
+        ent = self._read()["entities"].get("летать")
+        self.assertEqual((ent or {}).get("action_profile"), prof)
+
+    def test_verb_form_outside_reference_stays_loud(self):
+        """«летит» = лемма «лететь»: профиля нет, и это СЛЫШНО, а не тихо."""
+        rep = self._learner(StubTeacher({})).learn_from_text(
+            "Птица летит над лугом.", source="t")
+        ent = self._read()["entities"].get("лететь")
+        self.assertIsInstance(ent, dict, "ACTION-узел всё равно обязан появиться")
+        self.assertNotIn("action_profile", ent)
+        self.assertTrue(any("профиля" in n for n in rep.notes),
+                        f"пустой профиль промолчан: {rep.notes}")
+
+    def test_stale_asked_empty_on_verb_is_lifted(self):
+        """
+        Память, ИСПОРЧЕННАЯ прежним поведением, лечится: у глагола стоит
+        asked_empty, выставленный неверным вопросом. Он снимается, а не
+        уважается как «результат поиска».
+        """
+        write_world(self.path, {"entities": {}, "observations": {},
+                                "unknown_words": {
+                                    "гасить": {"status": "asked_empty",
+                                               "count": 3,
+                                               "evidence": "Вода гасит пламя"}}})
+        self._learner(StubTeacher({})).learn_from_text("Вода гасит пламя.",
+                                                       source="t")
+        w = self._read()
+        self.assertNotIn("гасить", w["unknown_words"],
+                         "неверный диагноз пережил урок")
+        self.assertIn("гасить", w["entities"])
 
 
 if __name__ == "__main__":

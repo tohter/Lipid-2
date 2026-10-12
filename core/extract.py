@@ -125,6 +125,19 @@ class Fact:
         return f"{self.head} --{self.relation}{flags}--> {self.tail}"
 
 
+# Часть речи, означающая ДЕЙСТВИЕ. ИНФИНИТИВ — отдельная часть речи (INFN),
+# и именно им записана ЛЕММА любого глагола: «гасит» -> лемма «гасить».
+# Проверять только startswith("VERB") значит потерять инфинитивы: на
+# «Нужно гасить пожар» глагол не попадал в действие, оставался в словаре как
+# обычное слово и отправлялся учиться КАК СУЩНОСТЬ — ровно тот дефект, от
+# которого action_lemmas и был заведён.
+VERB_POS = ("VERB", "INFN")
+
+
+def _is_verb_pos(pos) -> bool:
+    return str(pos or "").startswith(VERB_POS)
+
+
 @dataclass
 class SentenceFacts:
     """Разбор одного предложения: факты, значимые леммы, замечания о неуверенности."""
@@ -146,6 +159,26 @@ class SentenceFacts:
     @property
     def min_confidence(self) -> float:
         return round(min((f.confidence for f in self.facts), default=0.0), 3)
+
+    @property
+    def action_lemmas(self) -> List[str]:
+        """
+        Глаголы предложения, отдельно от остальных значимых слов.
+
+        Нужны, чтобы ОТДЕЛИТЬ глагол от существительного. Глагол — не «ещё
+        одна сущность с иерархией и свойствами», а отношение: узел ACTION со
+        связями CAN_DO / OBJECT_OF / DIRECTION. ЗАМЕРЕНО: «катиться» и «гасить»
+        гнались через Википедию и LLM как существительные; статью-онтологию на
+        глагол Википедия не даёт, слово получало asked_empty и БОЛЬШЕ не
+        спрашивалось — честный вид отказа, наложенный на неуместный вопрос,
+        навсегда снимал слово с изучения.
+        """
+        seen, out = set(), []
+        for t in self.tokens:
+            if t["content"] and _is_verb_pos(t.get("pos")) and t["lemma"] not in seen:
+                seen.add(t["lemma"])
+                out.append(t["lemma"])
+        return out
 
 
 class SimpleExtractor:

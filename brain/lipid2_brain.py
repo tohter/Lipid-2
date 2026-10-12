@@ -12,12 +12,12 @@ from teachers.teacher_wiki import WikiTeacher      # Канал 2: интерн�
 # Импортируем нейроморфное ядро (SDR / STDP / Гормоны)
 from core.cortex import Hormones
 from core.graph import GraphMemory
-from brain.learner import Learner
+from brain.learner import Learner, TeacherDisabled, TeacherUnavailable
 from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
-from core.records import (meaningful_categories, merge_entity, same_word,
-                            strip_self_name)
+from core.records import (action_name, meaningful_categories, merge_entity,
+                          normalize_actions, same_word, strip_self_name)
 from core.worldfile import default_memory_dir, read_world, write_world
 from core.storage import NodeType, RelationType
 
@@ -117,6 +117,19 @@ class Lipid2Brain:
                 return self._flatten_entity(ent)
         data = self._trigger_curiosity_and_learn(lemma)
         if not data:
+            # Знания нет, НО каналы могли отказать механически (llama.cpp лёг,
+            # HTTP 500, ответ обрезан). Молча вернуть None — значит дать
+            # Learner-у право записать asked_empty: «мы искали, там пусто».
+            # Исключение долетает до Learner (он его ловит) и превращается в
+            # not_asked — слово возвращается в очередь и будет спрошено позже.
+            if kinds := getattr(self, "last_learning_failures", None):
+                # Тип исключения выбирает ВЫЗЫВАЮЩИЙ, а не мы: «не спрашивали,
+                # потому что канал выключен» и «не спросили, потому что сервер
+                # лёг» ведут к РАЗНОЙ судьбе слова (см. brain.learner).
+                why = "; ".join(m for _k, m in kinds)
+                if all(k == "disabled" for k, _m in kinds):
+                    raise TeacherDisabled(why)
+                raise TeacherUnavailable(why)
             return None
         ent = data.get("derived_entity") or data.get("base_entity") or {}
         return self._flatten_entity(ent) if ent else None
@@ -142,9 +155,18 @@ class Lipid2Brain:
             props.append(ent["summary"])
         acts = []
         for a in (ent.get("actions") or []):
-            name = a if isinstance(a, str) else (a or {}).get("name", "")
-            if name:
+            # ПРОФИЛЬ [K, M, S] терять нельзя: это единственный носитель
+            # физического смысла действия для SDR-ядра. Раньше тут оставалось
+            # только имя, и ядро получало «действие есть, какой оно природы —
+            # неизвестно». Нормализация по имени — в core.records.
+            name = action_name(a)
+            if not name:
+                continue
+            if isinstance(a, dict):
+                acts.append({**a, "name": name})
+            else:
                 acts.append(name)
+        acts = normalize_actions(acts)
         hierarchy = list(ent.get("hierarchy") or [])
         parent = (ent.get("parent_concept") or "").lower().strip()
         if parent and parent != ent.get("concept", "").lower().strip() \
@@ -272,11 +294,16 @@ class Lipid2Brain:
             return None
 
         entity_data = entities[concept_clean]
+        found = None
         if "parent_concept" in entity_data:
             parent_data = entities.get(entity_data["parent_concept"], {})
             found = {"base_entity": parent_data, "derived_entity": entity_data}
         else:
             found = {"base_entity": entity_data, "derived_entity": {}}
+        # Плоский срез ЗАПИСИ (kind, participants, action_profile). Ответам о
+        # глаголах не хватает именно его: под видом base_entity приходит
+        # родитЕЛЬСкая запись, и «что такое гасить» отвечал бы по родителю.
+        found["subject"] = entity_data
         # КАНОННОЕ имя, под которым знание реально лежит. Обработчики обязаны
         # сверяться с НИМ, а не со словом из запроса: иначе «что такое кошки»
         # находит запись «кошка», потом сравнивает "кошка" == "кошки", не
@@ -301,30 +328,53 @@ class Lipid2Brain:
         self.hormones.dopamine = 10
 
         learned_data = None
+        self.last_learning_failures = []
+        # Механические отказы каналов («сервер лёг», «HTTP 500», «обрезано по
+        # токенам») И ВЫКЛЮЧЕННЫЕ КАНАЛЫ. И то и другое означает одно: знание
+        # НЕ ДОБЫТО НЕ ПОТОМУ, ЧТО ЕГО НЕТ. Их НЕЛЬЗЯ смешивать с «канал
+        # работал и не нашёл»: во втором случае слово справедливо получает
+        # asked_empty и больше не спрашивается, в первом — обязано остаться в
+        # очереди уроков. ЗАМЕРЕНО: при трёх выключенных каналах все слова
+        # урока получали asked_empty, то есть снятая галочка превращалась в
+        # пожизненный запрет учить слово.
+        failures = []
 
         # ── КАНАЛ 1: Локальный Учитель (LLM) ──
         if not self.use_llm_teacher:
             self._say("канал 1 ВЫКЛЮЧЕН (переключатель «спрашивать Учителя») — "
                       "LLM не вызывается")
+            failures.append(("disabled", "канал 1 (локальная модель) выключен"))
         else:
             print("   [Канал 1] Локальный Учитель (Gemma)...")
             self._say(f"канал 1: спрашиваю локальную модель про «{concept}»")
             try:
-                self.teacher_llm.run_agent(
+                got = self.teacher_llm.run_agent(
                     base_concept=concept, derived_concept=concept,
                     filename="lipid_world.json")
-                learned_data = self.find_in_memory(concept)
-                self._say(f"канал 1: {'нашёл' if learned_data else 'НЕ нашёл'} "
-                          f"«{concept}»")
+                # Учитель с этих пор ВОЗВРАЩАЕТ записанное. Читать мир с диска
+                # вместо этого означало бы принять за успех канала запись,
+                # которую оставил другой канал или прошлый урок.
+                learned_data = got if got else None
+                failure = getattr(self.teacher_llm, "last_failure", None)
                 if learned_data:
+                    self._say(f"канал 1: нашёл «{concept}»")
                     print("   \u2714 Знание получено от локальной LLM.")
+                elif failure:
+                    failures.append(("broken", f"канал 1: {failure}"))
+                    self._say(f"канал 1: ОТКАЗАЛ ({failure}) — это НЕ «не нашли»")
+                else:
+                    self._say(f"канал 1: НЕ нашёл «{concept}»")
             except Exception as e:
+                failures.append(("broken",
+                                 f"канал 1: {type(e).__name__}: {str(e)[:120]}"))
                 print(f"   \u2716 Локалка недоступна: {e}")
+                self._say(f"канал 1: УПАЛ ({type(e).__name__}: {str(e)[:120]})")
                 learned_data = None
 
         # ── КАНАЛ 2: Интернет (Википедия) ──
         if not learned_data and not self.use_wiki_teacher:
             self._say("канал 2 ВЫКЛЮЧЕН — интернет не опрашивается")
+            failures.append(("disabled", "канал 2 (Википедия) выключен"))
         if not learned_data and self.use_wiki_teacher:
             print("   [Канал 2] Интернет (Википедия)...")
             self._say(f"канал 1 пуст — ищу в интернете «{concept}»")
@@ -338,6 +388,8 @@ class Lipid2Brain:
                 if learned_data:
                     print("   \u2714 Знание получено из интернета.")
             except Exception as e:
+                failures.append(("broken",
+                                 f"канал 2: {type(e).__name__}: {str(e)[:120]}"))
                 print(f"   \u2716 Интернет недоступен: {e}")
                 learned_data = None
 
@@ -345,6 +397,7 @@ class Lipid2Brain:
         if not learned_data and not self.ask_user_enabled:
             self._say("спросить пользователя запрещено (переключатель снят) — "
                       "знание осталось ненайденным")
+            failures.append(("disabled", "канал 3 (пользователь) выключен"))
         if not learned_data and self.ask_user_enabled:
             print("   [Канал 3] Вопрос пользователю...")
             self._say(f"каналы знания пусты — спрашиваю у пользователя «{concept}»")
@@ -367,6 +420,9 @@ class Lipid2Brain:
                 print("   \u2716 Пользователь не дал знания.")
 
         # ── Результат ──
+        # Отказ каналов публикуется ДЛЯ ВСЕХ вызовов (успех тоже его сбрасывает):
+        # решение «спрашивали или нет» принимает вызывающий по ПОСЛЕДНЕМУ сеансу.
+        self.last_learning_failures = list(failures)
         if learned_data:
             self.hormones.norepinephrine = 20
             self.hormones.dopamine = 255
@@ -377,7 +433,13 @@ class Lipid2Brain:
             self._integrate_learned_data(learned_data)
         else:
             self.hormones.cortisol = min(255, self.hormones.cortisol + 120)
-            self._say(f"⚠️ «{concept}» осталось неизвестным: все каналы пусты")
+            if failures:
+                # «Каналы пусты» и «каналы не работали» — РАЗНЫЕ новости.
+                # Первая значит «мы искали и не нашли», вторая — «мы не искали».
+                self._say(f"⚠️ «{concept}»: знание НЕ ДОБЫТО — "
+                          + "; ".join(m for _k, m in failures))
+            else:
+                self._say(f"⚠️ «{concept}» осталось неизвестным: все каналы пусты")
             print(f"😔 [КОРТИЗОЛ] Все источники исчерпаны. Сущность '{concept}' осталась неизвестной.\n")
 
         return learned_data
@@ -598,6 +660,9 @@ class Lipid2Brain:
         base_ent = data.get("base_entity", {})
         derived_ent = data.get("derived_entity", {})
 
+        if base_ent.get("kind") == "action":
+            return self._describe_action(concept, base_ent)
+
         # degenerate derived: LLM очень любит на вопрос «что такое X» возвращать
         # derived_concept == base_concept. Тогда производная запись несёт ТОЛЬКО
         # обрывок (parent_rel, пустой delta_properties), а настоящая иерархия
@@ -662,6 +727,18 @@ class Lipid2Brain:
         base_ent = data.get("base_entity", {})
         derived_ent = data.get("derived_entity", {})
 
+        subj = data.get("subject")
+        if subj is not None:
+            if isinstance(subj, dict) and subj.get("kind") == "action":
+                return self._describe_action(concept, subj, properties=True)
+        elif base_ent.get("kind") == "action":
+            # Спрашивают ГЛАГОЛ. У действия свойств нет по устройству, зато
+            # есть участники. Прежний ответ «свойств не записано — только
+            # факт, что такое слово существует» был ЛОЖЬЮ: узел знает, что
+            # это действие, кто его совершает и над чем, — то есть запись
+            # объявлялась пустой там, где знание есть.
+            return self._describe_action(concept, base_ent, properties=True)
+
         props = list(base_ent.get("properties", []) or [])
         if derived_ent.get("concept") == concept:
             props += [p for p in derived_ent.get("delta_properties", []) or []
@@ -673,6 +750,32 @@ class Lipid2Brain:
             return (f"[Lipid-2]: О '{concept}' свойств не записано — только "
                     f"факт, что такое слово существует.")
         return f"[Lipid-2]: Свойства сущности '{concept}': [{props_str}]."
+
+    @staticmethod
+    def _describe_action(concept: str, ent: dict, properties: bool = False) -> str:
+        """
+        Ответ про ГЛАГОЛ — по-русски и по существу, а не «сущность не найдена».
+
+        Действие описывается НЕ родом и иерархией, а участниками: кто может,
+        над чем, где. Если спросили «какие свойства», так и говорим — свойств
+        у действия нет, зато есть вот эти связи. Врать про пустоту нельзя:
+        запись заполнена, просто у неё ДРУГАЯ размерность.
+        """
+        part = ent.get("participants") or {}
+        agents = [a for a in (part.get("agent") or []) if a]
+        objects = [o for o in (part.get("object") or []) if o]
+        who = ", ".join(agents[:4]) if agents else "не записано, кто"
+        what = ", ".join(objects[:4]) if objects else "не записано, над чем"
+        head = (f"[Lipid-2]: «{concept}» — это действие. Совершают: {who}. "
+                f"Относится к: {what}.")
+        if properties:
+            head += " Свойств у действия нет — есть участники и профиль."
+        prof = ent.get("action_profile")
+        if prof:
+            head += f" Профиль K/M/S: {prof}."
+        else:
+            head += " Профиля K/M/S нет — предиктивный цикл это действие ещё не различает."
+        return head
 
     def _handle_interaction(self, subjects: list) -> str:
         """Обработка взаимодействия двух и более сущностей."""

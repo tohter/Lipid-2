@@ -66,6 +66,40 @@ class AgentTeacherV2:
         self.host = host.rstrip('/')
         self.endpoint = f"{self.host}/v1/chat/completions"
         self.memory_dir, self.world_filepath = default_memory_dir(memory_dir)
+        # Лимиты ЗАМЕРЕНЫ, а не взяты «с запасом на всякий случай».
+        # reasoning-модель на полном промпте тратит ~1400-1600 токенов на
+        # «мысль» перед вызовом, поэтому прежние 2000 — гонка с обрезкой
+        # (замер: finish=length, tool_calls НЕТ, канал объявлялся пустым).
+        # С выключенными рассуждениями вызов стоит ~440 токенов.
+        self.max_tokens = int(os.environ.get("LIPID2_TEACHER_MAX_TOKENS", 4000))
+        self.timeout = float(os.environ.get("LIPID2_TEACHER_TIMEOUT", 180))
+        # Механический отказ последнего сеанса (транспорт/лимит), либо None.
+        # Нужен затем, чтобы вызывающий ОТЛИЧАЛ «модель не ответила» от
+        # «модель ответила: не знаю». Без этого упавший llama.cpp ставил
+        # словам статус «спрашивали — пусто», и они запрещались к изучению.
+        self.last_failure = None
+        # Концепты текущего запроса (см. _requested в run_agent). Вне сеанса
+        # агента — None, то есть разрешена запись любого узла.
+        self._requested = None
+
+    @staticmethod
+    def _echo_message(message: dict) -> dict:
+        """
+        Ответ модели для ОБРАТНОЙ отправки в историю диалога.
+
+        Сервер кладёт в message reasoning_content (замер: 3549 символов на
+        концепте «вода»). Переотправлять его нельзя: контекст раздувается, и
+        на следующем шаге модель замолкает до упора в лимит токенов.
+        ЗАМЕР (одинаковое состояние диалога, шаг 2 после [Tool Error]):
+            с reasoning_content .... 74 с, finish=length, tool_calls НЕТ
+            без reasoning_content .. 17 с, finish=stop
+        Оставляем ровно то, чего ждёт OpenAI-совместимый протокол.
+        """
+        echo = {"role": message.get("role", "assistant"),
+                "content": message.get("content") or ""}
+        if message.get("tool_calls"):
+            echo["tool_calls"] = message["tool_calls"]
+        return echo
             
 
 
@@ -76,6 +110,51 @@ class AgentTeacherV2:
         видит пользователь, а не только терминал.
         """
         _status(message)
+
+    def _target_key(self, ent: dict, role: str) -> str:
+        """
+        Под каким ключом Вселенной лежит запись, которую прислала модель.
+
+        Модель пишет имя то в `concept`, то в `name`/`id` (замер: на «вода»
+        она вернула base_entity {id: water_substance, name: "Вода
+        (Субстанция)"} — без `concept`). Прежний код читал только `concept`,
+        не находил его и МОЛЧА проглатывал весь ответ: канал отрабатывал минуту
+        и возвращал «не нашёл», хотя знание пришло.
+
+        Спасать будем ТОЛЬКО известным нам целевым словом: `name` модель
+        сочиняет свободно («Вода (Субстанция)», «action_extinguish»), и
+        писать по нему — плодить фантомные узлы. Если похожего нет среди
+        запрошенного концепта и уже существующих узлов — запись НЕОДНОЗНАЧНА,
+        о ней кричим, а не молчим.
+        """
+        if not isinstance(ent, dict):
+            return ""
+        for key in ("concept", "name", "id", "label"):
+            val = str(ent.get(key) or "").strip().lower()
+            if val:
+                break
+        if not val:
+            self._say("⚠️ учитель прислал запись без имени — НЕ записываю")
+            return ""
+        if self._requested is None:
+            # Сеанс агента НЕ активен: вызов прямой (тест, скрипт, legacy).
+            # Запись доверяется как есть — фильтровать имена смысла нет, а
+            # запрет ломает создание первой записи о слове.
+            return val
+        if val in self._requested:
+            return val
+        # ищем запрошенный концепт ВНУТРИ имени («вода (субстанция)» -> «вода»)
+        for want in sorted(self._requested):
+            if want and len(want) >= 3 and want in val:
+                return want
+        # имени среди запрошенного нет: записывать можно только ТОГДА, когда
+        # узел уже живёт во Вселенной (то есть мы его дополняем, а не создаём)
+        world_entities = self._load_world().get("entities") or {}
+        if val in world_entities:
+            return val
+        self._say(f"⚠️ учитель назвал «{val}», а просили "
+                  f"{sorted(self._requested)} — НЕ записываю")
+        return ""
 
     @staticmethod
     def _parse_tool_args(raw) -> dict:
@@ -178,8 +257,23 @@ class AgentTeacherV2:
                 raise
         return {"entities": {}, "relations": []}
 
-    def write_json_file(self, filename: str, content: str) -> str:
-        """Интегрирует новый онтологический разбор в единый файл lipid_world.json."""
+    def write_json_file(self, filename: str = None, content: str = None) -> str:
+        """Интегрирует новый онтологический разбор в единый файл lipid_world.json.
+
+        filename НЕОБЯЗАТЕЛЕН и НИ НА ЧТО НЕ ВЛИЯЕТ. ЗАМЕРЕНО: Gemma зовёт
+        write_json_file и с filename, и без него; когда схема ТРЕБОВАЛА оба
+        аргумента, модель их не передавала, ловила TypeError, получала
+        [Tool Error] — и канал обрывался на этом. Имя файла модели неизвестно
+        и не нужно: адрес памяти задаёт ОДНА функция default_memory_dir, а
+        чужое имя из устного ответа — прямой путь к записи мимо Вселенной.
+        """
+        if content is None:
+            return "[Tool Error]: пустой content — записывать нечего"
+        asked = str(filename or "").strip()
+        if asked and os.path.basename(asked) != os.path.basename(self.world_filepath):
+            self._say(f"учитель просил файл {asked!r} — игнорирую, пишу в "
+                      f"{os.path.basename(self.world_filepath)} (каталог задаёт "
+                      f"default_memory_dir)")
         try:
             if isinstance(content, str):
                 clean_str = re.sub(r'```json|```', '', content).strip()
@@ -188,24 +282,19 @@ class AgentTeacherV2:
                 data = content
 
             world = self._load_world()
+            written = []
 
-            # Добавляем или обновляем базовую сущность
-            if "base_entity" in data:
-                base = data["base_entity"]
-                concept = base.get("concept", "").lower().strip()
-                if concept:
-                    # Присваивание целиком стирало всё, что у сущности уже
-                    # было: наблюдения из рассказов, provenance, выученные
-                    # свойства. Повторный вопрос про известное слово выглядел
-                    # как успех, а внутри был откат базы.
-                    world["entities"][concept] = merge_entity(
-                        world["entities"].get(concept), base)
+            def put(ent, role):
+                """Записать одну сущность ответа модели, разобрав её имя.
 
-            # Добавляем или обновляем производную сущность
-            if "derived_entity" in data:
-                derived = data["derived_entity"]
-                concept = derived.get("concept", "").lower().strip()
-                if concept:
+                Имя берёт _target_key (он же отбивает фантомы), а ключ
+                запоминается в written, чтобы не перечитывать мир повторно.
+                """
+                key = self._target_key(ent, role)
+                if not key or not isinstance(ent, dict) or not ent:
+                    return
+                prev = world["entities"].get(key)
+                if isinstance(prev, dict) and prev:
                     # САМОЕ ЧАСТОЕ: базовый и производный концепт — одно слово
                     # (запросили «флюгер», производного нет). Прежний код писал
                     # base, а СРАЗУ ПОСЛЕ него перезаписывал ту же ячейку
@@ -213,34 +302,35 @@ class AgentTeacherV2:
                     # базовой сущности МОЛЧА СТИРАЛИСЬ. Отсюда пустые «свойства»
                     # и «флюгер — это флюгер».
                     #
-                    # Правила слияния ЖЁСТКИЕ: derived имеет право ДОБАВИТЬ
-                    # delta_properties и parent_concept, но не имеет права
-                    # СТЕРЕТЬ то, что уже есть у base. LLM пишет эти два блока
-                    # в разном составе от запуска к запуску, и полагаться на
-                    # «сейчас она положила hierarchy в derived» нельзя.
-                    prev = world["entities"].get(concept)
-                    if isinstance(prev, dict):
-                        merged = dict(prev)
-                        for k, v in derived.items():
-                            if k in ("hierarchy", "properties", "actions"):
-                                have = merged.get(k) or []
-                                add = v or []
-                                merged[k] = have + [x for x in add if x not in have]
-                            elif k == "delta_properties":
-                                merged[k] = list(merged.get(k) or []) + \
-                                    [x for x in (v or [])
-                                     if x not in (merged.get(k) or [])]
-                            elif not merged.get(k):
-                                merged[k] = v
-                        world["entities"][concept] = merged
-                    else:
-                        world["entities"][concept] = derived
+                    # Слияние делает merge_entity — ОДНА реализация на все
+                    # каналы: новое имеет право ДОБАВИТЬ (hierarchy, properties,
+                    # actions, delta_properties), но не СТЕРЕТЬ уже известное.
+                    # Раньше здесь лежала своя копия правил, и она расходилась
+                    # с общей при каждой правке.
+                    world["entities"][key] = merge_entity(prev, ent)
+                else:
+                    world["entities"][key] = dict(ent)
+                    world["entities"][key].setdefault("concept", key)
+                if key not in written:
+                    written.append(key)
 
-            # Самоссылка parent_concept == concept — мусор, он превращает
-            # «X — это X» в вечный цикл обхода иерархии.
-            ent = world["entities"].get(concept) if concept else None
-            if isinstance(ent, dict) and ent.get("parent_concept", "").lower().strip() == concept:
-                del ent["parent_concept"]
+            # САМОЕ ЧАСТЕ: порядок важен. Сначала base, потом derived, чтобы
+            # вырожденный derived не перетянул на себя пустоту.
+            for role in ("base_entity", "derived_entity"):
+                ent = data.get(role)
+                if ent is not None:
+                    put(ent, role)
+
+            # Известка об ИТОГЕ, а не о намерениях модели: written наполняется
+            # только реально записанными ключами, поэтому фраза «записал во
+            # Вселенную» больше не звучит после отклонённых фантомов.
+            for concept in list(written):
+                ent = world["entities"].get(concept)
+                # Самоссылка parent_concept == concept — мусор, он превращает
+                # «X — это X» в вечный цикл обхода иерархии.
+                if isinstance(ent, dict) and \
+                        str(ent.get("parent_concept", "")).lower().strip() == concept:
+                    del ent["parent_concept"]
 
             if write_world is not None:
                 write_world(self.world_filepath, world)
@@ -248,11 +338,15 @@ class AgentTeacherV2:
                 with open(self.world_filepath, "w", encoding="utf-8") as f:
                     json.dump(world, f, ensure_ascii=False, indent=2)
 
-            written = [c for c in (base.get("concept", "") if "base_entity" in data else "",
-                                   (data.get("derived_entity") or {}).get("concept", "")) if c]
             if written:
                 self._say("Учитель записал во Вселенную: " + ", ".join(written))
+            else:
+                self._say("⚠️ Учитель: из его ответа НЕ записано ничего — см. "
+                          "предыдущие строки журнала")
 
+            if not written:
+                return ("[Tool Error]: ни одна присланная сущность не подошла "
+                        "по имени (записываем только запрошенный концепт)")
             return f"[Tool Success]: Новые знания успешно записаны в единую Вселенную '{self.world_filepath}'."
         except Exception as e:
             return f"[Tool Error]: Ошибка обновления Вселенной: {e}"
@@ -277,10 +371,15 @@ class AgentTeacherV2:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "filename": {"type": "string", "description": "Имя файла (сохраняется в lipid_world.json)"},
+                            # filename НЕ в required. ЗАМЕРЕНО: Gemma зовёт
+                            # write_json_file только с content, а требуемое имя
+                            # файла рождало TypeError -> [Tool Error] -> шаг 2,
+                            # на котором канал обрывался. Имя файла модели
+                            # неизвестно и не нужно: пишим в свой каталог.
+                            "filename": {"type": "string", "description": "Имя файла (по умолчанию lipid_world.json)"},
                             "content": {"type": "string", "description": "JSON-строка с сущностями base_entity и derived_entity"}
                         },
-                        "required": ["filename", "content"]
+                        "required": ["content"]
                     }
                 }
             },
@@ -300,7 +399,22 @@ class AgentTeacherV2:
             }
         ]
 
-    def run_agent(self, base_concept: str = "кошка", derived_concept: str = "кот", filename: str = "lipid_world.json"):
+    def run_agent(self, base_concept: str = "кошка", derived_concept: str = "кот", filename: str = None):
+        """
+        Возвращает запись Вселенной, которую Учитель в ней оставил, либо None.
+
+        Раньше функция ничего не возвращала, и вызывающий код читал мир с диска
+        после каждого агента. Это работало, но: (а) лишнее чтение файла ради
+        одного concept, (б) при конкурентном писателе прочитывался чужой снимок,
+        (в) «агент отработал» было неотличимо от «агент записал то, что просили».
+        filename оставлен в сигнатуре для совместимости старых вызовов и
+        БОЛЬШЕ НЕ ИСПОЛЬЗУЕТСЯ: адрес памяти задаёт default_memory_dir.
+        """
+        # Разрешённые цели записи (см. _target_key). Без этого списка модель
+        # свободна в именах и плодит узлы вроде «гасить (пожар)».
+        self._requested = {c for c in ((base_concept or "").lower().strip(),
+                                       (derived_concept or "").lower().strip()) if c}
+        self.last_failure = None
         self._say(f"Учитель: онтологический разбор «{base_concept}» → «{derived_concept}»")
         self._say("цель записи: lipid_world.json")
 
@@ -360,6 +474,7 @@ class AgentTeacherV2:
         }
 
         max_steps = 6
+        wrote_something = False
         for step in range(1, max_steps + 1):
             self._say(f"Учитель: шаг {step}/{max_steps} — запрос к локальной модели "
                       f"({self.host})")
@@ -368,7 +483,16 @@ class AgentTeacherV2:
                 "messages": messages,
                 "tools": self.get_tools_schema(),
                 "temperature": 0.1,
-                "max_tokens": 2000
+                "max_tokens": self.max_tokens,
+                # Gemma здесь reasoning-модель: она думает в reasoning_content.
+                # ЗАМЕР на http://localhost:8080 (gemma-4-12B-it-Q8_0), концепт
+                # «гасить», одинаковый промпт:
+                #   как есть, max_tokens=2000 ....... 54 с, finish=tool_calls
+                #   reasoning_effort=none ........... 15 с, finish=tool_calls
+                #   reasoning_effort=low ............ 56 с, finish=tool_calls
+                # Результат тот же, в 3.5 раза быстрее и без гонки с лимитом
+                # токенов. Рассуждать нам нечем: разбор вызова инструмента.
+                "reasoning_effort": "none",
             }
 
             headers = {"Content-Type": "application/json"}
@@ -379,18 +503,41 @@ class AgentTeacherV2:
             )
 
             try:
-                with urllib.request.urlopen(req, timeout=120) as response:
+                with urllib.request.urlopen(req, timeout=self.timeout) as response:
                     raw_bytes = response.read()
                     result = json.loads(raw_bytes.decode('utf-8'))
 
-                    message = result['choices'][0]['message']
-                    messages.append(message)
+                    choice = result['choices'][0]
+                    message = choice['message']
+                    finish = choice.get('finish_reason')
+                    # В историю диалога кладём СЖАТУЮ версию ответа.
+                    # Эхо reasoning_content — главная причина смерти канала 1:
+                    # сервер возвращает ~3500 символов «мыслей», мы переотправляем
+                    # их обратно, и на шаге 2 контекст раздувается, модель снова
+                    # молчит до упора в лимит. ЗАМЕР (одинаковое состояние диалога,
+                    # шаг 2 после [Tool Error]):
+                    #   с reasoning_content ......... 74 с, finish=length, tools НЕТ
+                    #   без reasoning_content ....... 17 с, finish=stop
+                    messages.append(self._echo_message(message))
 
                     tool_calls = message.get("tool_calls", [])
 
                     if not tool_calls:
-                        content = message.get("content", "").strip()
-                        self._say("Учитель закончил рассуждение (ответ без вызова инструмента)")
+                        content = (message.get("content") or "").strip()
+                        if finish == "length":
+                            # Это НЕ «закончил рассуждение». Модель упёрлась в
+                            # лимит токенов и tool-call не был порождён. Врать про
+                            # «закончил» нельзя: после такой строки канал 1
+                            # объявлялся пустым, а настоящая причина (лимит)
+                            # оставалась невидимой.
+                            self.last_failure = (f"ответ обрезан по лимиту токенов "
+                                                 f"(max_tokens={self.max_tokens})")
+                            self._say(f"⚠️ Учитель: ответ ОБРЕЗАН по лимиту токенов "
+                                      f"(max_tokens={self.max_tokens}), вызова "
+                                      f"инструмента нет — знание не получено")
+                        else:
+                            self._say("Учитель закончил рассуждение "
+                                      "(ответ без вызова инструмента)")
                         if content:
                             self._say(f"Вывод учителя: {content[:300]}")
                         break
@@ -419,6 +566,10 @@ class AgentTeacherV2:
                                        f"{fn_name} строго по схеме.")
                             except Exception as exc:
                                 res = f"[Tool Error]: {type(exc).__name__}: {exc}"
+                            else:
+                                if fn_name == "write_json_file" and \
+                                        not str(res).startswith("[Tool Error]"):
+                                    wrote_something = True
                         self._say(f"   ↳ {str(res)[:200]}")
 
                         messages.append({
@@ -427,10 +578,47 @@ class AgentTeacherV2:
                             "content": str(res)
                         })
 
+            except urllib.error.HTTPError as e:
+                body = ""
+                try:
+                    body = e.read().decode("utf-8", "replace")[:200]
+                except Exception:
+                    pass
+                self.last_failure = f"HTTP {e.code} от {self.host}"
+                self._say(f"⛔ Учитель: локальная модель ОТВЕТИЛА ОШИБКОЙ "
+                          f"(HTTP {e.code}) — сервер жив, но запрос не обработан. "
+                          f"{body}")
+                break
             except urllib.error.URLError as e:
+                self.last_failure = f"модель недоступна: {e.reason}"
                 self._say(f"⛔ Учитель: локальная модель недоступна ({e.reason}) — "
                           "проверяй llama.cpp на 8080")
                 break
             except Exception as e:
+                self.last_failure = f"{type(e).__name__}: {e}"
                 self._say(f"⛔ Учитель: {type(e).__name__}: {e}")
                 break
+
+        if not wrote_something:
+            # Ни одного успешного write_json_file за весь сеанс. Возвращать
+            # запись из мира в этом случае нельзя: её там мог оставить любой
+            # другой канал (Вики, пользователь, прошлый урок), и тогда канал 1
+            # отчитается «нашёл» на чужой работе — а следующий код, наоборот,
+            # пропустит Вики, решив что знание уже получено.
+            return None
+        return self._read_back(base_concept, derived_concept)
+
+    def _read_back(self, base_concept: str, derived_concept: str):
+        """Снимок только что записанных сущностей в формате Вселенной."""
+        world = self._load_world()
+        entities = world.get("entities") or {}
+        key = (base_concept or "").lower().strip()
+        base = entities.get(key)
+        if not isinstance(base, dict):
+            return None
+        derived = {}
+        dkey = (derived_concept or "").lower().strip()
+        if dkey and dkey != key and isinstance(entities.get(dkey), dict):
+            derived = entities[dkey]
+        return {"base_entity": base, "derived_entity": derived,
+                "matched_concept": key}

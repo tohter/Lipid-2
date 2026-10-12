@@ -262,6 +262,92 @@ class TestLearnerContract(unittest.TestCase):
             self.assertTrue(any("pymorphy" in n for n in rep.notes))
 
 
+class TestReportDoesNotDoubleCount(unittest.TestCase):
+    """
+    Отчёт обязан СХОДИТЬСЯ со словами. ЗАМЕРЕНО в живом GUI: на трёх словах
+    «вода гасит пламя» он печатал «выучено: вода, вода, пламя, пламя, гасить,
+    гасить» — слово попадало в learned_concepts из основного цикла И из
+    _store_entity. Числа отчёта — единственное, чем измеряется прогресс; если
+    они врут, враньем становится весь эксперимент.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "lipid_world.json")
+        self._write({"entities": {}, "observations": {}, "unknown_words": {}})
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _read(self):
+        with open(self.path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def _write(self, w):
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(w, f, ensure_ascii=False)
+
+    def _learner(self, teacher=None):
+        from brain.learner import Learner
+        return Learner(load_world=self._read, save_world=self._write,
+                       core=None, teacher=teacher)
+
+    def test_learned_concepts_has_no_duplicates(self):
+        t = StubTeacher({"вода": {"hierarchy": ["жидкость"],
+                                  "properties": ["мокрая"]},
+                         "пламя": {"hierarchy": ["явление"],
+                                   "properties": ["горячий"]}})
+        rep = self._learner(t).learn_from_text("Вода гасит пламя.", source="урок")
+        self.assertEqual(len(rep.learned_concepts), len(set(rep.learned_concepts)),
+                         f"дубли в выученных: {rep.learned_concepts}")
+        self.assertEqual(rep.learned_concepts, ["вода", "пламя"],
+                         f"состав выученных неверен: {rep.learned_concepts}")
+        self.assertNotIn("гасить", rep.learned_concepts,
+                         "глагол записан в выученные СУЩНОСТИ")
+        self.assertEqual(rep.learned_actions, ["гасить"])
+
+    def test_report_lines_match_their_counts(self):
+        t = StubTeacher({"вода": {"hierarchy": ["жидкость"],
+                                  "properties": ["мокрая"]},
+                         "пламя": {"hierarchy": ["явление"],
+                                   "properties": ["горячий"]}})
+        rep = self._learner(t).learn_from_text("Вода гасит пламя.", source="урок")
+        text = rep.as_text()
+        self.assertNotIn("вода, вода", text, f"отчёт печатает слово дважды: {text}")
+        self.assertIn("действия (ACTION): гасить", text,
+                      f"действие не в отчёте: {text}")
+        # «выучено сейчас» = реально выученные слова, а не число обращений к
+        # Учителю: их может быть меньше, если слово уже было в памяти.
+        self.assertIn("выучено сейчас: 3", text,
+                      f"«выучено сейчас» не сходится со словами: {text}")
+
+    def test_seen_unknown_accounts_for_every_word(self):
+        """
+        Арифметика отчёта обязана СХОДИТЬСЯ по словам, а не по намерениям:
+            незнакомых = выученных сущностей + выученных действий
+                         + оставшихся неизвестными
+        ЗАМЕРЕНО: при пяти оставшихся неизвестными отчёт печатал
+        «незнакомых: 2» — счётчик пополнялся ТОЛЬКО в ветке успеха, поэтому
+        урок, который ничему не научился, выглядел как урок без незнакомых
+        слов, а «выучено сейчас» считалось по числу обращений к Учителю.
+        """
+        for text, teacher in (("Зюкдра слепил из пластилина.", StubTeacher({})),
+                              ("Вода гасит пламя.", StubTeacher({}))):
+            rep = self._learner(teacher).learn_from_text(text, source="урок")
+            total = (len(rep.learned_concepts) + len(rep.learned_actions)
+                     + len(rep.unknown))
+            self.assertEqual(rep.seen_unknown_words, total,
+                             f"не сходится по «{text}»: пришло "
+                             f"{rep.seen_unknown_words}, а разложено на "
+                             f"{len(rep.learned_concepts)} сущ. + "
+                             f"{len(rep.learned_actions)} дейст. + "
+                             f"{len(rep.unknown)} неизвестн."
+                             f" ({rep.unknown})")
+            self.assertIn(f"выучено сейчас: "
+                          f"{len(rep.learned_concepts) + len(rep.learned_actions)}",
+                          rep.as_text(), "строка отчёта не сходится с составом")
+
+
 class TestMergeRule(unittest.TestCase):
     """
     Правило слияние ОДНО (core/records.merge_entity) и используется всеми

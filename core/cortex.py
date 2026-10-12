@@ -350,8 +350,12 @@ class PredictiveCortex:
                 # дергаем run_agent и забираем результат из графа всезнания.
                 run = getattr(self.teacher, "run_agent", None)
                 if callable(run):
-                    run(base_concept=word, derived_concept=word)
-                    raw = self._read_teacher_world(word)
+                    # Учитель с тех пор ВОЗВРАЩАЕТ записанное; чтение с диска
+                    # осталось запасным путём для учителей, которые возвращают
+                    # None, но знание всё равно оставляют во Вселенной.
+                    raw = run(base_concept=word, derived_concept=word)
+                    if raw is None:
+                        raw = self._read_teacher_world(word)
         except Exception as exc:                       # сеть/LLM/парсинг — не роняем цикл
             print(f"   ⚠️  Учитель молчит ({type(exc).__name__}: {exc})")
             return None

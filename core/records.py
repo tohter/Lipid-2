@@ -242,6 +242,42 @@ def is_empty_entity(rec) -> bool:
     return True
 
 
+def action_name(action) -> str:
+    """
+    Имя действия из ЛЮБОЙ из двух форм, которые лежат в lipid_world.json:
+    строка "бегать" и объект {"name": "бегать", "action_profile": [K, M, S]}.
+
+    Профиль [K, M, S] — единственный носитель физического смысла действия для
+    SDR-ядра, поэтому форму с профилем терять нельзя; но сравнивать действия
+    надо по ИМЕНИ. Замер: у «гасить» в actions оказались {"name": "затухание"}
+    и "затухание" рядом — слияние сверяло объект со строкой и видело два
+    разных действия.
+    """
+    if isinstance(action, dict):
+        return str(action.get("name") or "").strip()
+    return str(action or "").strip()
+
+
+def normalize_actions(actions) -> list:
+    """Список действий -> без пустых и без повторов по имени (богатая форма
+    сохраняется: словарь с action_profile не заменяется голой строкой)."""
+    out: list = []
+    index: dict = {}
+    for a in (actions or []):
+        name = action_name(a)
+        if not name:
+            continue
+        low = name.lower()
+        if low in index:
+            # словари с профилем ценнее голой строки
+            if isinstance(a, dict) and not isinstance(out[index[low]], dict):
+                out[index[low]] = a
+            continue
+        index[low] = len(out)
+        out.append(a)
+    return out
+
+
 def merge_entity(prev: Optional[dict], new: dict) -> dict:
     """
     СЛИЯНИЕ ДВУХ ЗАПИСЕЙ ОДНОЙ СУЩНОСТИ. ОДНА РЕАЛИЗАЦИЯ ДЛЯ ВСЕХ.
@@ -270,10 +306,16 @@ def merge_entity(prev: Optional[dict], new: dict) -> dict:
         if not isinstance(add, list):
             add = [add]
         for x in add:
-            if x and x not in have:
-                have.append(x)
+            if not x:
+                continue
+            if x in have:
+                continue
+            if k == "actions" and any(action_name(x).lower() == action_name(h).lower()
+                                      for h in have):
+                continue      # то же действие во второй форме записи
+            have.append(x)
         if have:
-            merged[k] = have
+            merged[k] = normalize_actions(have) if k == "actions" else have
     for k, v in new.items():
         if k in LISTS or k == "provenance":
             continue

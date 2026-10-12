@@ -55,6 +55,19 @@ from core.morph import Morph
 from core.records import merge_entity
 from core.storage import NodeType, RelationType
 
+try:
+    from core.actions import profile_of
+except Exception as _exc:                            # pragma: no cover
+    # Без справочника глагол всё равно закрепится узлом ACTION, но БЕЗ профиля
+    # K/M/S. Оставлять это НЕВидимым нельзя: предиктивный цикл перестанет
+    # отличать одно действие от другого, а выглядит это как обычная работа.
+    print(f"[learner] ⚠️ core.actions недоступен ({_exc}) — глаголы пишутся "
+          "БЕЗ профиля K/M/S, предиктивный цикл их не различает",
+          file=sys.stderr, flush=True)
+
+    def profile_of(verb):
+        return None
+
 # Имя отношения в тексте -> enum. Обратная таблица для чтений из файла.
 REL: Dict[str, RelationType] = {r.name: r for r in RelationType}
 # Имя отношения экстрактора -> enum графа. Совесть требует НЕ сваливать всё
@@ -73,6 +86,36 @@ ROLE_TO_NODETYPE = {"subject": NodeType.ENTITY, "property": NodeType.PROPERTY,
 # спросить при первой возможности.
 ASKED_EMPTY = "asked_empty"
 NOT_ASKED = "not_asked"
+# Глагол, профиля которого нет в справочнике. Это НЕ ask_empty: «не нашли
+# онтологию действия» было бы враньём — мы её и не искали, потому что
+# Википедия и LLM описывают СУЩНОСТИ. Слово помечено как ЖДУЩЕЕ профиля: оно
+# стоит в графе узлом ACTION, его связи работают, а K/M/S придут с замером.
+ACTION_NO_PROFILE = "action_no_profile"
+
+
+class TeacherUnavailable(RuntimeError):
+    """
+    Учитель НЕ ОТВЕТИЛ по causes вне его компетенции: канал выключен, сервер
+    лёг, ответ обрезан по токенам, парсер упал.
+
+    Существо — в том, что вызывающий обязан ОТЛИЧИТЬ это от честного «не знаю».
+    «Не нашли» => asked_empty, слово больше не спрашиваем (экономия минут на
+    запрос). «Не спросили» => not_asked, слово ОБЯЗАНО вернуться в очередь.
+    Смешать их — значит либо молча сжигать часы на повторные запросы, либо
+    НАВСЕГДА снять слово с изучения. Замерено в обоих направлениях.
+    """
+
+
+class TeacherDisabled(TeacherUnavailable):
+    """
+    Учителя СПРОСИТЬ БЫЛО НЕЛЬЗЯ: канал выключен пользователем или исчерпан
+    лимит обращений урока.
+
+    Выделиться отдельным типом нужно потому, что исход у этих случаев РАЗНЫЙ:
+    при выключенном канале мы не имели права вообще записывать слово в
+    unknown_words, а при исчерпанном лимите — имели и должны. Первое — наш
+    собственный отказ, второе — обычная экономия бюджета урока.
+    """
 
 
 def _mark_unknown(rep: "LearningReport", lemma: str) -> None:
@@ -106,6 +149,14 @@ class LearningReport:
     new_concepts: List[str] = field(default_factory=list)
     learned_concepts: List[str] = field(default_factory=list)
     unknown: List[str] = field(default_factory=list)
+    # Глаголы урока, закреплённые узлами ACTION. Отдельно от learned_concepts:
+    # глагол учится ДРУГИМ способом (отношение + профиль), и сваливать его в
+    # общий список — значит позже снова перепутать его с сущностью.
+    learned_actions: List[str] = field(default_factory=list)
+    # Снятые со слова диагнозы asked_empty, выставленные НЕУМЕСТНЫМ вопросом
+    # (искали сущность там, где действие). Удаление из unknown_words обязано
+    # пережить слияние с чужим снимком — иначе неверный диагноз возвращается.
+    retracted_unknown: List[str] = field(default_factory=list)
     # Сколько слов ПРИШЛО незнакомыми (в т.ч. те, что удалось выучить). Нужно
     # вместе с unknown_words, иначе «распознано 0 из 1» рядом с «неизвестных 0»
     # выглядит как вранье отчёта, а не как «не знал — выучил».
@@ -126,7 +177,7 @@ class LearningReport:
         lines = [
             "📚 Обучение из текста",
             f"  предложений: {self.sentences}   значимых слов: {self.content_words}"
-            f"   распознано: {self.known_words} ({acc:.0%})   незнакомых: {self.seen_unknown_words}   выучено сейчас: {self.teacher_success}",
+            f"   распознано: {self.known_words} ({acc:.0%})   незнакомых: {self.seen_unknown_words}   выучено сейчас: {len(self.learned_concepts) + len(self.learned_actions)}",
             f"  фактов извлечено: {self.facts}   новых наблюдений: {self.observations_new}"
             f"   подтверждено существующих: {self.observations_seen}",
             f"  сущностей создано: {self.entities_created}   дополнено: {self.entities_updated}",
@@ -136,6 +187,8 @@ class LearningReport:
         ]
         if self.learned_concepts:
             lines.append("  выучено: " + ", ".join(self.learned_concepts[:12]))
+        if self.learned_actions:
+            lines.append("  действия (ACTION): " + ", ".join(self.learned_actions[:12]))
         if self.new_concepts:
             # Не дубль learned_concepts: learned_concepts — слова, которых не было
             # в лексиконе; new_concepts — сущности, созданные ИМЕННО из этого
@@ -218,13 +271,48 @@ class Learner:
 
         # 1) словарь: кого мы знаем, кого нет
         vocab: Dict[str, dict] = {}
+        # Глаголы — вне этой охоты. см. SentenceFacts.action_lemmas.
+        verbs: Dict[str, str] = {}
         for sf in sentences:
+            for lemma in sf.action_lemmas:
+                verbs.setdefault(lemma, sf)
             for lemma in sf.content_lemmas:
                 vocab.setdefault(lemma, {"node": self._role_of_lemma(sf, lemma),
                                          "evidence": sf.sentence})
-        rep.content_words = len(vocab)
+        rep.content_words = len(set(vocab) | set(verbs))
+
+        for lemma in sorted(verbs):
+            sf = verbs[lemma]
+            if resolve(lemma):
+                # Глагол уже стоит в графе — он НЕ незнакомец, иначе процент
+                # распознавания падал бы просто из-за глаголов в тексте.
+                rep.known_words += 1
+            # Снимаем с очереди «неизвестных сущностей», если слово попало туда
+            # на УРОКАХ ДО появления глагольного пути.
+            if lemma in unknowns and unknowns[lemma].get("status") == ASKED_EMPTY:
+                # Прежний диагноз выставлен НЕУМЕСТНЫМ вопросом (искали
+                # сущность там, где действие). Силы он не имеет.
+                _status(f"«{lemma}»: снимаю прежний asked_empty — это глагол, "
+                        "он изучается как действие, а не как сущность")
+                del unknowns[lemma]
+                rep.retracted_unknown.append(lemma)
+            self._store_action(entities, sf, lemma, source, rep)
+            if not resolve(lemma):
+                # Глагол пришёл незнакомым и закреплен узлом ACTION: он ВЫУЧЕН,
+                # но СПОСОБ другой, поэтому учитывается в своей строке отчёта.
+                rep.seen_unknown_words += 1
+            unknowns.pop(lemma, None)
 
         for lemma, info in sorted(vocab.items()):
+            if lemma in verbs:
+                # ГЛАГОЛ НЕ УЧАСТВУЕТ в охоте на «сущность с иерархией».
+                # Глагол — не «ещё одна сущность», а отношение: узел ACTION со
+                # связями CAN_DO / OBJECT_OF. Гнать его через Википедию или
+                # «онтологический разбор» — категориальная ошибка: статью-
+                # онтологию на глагол Википедия не даёт, слово получало
+                # asked_empty и БОЛЬШЕ не спрашивалось. ЗАМЕРЕНО на
+                # «Гладкий шар катится по столу»: «катиться» гонялось в сеть.
+                continue
             canon = resolve(lemma)
             if canon:
                 rep.known_words += 1
@@ -242,31 +330,70 @@ class Learner:
                 info["canon"] = None
                 continue
             entity = None
-            asked = False
+            # Чем КОНЧИЛСЯ вопрос, а не намерение его задать. От этого зависит
+            # статус слова — см. TeacherUnavailable.
+            outcome, why = "not_asked", "Учитель не подключён"
             if allow_teacher and self.teacher is not None:
                 if rep.teacher_calls < self.max_teacher_calls:
-                    asked = True
-                    rep.teacher_calls += 1
                     _status(f"ищу значение «{lemma}» у Учителя "
-                            f"({rep.teacher_calls}/{self.max_teacher_calls})")
+                            f"({rep.teacher_calls + 1}/{self.max_teacher_calls})")
                     try:
                         entity = self.teacher(lemma)
+                        rep.teacher_calls += 1
+                        outcome = "empty" if not entity else "ok"
+                    except TeacherDisabled as exc:
+                        # СПРОСИТЬ БЫЛО НЕЛЬЗЯ (канал выключен). Обращение НЕ
+                        # засчитывается: бюджета урока не тратили, а иначе
+                        # выключенный канал съедал лимит и остальные слова
+                        # оставались вообще без попытки.
+                        outcome, why = "disabled", str(exc)
+                    except TeacherUnavailable as exc:
+                        # Обратились и получили отказ (сервер лёг, ответ
+                        # обрезан). Время потрачено — в бюджет идёт.
+                        rep.teacher_calls += 1
+                        outcome, why = "broken", str(exc)
                     except Exception as exc:
-                        rep.notes.append(f"учитель по «{lemma}» упал: {type(exc).__name__}")
-                        entity = None
+                        rep.teacher_calls += 1
+                        outcome, why = "broken", f"{type(exc).__name__}: {exc}"
                 else:
-                    rep.notes.append(
-                        f"«{lemma}»: лимит обращений к Учителя "
-                        f"({self.max_teacher_calls}) исчерпан — слово оставлено "
-                        f"КАК НЕСПРОШЕННОЕ, его ещё предстоит выучить")
-            if entity and (entity.get("hierarchy") or entity.get("properties")):
+                    outcome, why = "limit", (
+                        f"лимит обращений к Учителя ({self.max_teacher_calls}) "
+                        f"исчерпан")
+            asked = (outcome == "ok") or (outcome == "empty")
+            usable = bool(entity) and bool(entity.get("hierarchy")
+                                        or entity.get("properties"))
+            if outcome == "ok" and not usable:
+                # Ответ ПРИШЕЛ, но в нём нет ни категории, ни свойств: брать
+                # нечего. Это НЕ сбой канала и НЕ «молчание» — Учитель ответил
+                # пустой структурой, и называть это падением нельзя.
+                outcome = "degenerate"
+            if outcome != "ok":
+                # Формулировка обязана СООТВЕТСТВОВАТЬ причине. «Учитель упал»
+                # про выключенный канал — то же враньё в журнале, что и
+                # «не нашли» про невыполненный вопрос.
+                text = {
+                    "empty": f"«{lemma}»: Учитель ответил «не знаю» — спрашивать "
+                             f"повторно не будем",
+                    "degenerate": f"«{lemma}»: ответ Учителя ПУСТ по составу "
+                                  f"(ни категории, ни свойств) — спрашивать "
+                                  f"повторно не будем",
+                    "disabled": f"«{lemma}»: Учитель НЕ СПРАШИВАЛСЯ — {why}; "
+                                f"слово оставлено КАК НЕСПРОШЕННОЕ",
+                    "broken": f"учитель по «{lemma}» НЕ ОТВЕТИЛ: {why}; "
+                              f"слово оставлено КАК НЕСПРОШЕННОЕ",
+                    "limit": f"«{lemma}»: {why} — слово оставлено "
+                             f"КАК НЕСПРОШЕННОЕ, его ещё предстоит выучить",
+                    "not_asked": f"«{lemma}»: {why} — слово НЕ изучалось"}[outcome]
+                if text not in rep.notes:
+                    rep.notes.append(text)
+            if usable:
                 rep.teacher_success += 1
                 _status(f"«{lemma}» получено: {(entity.get('hierarchy') or ['?'])[0]}, "
                         f"свойств {len(entity.get('properties') or [])}")
                 self._store_entity(entities, lemma, entity, source,
                                    info["evidence"], rep)
                 info["canon"] = lemma
-                rep.learned_concepts.append(lemma)
+                self._mark_learned(rep, lemma)
                 rep.seen_unknown_words += 1
                 # Выучили — значит слово больше НЕ неизвестное. Оставлять его
                 # в unknown_words нельзя: файл начинает утверждать про одно и то
@@ -280,25 +407,34 @@ class Learner:
                 # Сущность НЕ создаём (правило 2), но слово помним.
                 # СТАТУС пишется, потому что два случая выглядят одинаково, а
                 # обращаться с ними надо по-разному:
-                #   ASKED_EMPTY — спрашивали, ответа нет: больше не спрашиваем;
-                #   NOT_ASKED   — не спрашивали (канал выключен или лимит):
-                #                 слово ОБЯЗАНО быть спрошено позже.
+                #   ASKED_EMPTY — СПРОСИЛИ честным вопросом, ответа нет:
+                #                 больше не спрашиваем (экономия минут на запрос);
+                #   NOT_ASKED   — НЕ спрашивали (канал выключен, сервер лёг,
+                #                 лимит исчерпан): слово ОБЯЗАНО быть спрошено
+                #                 позже.
                 # Без этого различия «снял галочку на одном уроке» означало
                 # «слово запрещено учить всегда»: первая тренировка с выключенным
                 # каналом ставила всем встреченным словам пожизненный диагноз.
                 # ЗАМЕРЕНО на GUI-прогоне: «опылять/пчела/цветок» остались
                 # неизвестными навсегда, хотя Учитель был просто выключен.
+                rep.seen_unknown_words += 1
                 _mark_unknown(rep, lemma)
                 _status(f"«{lemma}» осталось неизвестным "
-                        + ("(спросили — пусто)" if asked else "(НЕ спрашивали)"))
+                        + ("(спросили — пусто)" if asked else
+                           f"(НЕ спрашивали: {outcome})"))
                 entry = dict(unknowns.get(lemma) or {"first_seen": int(time.time())})
                 entry.update({
                     "count": int(entry.get("count", 0)) + 1,
                     "last_seen": int(time.time()),
                     "evidence": info["evidence"][:200],
                     "source": source,
+                    # Любой исход, кроме честного пустого ответа Учителя,
+                    # означает НЕ СПРАШИВАЛИ: слово ОБЯЗАНО вернуться в
+                    # очередь следующего урока.
                     "status": ASKED_EMPTY if asked else NOT_ASKED,
                 })
+                if outcome == "disabled":
+                    entry["status_note"] = f"канал недоступен: {why[:120]}"
                 unknowns[lemma] = entry
                 if not asked:
                     rep.not_asked.append(lemma)
@@ -314,14 +450,21 @@ class Learner:
         # resolved=выученные: удаление из unknown_words — ТОЖЕ изменение,
         # которое обязано пережить слияние, иначе «чужой писатель» resurrect-ит
         # старую запись и файл снова враньё про одно и то же слово.
-        self._commit(world, resolved=rep.learned_concepts)
+        # Сюда же попадают действия и СНЯТЫЕ диагнозы: удаление из unknown
+        # ничем не отличается от удаления выученного существительного.
+        self._commit(world, resolved=list(rep.learned_concepts)
+                     + list(rep.learned_actions) + list(rep.retracted_unknown))
         rep.facts = sum(len(sf.facts) for sf in sentences)
         _status(f"записано: фактов {rep.observations_new}, подтверждено "
                 f"{rep.observations_seen}, пропущено {rep.skipped}")
         rep.low_confidence = sum(1 for sf in sentences for f in sf.facts
                                  if f.confidence < self.min_confidence)
+        # Действия — НЕ «новые концепты»: для них есть своя строка отчёта
+        # (learned_actions). Свалить их сюда — значит получить «сущностей 3»
+        # там, где сущностей две, а третье — глагол.
         rep.new_concepts = sorted({k for k in entities
-                                   if (entities[k] or {}).get("learned_from") == source})
+                                   if (entities[k] or {}).get("learned_from") == source
+                                   and (entities[k] or {}).get("kind") != "action"})
         # Резолвер форм должен увидеть новичков СРАЗУ: иначе следующее
         # предложение того же текста спросит LLM про уже выученное слово.
         if self.core is not None and hasattr(self.core, "sync_lemmas"):
@@ -500,8 +643,64 @@ class Learner:
                                                     fact.negated, rel,
                                                     int(observations[key].get("support", 1))))
 
+    def _store_action(self, entities: dict, sf, verb: str, source: str,
+                      rep: LearningReport) -> None:
+        """
+        Закрепить глагол КАК ДЕЙСТВИЕ, а не как сущность.
+
+        Записывается узел ACTION: категория «действие», участники из этого же
+        предложения (кто может / над чем) и профиль K/M.S, ЕСЛИ он есть в
+        справочнике core/actions.py. Профиля нет — мы ЕГО НЕ ВЫДУМЫВАЕМ:
+        профиль участвует в матчинге предиктивного цикла, и выдуманное число
+        молча порождает ложные предсказания. Отсутствие профиля фиксируется
+        громко — в notes отчёта и в журнале.
+        """
+        prof = profile_of(verb)
+        agents = [f.head for f in sf.facts
+                  if f.relation == "CAN_DO" and f.tail == verb]
+        objects = [f.tail for f in sf.facts
+                   if f.relation in ("OBJECT_OF", "LOCATED_IN", "DIRECTION")
+                   and f.head == verb]
+        rec = {
+            "concept": verb,
+            "kind": "action",
+            "hierarchy": ["действие"],
+            "participants": {"agent": agents[:6], "object": objects[:6]},
+        }
+        if prof:
+            rec["action_profile"] = prof
+        # mark_learned=False: глагол живёт в своей строке отчёта
+        # (learned_actions), а не в списке выученных сущностей. Два списка —
+        # чтобы «выучено 3» и «действия 1» не складывались в «выучено 4».
+        self._store_entity(entities, verb, rec, source, sf.sentence, rep,
+                           mark_learned=False)
+        if not prof:
+            note = (f"«{verb}»: действие закреплено БЕЗ профиля K/M/S — "
+                    f"в справочнике core/actions.py такого нет. Узел и связи "
+                    f"работают, но предиктивный цикл это действие не оценит")
+            if note not in rep.notes:
+                rep.notes.append(note)
+                _status("⚠️ " + note)
+        if verb not in rep.learned_actions:
+            rep.learned_actions.append(verb)
+
+    @staticmethod
+    def _mark_learned(rep: "LearningReport", lemma: str) -> None:
+        """
+        Слово в список выученных — НЕ ПОВТОРЯЯСЬ.
+
+        Один и тот же концепт попадает сюда из двух мест: из основного цикла
+        («учитель ответил») и из _store_entity («сущность создана»). Без
+        проверки отчёт печатал «выучено: вода, вода, гасить, гасить, пламя,
+        пламя» на три слова — ЗАМЕРЕНО в живом GUI. Числа отчёта обязаны
+        сходиться со словами, иначе весь отчёт перестаёт быть измерением.
+        """
+        if lemma and lemma not in rep.learned_concepts:
+            rep.learned_concepts.append(lemma)
+
     def _store_entity(self, entities: dict, lemma: str, data: dict,
-                      source: str, evidence: str, rep: LearningReport) -> None:
+                      source: str, evidence: str, rep: LearningReport,
+                      mark_learned: bool = True) -> None:
         """
         СЛИЯНИЕ БЕЗ СТИРАНИЯ (правило 1). Существующие непустые поля
         дополняются, но не заменяются; списки объединяются без повторов.
@@ -520,7 +719,8 @@ class Learner:
             rep.entities_updated += 1
         else:
             rep.entities_created += 1
-            rep.learned_concepts.append(lemma)
+            if mark_learned:
+                self._mark_learned(rep, lemma)
         if self.core is not None and hasattr(self.core, "integrate_knowledge"):
             try:
                 self.core.integrate_knowledge({"concept": lemma,
