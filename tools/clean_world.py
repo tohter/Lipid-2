@@ -107,13 +107,60 @@ def plan(world: dict) -> tuple:
             changes.append(f"{key}: есть запись со знанием -> убрать из "
                            f"unknown_words (иначе файл враньё про одно слово)")
             del out["unknown_words"][key]
+
+    # Шаг 5. Неверный диагноз на ГЛАГОЛЕ. ЗАМЕРЕНО в живом lipid_world.json:
+    # «гасить» стоит в unknown_words со статусом asked_empty. Этот статус
+    # значит «мы спросили честным вопросом и не нашли» — но спрашивали его как
+    # СУЩНОСТЬ, то есть вопроса как такого не было. Оставить это = навсегда
+    # запретить слово к изучению из-за категориальной ошибки прежнего кода.
+    #
+    # Здесь НЕТ контекста предложения (в отличие от Learner, который видит
+    # разбора), поэтому распознавание — по морфологии и словарику профилей.
+    from core.actions import looks_like_verb
+    for key, u in list(out["unknown_words"].items()):
+        if not isinstance(u, dict) or u.get("status") != "asked_empty":
+            continue
+        if not looks_like_verb(key):
+            continue
+        changes.append(f"{key}: asked_empty на глаголе выставлен НЕВЕРНО "
+                       f"(искали сущность, а это действие) -> снять статус, "
+                       f"слово возвращается в очередь уроков")
+        rest = {k: v for k, v in u.items() if k != "status"}
+        rest["status"] = "not_asked"
+        rest["status_note"] = ("диагноз asked_empty снят clean_world: слово "
+                               "спрашивали как сущность, а оно действие")
+        out["unknown_words"][key] = rest
+
+    # Шаг 6. Записи СТАРЫХ уроков без поля status. Поведенчески они и так
+    # трактуются как «не спрашивали» (статус не равен asked_empty -> спрашиваем),
+    # но файл при этом НЕ самоописан: GUI и любой читатель видит пустоту там,
+    # где должен быть выверенный факт. ЗАМЕРЕНО в живой памяти: 6 из 7 записей
+    # ('берег', 'рыбак', 'сеть', 'чинить', 'опылять', 'цветок') рождения поля
+    # status не застали.
+    for key, u in out["unknown_words"].items():
+        if not isinstance(u, dict) or u.get("status"):
+            continue
+        changes.append(f"{key}: у записи нет status -> not_asked (уроки до "
+                       f"появления поля; НЕ спрашивали, значит учить можно)")
+        u["status"] = "not_asked"
+        u["status_note"] = "статус дописан clean_world: запись старше поля status"
     return out, changes
 
 
 def main(argv):
     do_write = "--write" in argv
-    path = os.environ.get("LIPID2_WORLD_FILE") or os.path.join(MEMORY_DIR,
-                                                              "lipid_world.json")
+    # Путь обязан читаться и из аргумента командной строки: без этого «почисти вот этот
+    # файл» молча чистит ДРУГОЙ (тот, что указан в env), а оператор видит
+    # «мусора не найдено» про совершенно другую память. ЗАМЕРЕНО: вызов
+    # `clean_world.py /tmp/x/lipid_world.json --show` показал цифры рабочей
+    # памяти Вселенной.
+    args = [a for a in argv if not a.startswith("--")]
+    if len(args) > 1:
+        print(f"⚠️ ожидается ОДИН путь, передано {len(args)}: {args} — "
+              "беру первый", file=sys.stderr, flush=True)
+    path = (args[0] if args
+            else os.environ.get("LIPID2_WORLD_FILE")
+            or os.path.join(MEMORY_DIR, "lipid_world.json"))
     world = read_world(path)
     clean, changes = plan(world)
     print(f"файл: {path}")

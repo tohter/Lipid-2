@@ -56,6 +56,15 @@ class Lipid2Brain:
         self.teacher_wiki = WikiTeacher(memory_dir=self.memory_dir)
         self.ask_user_callback = None      # колбэк: (вопрос) -> ответ пользователя, ставится из GUI
 
+        # СЧЁТЧИКИ ОБРАЩЕНИЙ К КАНАЛАМ (сбрасываются на каждый сеанс обучения).
+        # Зачем: без них утверждение «знание пришло из Gemma» НЕЧЕМ ПРОВЕРИТЬ
+        # машиной. ЗАМЕРЕНО: сквозной e2e рапортовал «выучил и вспомнил» даже
+        # при ВЫКЛЮЧЕННОМ LLM — цикл проверялся, канал нет. Число обращений и
+        # есть доказательство, что канал работали, а не что тест подставил
+        # ответ.
+        self.channel_calls = {"llm": 0, "wiki": 0, "user": 0}
+        self.channel_found = {"llm": 0, "wiki": 0, "user": 0}
+
         # Нейроморфное ядро (SDR + STDP + гормоны)
         self.core = GraphMemory()
         self.hormones = Hormones()
@@ -348,6 +357,7 @@ class Lipid2Brain:
             print("   [Канал 1] Локальный Учитель (Gemma)...")
             self._say(f"канал 1: спрашиваю локальную модель про «{concept}»")
             try:
+                self.channel_calls["llm"] += 1
                 got = self.teacher_llm.run_agent(
                     base_concept=concept, derived_concept=concept,
                     filename="lipid_world.json")
@@ -357,6 +367,7 @@ class Lipid2Brain:
                 learned_data = got if got else None
                 failure = getattr(self.teacher_llm, "last_failure", None)
                 if learned_data:
+                    self.channel_found["llm"] += 1
                     self._say(f"канал 1: нашёл «{concept}»")
                     print("   \u2714 Знание получено от локальной LLM.")
                 elif failure:
@@ -379,10 +390,13 @@ class Lipid2Brain:
             print("   [Канал 2] Интернет (Википедия)...")
             self._say(f"канал 1 пуст — ищу в интернете «{concept}»")
             try:
+                self.channel_calls["wiki"] += 1
                 wiki = self.teacher_wiki.fetch_concept(concept)
                 if wiki and wiki.get("base_entity", {}).get("concept"):
                     if self.teacher_wiki.write_to_world(wiki):
                         learned_data = self.find_in_memory(concept)
+                        if learned_data:
+                            self.channel_found["wiki"] += 1
                 self._say(f"канал 2: {'нашёл' if learned_data else 'НЕ нашёл'} "
                           f"«{concept}» в Википедии")
                 if learned_data:
@@ -406,6 +420,7 @@ class Lipid2Brain:
             # до пользователя даже там, где колбэк забыли подключить, — иначе
             # «спросить пользователя» остаётся обработчиком на бумаге.
             user_answer = None
+            self.channel_calls["user"] += 1
             if self.ask_user_callback is not None:
                 user_answer = self.ask_user_callback(concept)
             if not user_answer:
@@ -414,6 +429,7 @@ class Lipid2Brain:
             if user_answer:
                 learned_data = self._learn_from_user(concept, user_answer)
                 if learned_data:
+                    self.channel_found["user"] += 1
                     print("   \u2714 Знание получено от пользователя.")
                     self._say(f"записано с твоих слов: «{concept}»")
             else:
@@ -556,8 +572,15 @@ class Lipid2Brain:
         Отчёт обязателен: без чисел нельзя сказать, стала ли система умнее
         после правки правил, а «выглядит работающим» — не измерение.
         """
+        # Сеанс обучения начинается — счётчики каналов обнуляются, иначе
+        # «нашёл 2» окажется суммой за всё время жизни процесса и ничего не
+        # будет значить.
+        self.channel_calls = {"llm": 0, "wiki": 0, "user": 0}
+        self.channel_found = {"llm": 0, "wiki": 0, "user": 0}
         rep = self.learner.learn_from_text(text, source=source,
                                            allow_teacher=allow_teacher)
+        rep.channel_calls = dict(self.channel_calls)
+        rep.channel_found = dict(self.channel_found)
         # Учились — значит мир изменился: резолвер форм Вселенной обязан
         # увидеть новые имена, иначе следующее предложение спросит LLM про
         # уже выученное слово.
@@ -593,6 +616,8 @@ class Lipid2Brain:
             return self._handle_properties(subject)
         elif intent_type == "INTERACTION":
             return self._handle_interaction(ir_intent.subjects)
+        elif intent_type == "ACTION":
+            return self._handle_actions(subject)
         else:
             return f"🤔 [Lipid-2]: Интент '{intent_type}' распознан, но обработчик для него ещё в разработке."
 
@@ -751,6 +776,28 @@ class Lipid2Brain:
                     f"факт, что такое слово существует.")
         return f"[Lipid-2]: Свойства сущности '{concept}': [{props_str}]."
 
+    def _handle_actions(self, concept: str) -> str:
+        """
+        «Что делает / что умеет X» — ответ из наблюдений, а не из головы.
+
+        ЕДИНСТВЕННЫЙ носитель этого знания — observations вида
+        «вода|CAN_DO|гасить». Никакой отдельной обработки глагола не нужно:
+        action-узел это тот же хвост связи, а профиль — его подпись.
+        """
+        data = self.find_in_memory(concept)
+        name = data.get("matched_concept", concept) if data else concept
+        obs = self._load_world().get("observations", {})
+        acts = [v["tail"] for k, v in obs.items()
+                if v.get("head") == name and v.get("relation") == "CAN_DO"
+                and not v.get("negated")]
+        if not acts:
+            known = " (я учил «" + name + "», но умений не записывал)" \
+                if data else ""
+            return (f"[Lipid-2]: Я не знаю, что делает '{name}'"
+                    f"{known}. Скажи сам — я запомню.")
+        return (f"[Lipid-2]: '{name}' умеет: "
+                f"{', '.join(sorted(set(acts)))}.")
+
     @staticmethod
     def _describe_action(concept: str, ent: dict, properties: bool = False) -> str:
         """
@@ -780,7 +827,7 @@ class Lipid2Brain:
     def _handle_interaction(self, subjects: list) -> str:
         """Обработка взаимодействия двух и более сущностей."""
         subj_str = " и ".join(subjects)
-        return f"[Lipid-2]: Запущен анализ взаимодействия между [{subj_str}]. (Векторный просчет [K, M, S] симулятора)."
+        return f"[Lipid-2]: Запущен анализ взаимодействия между [{subj_str}]. (Векторный просчёт [K, S, M] симулятора)."
 
     # ── ДОСТУП ДЛЯ GUI / ХОРМОНЫ ──────────────────────────
 

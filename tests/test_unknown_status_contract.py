@@ -168,6 +168,79 @@ class TestTwoKindsOfUnknown(unittest.TestCase):
                          "обращение к каналу засчитано, хотя канала не было")
 
 
+class TestChannelCounters(unittest.TestCase):
+    """
+    Мозг обязан считать ОБРАЩЕНИЯ К КАЖДОМУ КАНАЛУ и публиковать последний
+    отчёт. Причина не в косметике: ЗАМЕРЕНО, сквозной прогон утверждал
+    «выучил и выучил и вспомнил» при выключенном LLM, потому что проверял
+    только текст журнала. Число обращений — единственное доказательство, что
+    канал работали; без него «знание дала Gemma» необратимо в утверждение.
+    """
+
+    def _brain(self, tmp):
+        from brain.lipid2_brain import Lipid2Brain
+        os.makedirs(tmp, exist_ok=True)
+        with open(os.path.join(tmp, "lipid_world.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"entities": {}, "unknown_words": {},
+                       "observations": {}}, f, ensure_ascii=False)
+        brain = Lipid2Brain(memory_dir=tmp)
+
+        class Silent:
+            last_failure = None
+
+            def run_agent(self, **kw):
+                return None
+
+        brain.teacher_llm = Silent()
+        brain.use_wiki_teacher = False
+        brain.ask_user_enabled = False
+        return brain
+
+    def test_counters_count_calls_per_channel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            brain = self._brain(tmp)
+            rep = brain.learn_from_text("Вода гасит пламя.", allow_teacher=True)
+            self.assertGreater(rep.channel_calls.get("llm", 0), 0,
+                               "канал 1 вызывался — счётчик обязан это показать")
+            self.assertEqual(rep.channel_found.get("llm", 0), 0,
+                             "молчаливый учитель не обязан становиться нашедшим")
+            self.assertEqual(rep.channel_calls.get("user", 0), 0,
+                             "канал пользователя выключен — обращений нет")
+
+    def test_counters_reset_between_lessons(self):
+        """Счётчики сеанса, а не процесса: сумма за всё время ничего не значит."""
+        with tempfile.TemporaryDirectory() as tmp:
+            brain = self._brain(tmp)
+            first = brain.learn_from_text("Вода гасит пламя.", allow_teacher=True)
+            again = brain.learn_from_text("Пчёлы опыляют цветы.",
+                                          allow_teacher=True)
+            self.assertLessEqual(again.channel_calls.get("llm", 0),
+                                 first.channel_calls.get("llm", 0) + 3,
+                                 "счётчик не накопился за два урока")
+
+    def test_disabled_channel_counts_zero_calls(self):
+        """Контроль ВВЕРХ: снятый канал обязан дать ровно ноль обращений.
+        Если счётчик рисует вызовы, вся проверка «знание дала Gemma» — ложь."""
+        with tempfile.TemporaryDirectory() as tmp:
+            brain = self._brain(tmp)
+            rep = brain.learn_from_text("Вода гасит пламя.", allow_teacher=False)
+            self.assertEqual(rep.channel_calls.get("llm", 0), 0)
+            self.assertEqual(rep.channel_calls.get("wiki", 0), 0)
+            self.assertEqual(rep.channel_calls.get("user", 0), 0)
+            # unknown = «осталось невыученным», not_asked = «мы НЕ искали».
+            # Без учителей первое равно второму; ложью было бы status=
+            # asked_empty в мире («искали — там пусто»).
+            self.assertEqual(set(rep.unknown), set(rep.not_asked),
+                             "невыученное без учителей обязано числиться неисканным")
+            world = read_world(brain.world_filepath)
+            statuses = {k: v.get("status")
+                        for k, v in world["unknown_words"].items()}
+            self.assertNotIn("asked_empty", statuses.values(),
+                             f"выключенные каналы породили пожизненный "
+                             f"«искали и не нашли»: {statuses}")
+
+
 class TestVerbsAreNotEntities(unittest.TestCase):
     """
     Глагол — отношение, а не «сущность, у которой не нашли иерархию».
@@ -229,13 +302,19 @@ class TestVerbsAreNotEntities(unittest.TestCase):
         Профиля K/M/S в справочнике нет — его НЕ ВЫДУМЫВАЮТ, а громко говорят.
         Выдуманное число молча породило бы ложные предсказания предиктивного
         цикла, и проверить это было бы нечем.
+
+        Глагол Примера — «шить»: его в справочнике нет и не было. (Раньше тут
+        стояло «гасить» как пример пустоты; профиль пришёл с числом от
+        пользователя, и тест стал бы лгать о справочнике.)
         """
         from core.actions import profile_of
-        self.assertIsNone(profile_of("гасить"),
+        self.assertIsNone(profile_of("шить"),
                           "справочник внезапно обогатился неподтверждённым числом")
         rep = self._learner(StubTeacher({})).learn_from_text(
-            "Вода гасит пламя.", source="t")
-        self.assertNotIn("action_profile", self._read()["entities"]["гасить"])
+            "Портниха шьёт платье.", source="t")
+        ent = self._read()["entities"].get("шить")
+        self.assertIsInstance(ent, dict, "ACTION-узел обязан появиться и без числа")
+        self.assertNotIn("action_profile", ent)
         self.assertTrue(any("профиля" in n for n in rep.notes),
                         f"отсутствие профиля промолчано: {rep.notes}")
 
@@ -255,6 +334,9 @@ class TestVerbsAreNotEntities(unittest.TestCase):
         prof = profile_of("летать")
         self.assertEqual(prof, [235, 70, 5],
                          "числа справочника изменены — это договор, а не догадка")
+        # «гасить» подтверждён пользователем: [кинетика, стоимость сигнала,
+        # метаболизм] = [20, 50, 10]. Проверяется ПОЗИЦИЯМИ, а не «на глаз».
+        self.assertEqual(profile_of("гасить"), [20, 50, 10])
         ent = self._read()["entities"].get("летать")
         self.assertEqual((ent or {}).get("action_profile"), prof)
 

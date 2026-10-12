@@ -26,6 +26,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from brain.learner import LearningReport
 from core.extract import SimpleExtractor
 from core.morph import Morph
 
@@ -244,6 +245,31 @@ class TestLearnerContract(unittest.TestCase):
         lr.learn_from_text("Кошка сторожит мышь.", source="t")
         self.assertEqual(self._read()["observations"], {},
                          "низкоуверенный факт записан в память")
+
+    def test_report_names_each_knowledge_channel(self):
+        """
+        «Успешно: 2» не говорит, КТО дал знание: то же число дают молчавшая
+        Википедия, молчавшая Gemma и ответ пользователя. ЗАМЕРЕНО: сквозной
+        прогон рапортовал «выучил и вспомнил» при ВЫКЛЮЧЕННОМ LLM. Отчёт обязан
+        показывать обращения по каждому каналу — тогда «знанию научила Gemma»
+        проверяемо числом, а не моими глазами.
+        """
+        rep = LearningReport(
+            teacher_calls=2, teacher_success=2,
+            channel_calls={"llm": 2, "wiki": 0, "user": 0},
+            channel_found={"llm": 2, "wiki": 0, "user": 0},
+        )
+        text = rep.as_text()
+        self.assertIn("каналы:", text)
+        self.assertIn("локалка 2/2", text)
+        self.assertIn("Вики 0/0", text)
+        self.assertIn("ты 0/0", text)
+
+    def test_report_without_channel_data_stays_quiet(self):
+        """Каналы проставляет мозг. Если их нет (Learner сам по себе, другой
+        вызывающий) — строки «каналы:» быть не должно: 0/0 там означало бы
+        «канал молчал», хотя на самом деле его НЕ МЕРЯЛИ."""
+        self.assertNotIn("каналы:", LearningReport(teacher_calls=1).as_text())
 
     def test_report_counts_are_honest(self):
         lr = self._learner()

@@ -245,6 +245,15 @@ class Lipid2GUI:
         # из чужого потока НЕЛЬЗЯ: на этой машине это дало
         # RuntimeError: main thread is not in main loop. Поэтому галочка
         # живёт в UI, а поток читает обычный bool (обновляется command'ом).
+        # ПОСЛЕДНИЙ ОТЧЁТ И КАНАЛЫ, доступные МАШИНЕ.
+        # Зачем: окно показывает отчёт глазами (текст в журнале), и любой
+        # сквозной прогон мог только искать подстроки в тексте журнала.
+        # ЗАМЕРЕНО: e2e-прогон утверждал «выучил и вспомнил», даже когда все
+        # три канала были выключены, потому что проверял цикл, а не источник
+        # знания. Эти два поля дают проверке числа, а не строки.
+        self.last_report = None            # brain.learner.LearningReport | None
+        self.last_channel_calls = {}       # {"llm": n, "wiki": n, "user": n}
+        self.last_channel_found = {}
         self.teacher_enabled = True
         self.ask_enabled = False
 
@@ -581,6 +590,11 @@ class Lipid2GUI:
         def work():
             rep = self.brain.learn_from_text(text, source="gui",
                                              allow_teacher=allow_teacher)
+            # Публикация отчёта и каналов — ДО журнала: прогонам нужны числа,
+            # а не разбор текста (см. комментарий полей last_report).
+            self.last_report = rep
+            self.last_channel_calls = dict(getattr(self.brain, "channel_calls", {}) or {})
+            self.last_channel_found = dict(getattr(self.brain, "channel_found", {}) or {})
             # Отчёт — в журнал окна: «выучил» без чисел невозможно проверить.
             self.journal.add(format_report(rep), "report")
             self._pending_status = summarize_report(rep)   # итог держится 8 с

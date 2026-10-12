@@ -135,6 +135,118 @@ class TestWriteMode(unittest.TestCase):
             self.assertEqual(fh.read(), raw, "--show переписал файл")
 
 
+class TestVerbStatusMigration(unittest.TestCase):
+    """
+    asked_empty на ГЛАГОЛЕ — диагноз, выставленный неверным вопросом.
+
+    Прежний код спрашивал «гасить» так же, как «пчелу»: найди онтологию
+    сущности. Википедия на глагол такой статьи не даёт, слово получало
+    статус «спрашили — пусто» и NEVER спрашивалось снова. Мусор в файле,
+    который выглядит как результат поиска, — опаснее пустоты: его никто не
+    идёт проверять.
+    """
+
+    def test_asked_empty_on_verb_is_lifted(self):
+        world = {"entities": {}, "observations": {},
+                 "unknown_words": {"гасить": {"status": "asked_empty",
+                                              "count": 3,
+                                              "evidence": "Вода гасит пламя"}}}
+        clean, changes = clean_world.plan(world)
+        rec = clean["unknown_words"]["гасить"]
+        self.assertEqual(rec["status"], "not_asked",
+                         f"неверный диагноз пережил миграцию: {rec}")
+        self.assertTrue(any("гасить" in c and "глагол" in c for c in changes),
+                        f"снятие статуса промолчано: {changes}")
+
+    def test_noun_asked_empty_survives(self):
+        """Для существительного asked_empty ЧЕСТНЫЙ: трогать его нельзя."""
+        world = {"entities": {}, "observations": {},
+                 "unknown_words": {"пчела": {"status": "asked_empty", "count": 2}}}
+        clean, changes = clean_world.plan(world)
+        self.assertEqual(clean["unknown_words"]["пчела"]["status"], "asked_empty",
+                         f"честный диагноз существительного сломан: {changes}")
+
+    def test_infinitive_recognised_as_verb(self):
+        """
+        Леммы глаголов в памяти — ИНФИНИТИВЫ, а у них часть речи INFN, не VERB.
+        Без этого живая память (гасить/чинить/опылять) осталась бы отравленной.
+        """
+        from core.actions import looks_like_verb
+        for v in ("гасить", "чинить", "опылять", "катиться"):
+            self.assertTrue(looks_like_verb(v), f"«{v}» не распознан как действие")
+        for n in ("пчела", "цветок", "вода", "берег", "сеть", "ввод"):
+            self.assertFalse(looks_like_verb(n), f"«{n}» ложно назван действием")
+
+    def test_legacy_entries_without_status_become_not_asked(self):
+        """
+        Записи СТАРЫХ уроков поля status не застали. Поведенчески они и так
+        трактуются как «не спрашивали», но файл обязан быть самоописанным:
+        пустое поле — это не утверждение, а его отсутствие.
+        ЗАМЕРЕНО в живой памяти: 6 из 7 unknown-записей без status.
+        """
+        world = {"entities": {}, "observations": {},
+                 "unknown_words": {"берег": {"count": 1, "evidence": "на берегу"},
+                                   "рыбак": {"count": 2}}}
+        clean, changes = clean_world.plan(world)
+        for key in ("берег", "рыбак"):
+            self.assertEqual(clean["unknown_words"][key]["status"], "not_asked",
+                             f"«{key}» осталось без выверенного статуса")
+        self.assertTrue(any("нет status" in c for c in changes),
+                        f"дописание статуса промолчано: {changes}")
+        # идемпотентность: повторный проход не плодит изменений
+        again, ch2 = clean_world.plan(clean)
+        self.assertEqual(again["unknown_words"], clean["unknown_words"])
+        self.assertEqual([c for c in ch2 if "нет status" in c], [])
+
+    def test_migration_is_idempotent_on_verb_status(self):
+        world = {"entities": {}, "observations": {},
+                 "unknown_words": {"чинить": {"status": "asked_empty"}}}
+        once, ch1 = clean_world.plan(world)
+        twice, ch2 = clean_world.plan(once)
+        self.assertEqual(twice["unknown_words"]["чинить"],
+                         once["unknown_words"]["чинить"])
+        self.assertTrue(ch1 and not ch2,
+                        f"идемпотентность нарушена: {ch2}")
+
+
+class TestPathArgument(unittest.TestCase):
+    """
+    `clean_world.py /путь/к/файлу` обязан чистить ЭТОТ файл.
+
+    ЗАМЕРЕНО: позиционный путь игнорировался, и «покажи мусор вот в этой
+    памяти» печатал цифры рабочей памяти Вселенной — то есть оператор получал
+    «мусора не найдено» про совершенно другой файл.
+    """
+
+    def _run(self, path, extra_env=None):
+        env = dict(os.environ, LIPID2_STATUS="0")
+        env.pop("LIPID2_MEMORY_DIR", None)
+        env.pop("LIPID2_WORLD_FILE", None)
+        env.update(extra_env or {})
+        return subprocess.run(
+            [sys.executable, os.path.join(ROOT, "tools", "clean_world.py"),
+             path, "--show"], env=env, capture_output=True, text=True, timeout=180)
+
+    def test_positional_path_is_used(self):
+        d = tempfile.mkdtemp(prefix="l2path-")
+        path = os.path.join(d, "lipid_world.json")
+        write_world(path, {"entities": {}, "observations": {},
+                           "unknown_words": {"гасить": {"status": "asked_empty"}}})
+        res = self._run(path)
+        self.assertIn(path, res.stdout, f"путь не показан: {res.stdout}")
+        self.assertIn("гасить", res.stdout,
+                      "переданный файл не был разобран (показан чужой)")
+
+    def test_positional_path_beats_env(self):
+        d = tempfile.mkdtemp(prefix="l2path2-")
+        path = os.path.join(d, "lipid_world.json")
+        write_world(path, {"entities": {}, "observations": {},
+                           "unknown_words": {"гасить": {"status": "asked_empty"}}})
+        res = self._run(path, {"LIPID2_MEMORY_DIR": "/nonexistent-dir-l2"})
+        self.assertIn("гасить", res.stdout,
+                      "env победил явный путь — оператор чистит не тот файл")
+
+
 class TestRealMemoryNotTouchedByTests(unittest.TestCase):
     """
     Тесты не имеют права писать в рабочую память. Проверка — контрольная сумма

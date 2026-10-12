@@ -165,6 +165,12 @@ class LearningReport:
     # или исчерпан лимит. Это НЕ «мы не нашли» — это «мы не искали», и их надо
     # выучить позже. Терять это различие = терять слова навсегда.
     not_asked: List[str] = field(default_factory=list)
+    # ОБРАЩЕНИЯ К КАЖДОМУ КАНАЛУ, проставляет мозг (Lipid2Brain). Без них
+    # «выучено через Учителя» нельзя доказать: одно и то же число teacher_calls
+    # получается и когда молчала Википедия, и когда не просыпалась Gemma, и
+    # когда слово записал пользователь.
+    channel_calls: Dict[str, int] = field(default_factory=dict)
+    channel_found: Dict[str, int] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
     quality: Dict[str, bool] = field(default_factory=dict)
 
@@ -185,6 +191,12 @@ class LearningReport:
             f"   успешно: {self.teacher_success}   пропущено фактов: {self.skipped}"
             f"   низкоуверенных: {self.low_confidence}",
         ]
+        if self.channel_calls:
+            # Раздельно по каналам: «успешно: 2» не говорит, КТО дал знание.
+            names = {"llm": "локалка", "wiki": "Вики", "user": "ты"}
+            lines.append("  каналы: " + "   ".join(
+                f"{names.get(k, k)} {self.channel_found.get(k, 0)}/{v}"
+                for k, v in self.channel_calls.items()))
         if self.learned_concepts:
             lines.append("  выучено: " + ", ".join(self.learned_concepts[:12]))
         if self.learned_actions:
