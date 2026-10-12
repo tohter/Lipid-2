@@ -481,13 +481,15 @@ tests/test_learning_contract.py 32 теста: экстракция, прави�
 tests/test_bitsstore_contract.py + test_golden_bits.py   битовый кэш и golden
 tests/test_worldfile_contract.py  13: атомарная запись, битый JSON, убитый писатель
 tests/test_records_contract.py    20: слияние без потерь, тавтологии, обрывки
-tests/test_wiki_quality_contract.py 12: определения/свойства на живых вступления
-tests/test_clean_world_contract.py 8: миграция + «тесты не трогают рабочую память»
-tests/test_memory_isolation_contract.py 15: env-каталог, unknown, ответ юзера
+tests/test_wiki_quality_contract.py 16: определения/свойства на живых вступления
+tests/test_clean_world_contract.py  9: миграция + «тесты не трогают рабочую память»
+tests/test_memory_isolation_contract.py 10: env-каталог, unknown, ответ юзера
 tests/test_unknown_status_contract.py 5: asked_empty / not_asked, честный отчёт
-tests/test_presenter_contract.py    14: журнал, мост ответа, контроллер задач
+tests/test_presenter_contract.py    24: журнал, мост ответа, контроллер задач
 tests/test_gui_live.py              1: живое окно под Xvfb
-ИТОГО 189. Запреты статикой: test_static_hygiene.py (мёртвый код, заглушки).
+ИТОГО 189. Запреты статикой: test_static_hygiene.py — 3 AST-проверки (мёртвый код,
+заглушки, write-only атрибуты). Числа пересчитаны grep -c 'def test_', а не по
+памяти: в первом наброске этого абзаца они уже успели разъехаться.
 Запуск:      .venv/bin/python run.py
 Тесты:       LIPID2_STATUS=0 .venv/bin/python -m unittest discover -s tests
              (189, ~64 с)
