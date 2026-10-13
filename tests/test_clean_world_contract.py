@@ -86,6 +86,28 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(json.dumps(world, sort_keys=True), before,
                          "plan изменил входной мир — «показ» опасен")
 
+    def test_plan_does_not_mutate_nested_unknown_records(self):
+        """То же обещание, но на ВЛОЖЕННЫХ словарях — где оно и нарушалось.
+
+        dict(world["unknown_words"]) копирует словарь ПОПЕРЕК: запись внутри —
+        ТОТ ЖЕ объект. Шаг 6 («нет status -> not_asked») писал прямо в неё, и
+        ЗАМЕР показывал: после plan() у АРГУМЕНТА появляется status и
+        status_note. Прошлый тест этого не видел, потому что unknown_words у
+        него был пуст — тест обязан доставать до того места, где больно.
+        """
+        world = {"entities": {"флюгер": {"concept": "флюгер",
+                                         "definition": "Флюгер — это прибор."}},
+                 "unknown_words": {"рыбак": {"reason": "знания нет"}},
+                 "observations": {}, "relations": []}
+        before = json.dumps(world, sort_keys=True)
+        out, changes = clean_world.plan(world)
+        self.assertEqual(json.dumps(world, sort_keys=True), before,
+                         "plan мутирует вложенную запись аргумента: «просто "
+                         "посмотреть» меняет данные в памяти вызывающего")
+        self.assertEqual(out["unknown_words"]["рыбак"]["status"], "not_asked",
+                         "при переделке записи под new-словарь миграция обязана остаться")
+        self.assertTrue(any("status" in c for c in changes))
+
     def test_idempotent(self):
         world = {"entities": {"луга": {"concept": "луга",
                                        "hierarchy": ["луга", "деревни"]}},
@@ -275,6 +297,152 @@ class TestPathArgument(unittest.TestCase):
         res = self._run(path, {"LIPID2_MEMORY_DIR": "/nonexistent-dir-l2"})
         self.assertIn("гасить", res.stdout,
                       "env победил явный путь — оператор чистит не тот файл")
+
+
+class TestCheckMode(unittest.TestCase):
+    """
+    --check обязан ОТВЕЧАТЬ ЧИСЛОМ, а не только печатать текст.
+
+    Причина отдельная и злая: до появления флага показ при мусоре возвращал 0.
+    Значит любая «проверка состояния памяти» в скрипте или CI была бы вечно
+    зелёной — а именно тихую деградацию этот проект и считает багом (memory.txt).
+    Каждый тест здесь проверяет КОД ВОЗВРАТА, а не подстроку в выводе: вывод
+    может соврать, rc — нет.
+
+    Три кода, а не два: 0 чисто, 1 грязно, 2 проверка НЕ СОСТОЯЛАСЬ. Разделение
+    повторяет выверенный в проекте принцип not_asked / asked_empty — «не
+    проверено» и «проверено, грязно» лечатся по-разному, и смешав их в единицу
+    мы заставили бы оператора запускать --write на файле, который не открылся.
+    """
+
+    DIRTY = {"entities": {"пчела": {"concept": "пчела"},
+                          "флюгер": {"concept": "флюгер",
+                                     "hierarchy": ["флюгеры"],
+                                     "definition": "Флюгер — это прибор."}},
+             "observations": {}, "unknown_words": {}, "relations": []}
+
+    CLEAN = {"entities": {"флюгер": {"concept": "флюгер",
+                                     "hierarchy": ["приборы"],
+                                     "definition": "Флюгер — это прибор."}},
+             "observations": {}, "unknown_words": {}, "relations": []}
+
+    def _run(self, path, *flags):
+        env = dict(os.environ, LIPID2_STATUS="0")
+        env.pop("LIPID2_MEMORY_DIR", None)
+        env.pop("LIPID2_WORLD_FILE", None)
+        return subprocess.run(
+            [sys.executable, os.path.join(ROOT, "tools", "clean_world.py"),
+             path, *flags], env=env, capture_output=True, text=True, timeout=180)
+
+    def _file(self, d, name, payload):
+        path = os.path.join(d, name)
+        with io.open(path, "w", encoding="utf-8") as fh:
+            fh.write(payload if isinstance(payload, str)
+                     else json.dumps(payload, ensure_ascii=False))
+        return path
+
+    def test_dirty_file_returns_one(self):
+        d = tempfile.mkdtemp(prefix="l2chk1-")
+        path = self._file(d, "lipid_world.json", self.DIRTY)
+        res = self._run(path, "--check")
+        self.assertEqual(res.returncode, 1,
+                         f"грязный файл дал rc={res.returncode} — проверка "
+                         f"зелена на мусоре:\n{res.stdout}\n{res.stderr}")
+
+    def test_clean_file_returns_zero(self):
+        d = tempfile.mkdtemp(prefix="l2chk0-")
+        path = self._file(d, "lipid_world.json", self.CLEAN)
+        res = self._run(path, "--check")
+        self.assertEqual(res.returncode, 0,
+                         f"чистый файл Красный — проверка плачет на порядке:\n"
+                         f"{res.stdout}\n{res.stderr}")
+
+    def test_check_writes_absolutely_nothing(self):
+        """Грязный файл + --check: ни файла, ни бэкапа, ни копии битых байтов.
+
+        Проверка, которая пишет, — это уже не проверка. Бэкап .pre-clean и
+        побэкап .broken.json появляются только в режимах записи.
+        """
+        d = tempfile.mkdtemp(prefix="l2chk3-")
+        path = self._file(d, "lipid_world.json", self.DIRTY)
+        with io.open(path, "rb") as fh:
+            before = fh.read()
+        res = self._run(path, "--check")
+        self.assertEqual(res.returncode, 1)
+        with io.open(path, "rb") as fh:
+            self.assertEqual(fh.read(), before, "--check переписал файл")
+        extra = sorted(n for n in os.listdir(d) if n != "lipid_world.json")
+        self.assertEqual(extra, [], f"--check оставил в каталоге: {extra}")
+
+    def test_broken_file_is_not_clean(self):
+        """Битый JSON — НЕ «чисто». read_world вернул бы пустой мир, и наивная
+        проверка на plan() сказала бы «мусора нет» про файл, в котором знания
+        есть, но не читаются.
+        """
+        d = tempfile.mkdtemp(prefix="l2chk4-")
+        path = self._file(d, "lipid_world.json", '{"entities": {"а":')
+        res = self._run(path, "--check")
+        self.assertEqual(res.returncode, 2,
+                         f"нечитаемый файл получил rc={res.returncode}\n{res.stdout}")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("НЕ ЧИТАЕТСЯ", res.stdout)
+        self.assertFalse(os.path.exists(os.path.join(d, "lipid_world.broken.json")),
+                         "сама проверка скопировала битые байты — она пишет")
+
+    def test_missing_file_is_not_clean(self):
+        d = tempfile.mkdtemp(prefix="l2chk5-")
+        res = self._run(os.path.join(d, "нет-такого.json"), "--check")
+        self.assertEqual(res.returncode, 2,
+                         "неверный путь дан как «чисто» — это тот же класс "
+                         "неверный путь дан как «чисто» — это тот же класс "
+                         "лжи, что и вечнозелёная проверка\n" + res.stdout)
+
+    def test_check_and_write_cannot_both_be_requested(self):
+        d = tempfile.mkdtemp(prefix="l2chk6-")
+        path = self._file(d, "lipid_world.json", self.DIRTY)
+        with io.open(path, "rb") as fh:
+            before = fh.read()
+        res = self._run(path, "--check", "--write")
+        self.assertEqual(res.returncode, 2)
+        with io.open(path, "rb") as fh:
+            self.assertEqual(fh.read(), before,
+                             "противоречивые флаги всё-таки записали")
+
+    def test_check_agrees_with_write(self):
+        """Сходимость: после --write проверка ОБЯЗАНА стать зелёной.
+
+        Иначе --check красен всегда, и его перестают запускать — флаг, который
+        все игнорируют, хуже отсутствующего: он создаёт видимость контроля.
+        """
+        d = tempfile.mkdtemp(prefix="l2chk7-")
+        path = self._file(d, "lipid_world.json", self.DIRTY)
+        self.assertEqual(self._run(path, "--check").returncode, 1)
+        wr = self._run(path, "--write")
+        self.assertEqual(wr.returncode, 0, wr.stdout + wr.stderr)
+        again = self._run(path, "--check")
+        self.assertEqual(again.returncode, 0,
+                         f"--write отработал, а проверка всё ещё красная:\n"
+                         f"{again.stdout}")
+
+    def test_check_does_not_drop_transitions_or_unknown_sections(self):
+        """--check обязан видеть те же секции, что и план.
+
+        План уже переносит незнакомые ключи (иначе стирался бы опыт цикла),
+        но проверка обязана согласовываться с планом и на них: если --check
+        говорит «чисто», а план что-то пересобирает — один из двух врёт.
+        """
+        d = tempfile.mkdtemp(prefix="l2chk8-")
+        world = json.loads(json.dumps(self.CLEAN))
+        world["transitions"] = {"version": 1, "pack": 2, "rows": [
+            {"head": "кошка", "tails": ["спать"], "strengths": [3]}]}
+        world["секция_которой_я_не_знаю"] = {"важное": 1}
+        path = self._file(d, "lipid_world.json", world)
+        res = self._run(path, "--check")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        with io.open(path, encoding="utf-8") as fh:
+            after = json.load(fh)
+        self.assertEqual(len(after["transitions"]["rows"]), 1)
+        self.assertIn("секция_которой_я_не_знаю", after)
 
 
 class TestRealMemoryNotTouchedByTests(unittest.TestCase):
