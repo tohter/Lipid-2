@@ -278,6 +278,124 @@ def normalize_actions(actions) -> list:
     return out
 
 
+def normalize_provenance(prov: Any, *, source: str = None) -> List[dict]:
+    """
+    ПРОИСХОЖДЕНИЕ К ЕДИНОЙ СХЕМЕ: список объектов, а не смесь строк и объектов.
+
+    ПОЧЕМУ (очередь, п.14). В одном списке лежали И строки «wiki:Флюгер»
+    (teachers/teacher_wiki.py), И объекты {source, evidence, at}
+    (brain/learner.py, brain/lipid2_brain.py). Любой будущий код вида
+    [(p["source"], p["at"]) for p in provenance] падает на строке — и падает
+    НЕ на записи из Вики, а на первой попавшейся. Единая схема — объект:
+        {"source": str, "evidence": str, "at": int|None}
+
+    Строка разбирается по разделителю «:»: «wiki:Флюгер» ->
+        {"source": "wiki", "evidence": "Флюгер"}.
+    Строка без «:» — весь текст становится evidence, source берётся из
+    аргумента source или пустой.
+    """
+    if prov is None:
+        return []
+    items = prov if isinstance(prov, list) else [prov]
+    out: List[dict] = []
+    for item in items:
+        entry = _prov_entry(item, source)
+        if entry is not None and entry not in out:
+            out.append(entry)
+    return out
+
+
+def _prov_entry(item: Any, default_source: str = None) -> Optional[dict]:
+    """Одна запись происхождения -> объект единой схемы (или None)."""
+    if not item:
+        return None
+    if isinstance(item, dict):
+        src = item.get("source")
+        ev = item.get("evidence")
+        at = item.get("at")
+        # Незнакомые ключи не выбрасываем: расширение схемы не должно терять
+        # данные, но базовые три поля приводим к единому виду.
+        entry = dict(item)
+        entry["source"] = str(src) if src else (default_source or "")
+        entry["evidence"] = str(ev)[:200] if ev else ""
+        if at is not None:
+            try:
+                entry["at"] = int(at)
+            except (TypeError, ValueError):
+                entry["at"] = None
+        return entry
+    # Строка вида "source:evidence" или просто "evidence"
+    text = str(item).strip()
+    if not text:
+        return None
+    if ":" in text:
+        src, _, ev = text.partition(":")
+        return {"source": src.strip() or (default_source or ""),
+                "evidence": ev.strip()[:200], "at": None}
+    return {"source": default_source or "", "evidence": text[:200], "at": None}
+
+
+# СТАРШИНСТВО ДИАГНОЗОВ «не знаю» (очередь, п.15). Чем больше число, тем
+# сильнее знание О НЕЗНАНИИ и тем меньше право его снять.
+#   asked_empty — спросили честным вопросом и не нашли (сильнейшее: снимать
+#                 его повторным спрашиванием = сжигать минуты на запрос);
+#   action_no_profile — действие ждёт K/M/S (знание есть, профиля нет);
+#   not_asked — не спрашивали (слабое: слово ОБЯЗАНО вернуться в очередь);
+#   (нет статуса) — самое слабое (записи старше самого поля status).
+UNKNOWN_STATUS_RANK = {"asked_empty": 3, "action_no_profile": 2,
+                       "not_asked": 1}
+
+
+def unknown_status_rank(status) -> int:
+    """Сила диагноза «не знаю»; неизвестный/пустой статус — 0."""
+    return UNKNOWN_STATUS_RANK.get(str(status), 0)
+
+
+def merge_unknown_entry(prev: Optional[dict], new: Optional[dict]) -> dict:
+    """
+    СЛИЯНИЕ двух записей unknown_words ОДНОГО слова (очередь, п.15).
+
+    ПОЧЕМУ. При слиянии двух снимков мира статус выбирался ФАКТИЧЕСКИ по
+    порядку чтения (кто последний — тот и прав), а count брали max. Из-за
+    этого правильный диагноз asked_empty мог быть завален старым not_asked,
+    и слово возвращалось в очередь урока — или наоборот, снимался неверный
+    asked_empty с глагола. Оба направления ЗАМЕРЕНЫ в проекте как ошибки.
+
+    Правило: остаётся САМЫЙ СИЛЬНЫЙ диагноз (см. UNKNOWN_STATUS_RANK), а
+    count — максимум. При равной силе побеждает новый (у него свежее
+    status_note/reason).
+    """
+    prev = prev if isinstance(prev, dict) else {}
+    new = new if isinstance(new, dict) else {}
+    if not prev:
+        return dict(new)
+    if not new:
+        return dict(prev)
+    merged = dict(prev)
+    # count — максимум: счётчик обращений не зависит от порядка снимков.
+    merged["count"] = max(int(prev.get("count", 1)), int(new.get("count", 1)))
+    rp, rn = unknown_status_rank(prev.get("status")), unknown_status_rank(new.get("status"))
+    if rn > rp:
+        winner, loser = new, prev
+    elif rn < rp:
+        winner, loser = prev, new
+    else:
+        winner, loser = new, prev          # равная сила — свежее важнее
+    for k, v in winner.items():
+        if k == "count":
+            continue
+        if v not in (None, "", [], {}):
+            merged[k] = v
+    # Поля проигравшего, которых нет у победителя, НЕ теряем: reason/seen_as
+    # могут нести факты, которых у победителя нет вообще.
+    for k, v in loser.items():
+        if k == "count" or k in merged:
+            continue
+        if v not in (None, "", [], {}):
+            merged[k] = v
+    return merged
+
+
 def merge_entity(prev: Optional[dict], new: dict) -> dict:
     """
     СЛИЯНИЕ ДВУХ ЗАПИСЕЙ ОДНОЙ СУЩНОСТИ. ОДНА РЕАЛИЗАЦИЯ ДЛЯ ВСЕХ.
@@ -323,10 +441,11 @@ def merge_entity(prev: Optional[dict], new: dict) -> dict:
             merged[k] = v
     # ПРОИСХОЖДЕНИЕ: доказательства накапливаются, но не бесконечно — файл
     # читается человеком, и запись на 500 строк нечитабельна.
-    prov = list(merged.get("provenance") or [])
-    new_prov = new.get("provenance") or []
-    for p in (new_prov if isinstance(new_prov, list) else [new_prov]):
-        if p and p not in prov:
+    # Обе стороны приводятся к ЕДИНОЙ схеме (п.14): иначе сравнение
+    # «p not in prov» не ловило бы дубль строки и объекта об одном и том же.
+    prov = normalize_provenance(merged.get("provenance"))
+    for p in normalize_provenance(new.get("provenance")):
+        if p not in prov:
             prov.append(p)
     if prov:
         merged["provenance"] = prov[-12:]

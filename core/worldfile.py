@@ -85,12 +85,36 @@ def atomic_write_json(path: str, data: dict) -> None:
     Схема: временный файл в ТОМ ЖЕ каталоге -> flush + fsync -> os.replace.
     os.replace атомарен в пределах одной файловой системы; отсюда требование
     «тот же каталог» (в /tmp в другой FS — уже не атомарно, а тихо медленнее).
+
+    ПРАВА ФАЙЛА (очередь, п.15.2). ЗАМЕРЕНО: mkstemp создаёт временный файл с
+    режимом 0600, а os.replace сохраняет РЕЖИМ ЗАМЕНЯЮЩЕГО файла, а не прежнего.
+    Поэтому каждая атомарная запись молча даунгрейдила права живой Вселенной
+    0664 -> 0600 (проверено: /data/memory/lipid_world.json до записи 664,
+    после — 600). Пока писатель и читатель — один и тот же пользователь, это
+    невидимо; но как только мир писала одна учётная запись/группа, а читала
+    другая (демон + человек, контейнер + хост), чтение падало по правам
+    с сообщением, которое ничего не объясняет. Лечение: перенести режим
+    СУЩЕСТВУЮЩЕГО файла на временный ДО replace. Если файла ещё нет — берём
+    умолчание 0666 с учётом текущей umask (то же, что получилось бы
+    у обычного open() для нового файла).
     """
     directory = os.path.dirname(os.path.abspath(path)) or "."
     os.makedirs(directory, exist_ok=True)
     with _LOCK:
         fd, tmp = tempfile.mkstemp(prefix=".l2world-", suffix=".tmp", dir=directory)
         try:
+            # Временный файл от mkstemp всегда 0600. Прежде чем он станет
+            # миром, отдаём ему права, которые БЫЛИ у мира: иначе тихая
+            # потеря прав при первой же записи (см. выше).
+            try:
+                _mode = os.stat(path).st_mode & 0o777
+            except OSError:
+                # Файла ещё нет: повторяем поведение открытия нового файла.
+                _umask = os.umask(0)
+                os.umask(_umask)
+                _mode = 0o666 & ~_umask
+            if _mode:
+                os.chmod(tmp, _mode)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, ensure_ascii=False, indent=2)
                 fh.flush()
@@ -154,6 +178,77 @@ def _empty_world() -> Dict[str, Any]:
 def write_world(path: str, world: dict) -> None:
     """Атомарная запись (см. atomic_write_json)."""
     atomic_write_json(path, world)
+
+
+class WorldTransaction:
+    """Контекстный менеджер для read-modify-write последовательности.
+
+    ПОЧЕМУ ОТДЕЛЬНЫЙ КЛАСС. _LOCK в atomic_write_json/read_world защищает
+    ОТДЕЛЬНУЮ операцию, но не последовательность «прочитал -> изменил ->
+    записал». Два потока (фоновое обучение и Учитель-агент) могли пересечься
+    ровно между чтением и записью — и один снимок молча стирал правки
+    другого. Потеря знания при этом неотличима от «такого знания не было».
+
+    Использование:
+        with world_transaction(path) as world:
+            world["entities"][key] = ...
+            # записывать руками не нужно — выход из блока сохраняет мир
+
+    Возвращает загруженный мир; при выходе сохраняет его. Исключение внутри
+    блока мир НЕ сохраняет: половина правки хуже, чем её отсутствие.
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+        self.world: Optional[Dict[str, Any]] = None
+
+    def __enter__(self) -> Dict[str, Any]:
+        _LOCK.acquire()
+        try:
+            self.world = read_world(self.path)
+            return self.world
+        except Exception:
+            _LOCK.release()
+            raise
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            if exc_type is None and self.world is not None:
+                write_world(self.path, self.world)
+        finally:
+            _LOCK.release()
+        return False
+
+
+def world_transaction(path: str) -> WorldTransaction:
+    """См. WorldTransaction."""
+    return WorldTransaction(path)
+
+
+class _WorldLock:
+    """Публичный доступ к внутреннему мьютексу для ручных read-modify-write.
+
+    Нужен там, где перестраивать код под блок `with` дорого (замыкания
+    мутируют словарь мира по частям), но гонку закрыть обязательно:
+
+        with world_lock():
+            world = read_world(path)
+            ...
+            write_world(path, world)
+    """
+
+    def __enter__(self):
+        _LOCK.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        _LOCK.release()
+        return False
+
+
+def world_lock() -> _WorldLock:
+    """См. _WorldLock."""
+    return _WorldLock()
 
 
 def _preserve_broken(path: str) -> Optional[str]:

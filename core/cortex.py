@@ -162,9 +162,31 @@ class PredictiveCortex:
     # мягкая МЕРА близости предсказания (не порог решения!): overlap бита в бит.
     SOFT_OVERLAP = 13
 
+    # ── КОНФИГ ПЛАСТИЧНОСТИ (замеры 2026-10-13, experiments/plasticity_*.json)
+    # delta_confirm/delta_surprise — шаг силы перехода (0..15)
+    # hormone_gains — гормональные бонусы за исход тика
+    # predictability_gain/loss — смещение гомеостаза
+    # hormone_decay — затухание гормонов после тика (если цикл владеет шкалой)
+    @dataclasses.dataclass
+    class PlasticityConfig:
+        delta_confirm: int = 1
+        delta_surprise: int = 1
+        dopamine_gain_hit: int = 120
+        norepinephrine_gain_no_exp: int = 40
+        norepinephrine_gain_miss: int = 120
+        norepinephrine_gain_new: int = 40
+        cortisol_gain_miss: int = 100
+        predictability_gain_hit: int = 15
+        predictability_loss_miss: int = 25
+        hormone_decay_dopa: int = 40
+        hormone_decay_norep: int = 60
+        hormone_decay_cort: int = 30
+        soft_overlap_threshold: int = 13
+
     def __init__(self, graph: GraphMemory, teacher=None,
                  transitions: Optional[TransitionTable] = None,
-                 hormones: Optional[Hormones] = None):
+                 hormones: Optional[Hormones] = None,
+                 plasticity: Optional[PlasticityConfig] = None):
         """
         teacher: параметр оставлен ТОЛЬКО чтобы не молчать. У цикла нет права
         добывать знания — у Learner'а для этого есть бюджеты, лимиты и статусы.
@@ -177,6 +199,9 @@ class PredictiveCortex:
         # Мозг передаёт СВОИ гормоны: две независимые шкалы «дофамина» в одном
         # процессе — это гарантия, что GUI показывает не то, что происходит.
         self.hormones = hormones if hormones is not None else Hormones()
+        self.plasticity = plasticity if plasticity is not None else PredictiveCortex.PlasticityConfig()
+        # Применяем порог мягкого попадания из конфига
+        self.SOFT_OVERLAP = self.plasticity.soft_overlap_threshold
         self.tick_count = 0
         # ДВЕ пары счётчиков, и это не украшение.
         #   session  — числа ТЕКУЩЕГО потока (обнуляются в process_stream)
@@ -263,17 +288,18 @@ class PredictiveCortex:
                     and SDR1024(predicted).overlap(SDR1024(following)) >= self.SOFT_OVERLAP)
 
         # ── ПЛАСТИЧНОСТЬ: только сила перехода. weight онтологии не трогаем.
+        p = self.plasticity
         if predicted is None:
             self._bump("no_expectation")
-            self.transitions.confirm(current, following)
+            self.transitions.confirm(current, following, p.delta_confirm)
             self._bump("new_transitions")
-            self.hormones.norepinephrine = min(255, self.hormones.norepinephrine + 40)
+            self.hormones.norepinephrine = min(255, self.hormones.norepinephrine + p.norepinephrine_gain_no_exp)
             outcome = "no_expectation"
         elif strict_hit:
             self._bump("hits")
-            self.transitions.confirm(current, following)
-            self.homeostasis.predictability = min(255, self.homeostasis.predictability + 15)
-            self.hormones.dopamine = min(255, self.hormones.dopamine + 120)
+            self.transitions.confirm(current, following, p.delta_confirm)
+            self.homeostasis.predictability = min(255, self.homeostasis.predictability + p.predictability_gain_hit)
+            self.hormones.dopamine = min(255, self.hormones.dopamine + p.dopamine_gain_hit)
             outcome = "hit"
         else:
             self._bump("misses")
@@ -281,21 +307,24 @@ class PredictiveCortex:
                 self._bump("soft_overlap_hits")
             # Ожидание было и не сбылось: оно слабеет. Реальность записывается
             # как новое ожидание — иначе цикл никогда не научится.
-            self.transitions.surprise(current, predicted)
+            self.transitions.surprise(current, predicted, p.delta_surprise)
             if self.transitions.get(current, following) == 0:
                 self._bump("surprises")
                 self._bump("new_transitions")
-            self.transitions.confirm(current, following)
-            self.hormones.norepinephrine = min(255, self.hormones.norepinephrine + 120)
-            self.hormones.cortisol = min(255, self.hormones.cortisol + 100)
-            self.homeostasis.predictability = max(0, self.homeostasis.predictability - 25)
+            self.transitions.confirm(current, following, p.delta_confirm)
+            self.hormones.norepinephrine = min(255, self.hormones.norepinephrine + p.norepinephrine_gain_miss)
+            self.hormones.cortisol = min(255, self.hormones.cortisol + p.cortisol_gain_miss)
+            self.homeostasis.predictability = max(0, self.homeostasis.predictability - p.predictability_loss_miss)
             outcome = "miss"
 
         if self._owns_hormones:
             # Шкала принадлежит циклу -> он её и гасит. Если шкалу одолжил мозг,
             # decay() вызывает ОН: иначе два владельца гасили бы значения с
             # разной частотой и «дофамин» в GUI стал бы нечитаемым.
-            self.hormones.decay()
+            # Используем decay из конфига пластичности
+            self.hormones.dopamine = max(0, self.hormones.dopamine - p.hormone_decay_dopa)
+            self.hormones.norepinephrine = max(0, self.hormones.norepinephrine - p.hormone_decay_norep)
+            self.hormones.cortisol = max(0, self.hormones.cortisol - p.hormone_decay_cort)
         self._last = {
             "current": current, "predicted": predicted, "actual": following,
             "outcome": outcome, "strict_hit": strict_hit, "soft_hit": soft_hit,

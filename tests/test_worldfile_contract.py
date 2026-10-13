@@ -96,6 +96,54 @@ class TestAtomicWrite(unittest.TestCase):
         atomic_write_json(deep, {"entities": {}})
         self.assertTrue(os.path.exists(deep))
 
+    def test_write_preserves_existing_file_mode(self):
+        """
+        П.15.2: атомарная запись НЕ имеет права менять права файла.
+
+        ЗАМЕРЕНО на живой Вселенной: mkstemp создаёт временный файл 0600,
+        os.replace сохраняет ЕГО режим — и мир после каждой записи терял
+        права 0664 -> 0600. Пока пишет и читает один пользователь, это
+        невидимо; как только пишет демон, а читает человек — непонятный
+        отказ по правам. Тест обязан КРАСНЕТЬ без переноса режима.
+        """
+        write_world(self.path, {"entities": {}})
+        os.chmod(self.path, 0o664)
+        atomic_write_json(self.path, {"entities": {"a": {}}})
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o664,
+                         "атомарная запись молча сменила права файла (0664 -> 0600)")
+
+    def test_write_preserves_restrictive_mode(self):
+        """Обратная сторона: если мир был закрыт (0600) — он обязан им остаться.
+
+        Иначе лечение одной ошибки создало бы другую: запись РАСШИРЯЛА бы
+        права секретного файла до умолчания.
+        """
+        write_world(self.path, {"entities": {}})
+        os.chmod(self.path, 0o600)
+        atomic_write_json(self.path, {"entities": {"a": {}}})
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600,
+                         "запись расширила права закрытого файла")
+
+    def test_new_file_gets_umask_default_not_0600(self):
+        """Новый файл: обычные права (0666 & ~umask), а не 0600 от mkstemp."""
+        import stat as _st
+        # Прочитать текущую umask, не меняя её (два вызова возвращают исходную).
+        old = os.umask(0)
+        os.umask(old)
+        try:
+            # Ожидание СЧИТАЕТСЯ из umask машины, а не забито числом: на этой
+            # машине umask = 002 (не 022), и жёсткое 0644 сделало бы тест
+            # красным на здоровом коде — ложная тревога вместо проверки.
+            expected = 0o666 & ~old
+            atomic_write_json(self.path, {"entities": {}})
+            mode = os.stat(self.path).st_mode & 0o777
+            self.assertEqual(mode, expected,
+                             f"новый мир получил {oct(mode)}, а не {oct(expected)} "
+                             f"(umask {oct(old)})")
+            self.assertTrue(_st.S_IMODE(mode))
+        finally:
+            os.umask(old)
+
 
 class TestReadWorldSemantics(unittest.TestCase):
 
@@ -189,9 +237,18 @@ class TestWikiWriteMerges(unittest.TestCase):
         self.assertIn("есть стик", ent["properties"],
                       "свойство из раннего наблюдения пропало")
         self.assertIn("есть кнопки", ent["properties"], "новое свойство не добавилось")
-        self.assertIn("user:рассказ", ent.get("provenance", []),
+        # П.14: происхождение — ЕДИНАЯ схема (объект), а не смесь строк и объектов.
+        # Строка «user:рассказ» после слияния обязана стать объектом.
+        prov = ent.get("provenance", [])
+        sources = [p.get("source") for p in prov if isinstance(p, dict)]
+        evidences = [p.get("evidence") for p in prov if isinstance(p, dict)]
+        self.assertIn("user", sources,
                       "происхождение знания стёрто — теперь не отличить, "
                       "откуда оно взялось")
+        self.assertIn("рассказ", evidences,
+                      "доказательство пользователя стёрто при нормализации")
+        self.assertTrue(all(isinstance(p, dict) for p in prov),
+                        f"в provenance остались строки: {prov}")
 
         world = self._read()
         self.assertIn("джойтик|has|x", world["observations"],

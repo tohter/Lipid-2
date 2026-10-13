@@ -544,10 +544,7 @@ def get_encoder(force: BaseEncoder = None) -> BaseEncoder:
                 _ENCODER = EmbeddingEncoder(
                     cache_path=os.path.join(root, "data", "memory", "sdr_calibration.pkl"),
                     bits_path=os.path.join(root, "data", "memory", "sdr_words.bin"),
-                    lazy=False)
-                # Калибровка уже дала flush; битовый кэш тоже обязан попасть
-                # на диск, иначе следующий процесс заплатит моделью за всё.
-                _ENCODER.flush()
+                    lazy=True)
                 return _ENCODER
             except EncodeError as exc:
                 reason = str(exc)

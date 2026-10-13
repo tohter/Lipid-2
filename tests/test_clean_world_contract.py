@@ -118,6 +118,39 @@ class TestPlan(unittest.TestCase):
                          json.dumps(twice, sort_keys=True))
         self.assertEqual(ch2, [], "повторный прогон нашёл то, что уже исправил")
 
+    def test_mixed_provenance_normalized_to_objects(self):
+        """
+        П.14: в одном списке лежали И строки «wiki:Флюгер», И объекты
+        {source, evidence, at}. Миграция обязана привести обе формы к объекту.
+        """
+        world = {"entities": {"экосистема": {
+            "concept": "экосистема",
+            "properties": ["биологическая система"],
+            "provenance": ["wiki:Экосистема", {"source": "user",
+                                                  "evidence": "рассказ"}]}},
+            "unknown_words": {}}
+        out, changes = clean_world.plan(world)
+        prov = out["entities"]["экосистема"]["provenance"]
+        self.assertTrue(all(isinstance(p, dict) for p in prov),
+                        f"в provenance остались строки: {prov}")
+        sources = {p["source"] for p in prov}
+        self.assertEqual(sources, {"wiki", "user"})
+        self.assertTrue(any("provenance" in c for c in changes),
+                        "миграция provenance не отчиталась об изменении")
+
+    def test_provenance_migration_is_idempotent(self):
+        world = {"entities": {"экосистема": {
+            "concept": "экосистема",
+            "properties": ["биологическая система"],
+            "provenance": ["wiki:Экосистема"]}},
+            "unknown_words": {}}
+        once, _ = clean_world.plan(world)
+        twice, ch2 = clean_world.plan(once)
+        self.assertEqual(ch2, [],
+                         "миграция provenance не идемпотентна")
+        self.assertEqual(once["entities"]["экосистема"]["provenance"],
+                         twice["entities"]["экосистема"]["provenance"])
+
     def test_sections_unknown_to_the_migrator_are_carried_through(self):
         """
         Миграция пересобирает мир, а не правит на месте, и список переносимых

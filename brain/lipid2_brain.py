@@ -19,7 +19,7 @@ from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
 from core.records import (action_name, meaningful_categories, merge_entity,
                           normalize_actions, same_word, strip_self_name)
-from core.worldfile import default_memory_dir, read_world, write_world
+from core.worldfile import default_memory_dir, read_world, write_world, world_transaction
 from core.storage import NodeType, RelationType
 
 
@@ -37,8 +37,18 @@ class Lipid2Brain:
           3. Вопрос пользователю      -> через GUI (колбэк)
     """
 
+    # Уверенность по каналам (решено хозяином 14.10.26):
+    #   user   = 1.00 — человек отвечает прямо
+    #   wiki   = 0.85 — проверяемая энциклопедия
+    #   llm    = 0.75 — локальная модель, может выдумать
+    #   text   = 0.60 — извлечено из рассказа без учителя
+    CHANNEL_CONFIDENCE = {"user": 1.0, "wiki": 0.85, "llm": 0.75, "text": 0.6}
+
     def __init__(self, memory_dir: str = None):
         self.memory_dir, self.world_filepath = default_memory_dir(memory_dir)
+        # Кэш мира (очередь, п.13): мир + сигнатура файла, к которой он привязан.
+        self._world_cache: Optional[Dict[str, Any]] = None
+        self._world_sig = None
 
         # Модули ввода
         self.ir_parser = IRParser()
@@ -231,29 +241,59 @@ class Lipid2Brain:
 
         count = 0
         for concept, data in entities.items():
-            self._integrate_entity_into_core(concept, data)
+            # При загрузке берём прovенанс из записи, если он там есть.
+            # record=False: наблюдения УЖЕ в мире — перезапись не нужна.
+            self._integrate_entity_into_core(
+                concept, data,
+                confidence=data.get("confidence"),
+                evidence=data.get("definition") or data.get("evidence"),
+                source=data.get("source") or (data.get("learned_from") and
+                                               f"teacher:{data['learned_from']}"),
+                record=False)
             count += 1
         if count:
             enc_name, semantic, cfg = encoder_info()
             print(f"[Lipid-2] Ядро загружено: {count} сущностей из Вселенной. "
                   f"SDR-кодировщик: {enc_name} (семантический={semantic}, cfg={cfg}).")
 
-    def _integrate_entity_into_core(self, concept: str, data: dict):
-        """Записывает одну сущность из мира в граф ядра (SDR-узел + синапсы)."""
+    def _integrate_entity_into_core(self, concept: str, data: dict, confidence: float = None, evidence: str = None, source: str = None, record: bool = True):
+        """Записывает одну сущность из мира в граф ядра (SDR-узел + синапсы).
+        
+        confidence: уверенность 0..1 (LLM=0.75, Wiki=0.85, User=1.0)
+        evidence: текст-основание (фрагмент ответа)
+        source: источник ("teacher:llm", "teacher:wiki", "user", "text:<tag>")
+        record: писать ли наблюдение в observations (False при загрузке мира)
+        """
         if not concept:
             return
         root = self.core.get_or_create_node(concept, NodeType.ENTITY)
+
+        # Уверенность по умолчанию для обратной совместимости
+        if confidence is None:
+            confidence = 0.5
+        # Переводим уверенность в вес синапса (как в learner.py)
+        # CAN_DO/HAS_PROPERTY: 90 + 130*conf (уверенное — до 220)
+        # IS_A (иерархия): 100 + 100*conf (уверенное — до 200)
+        weight_prop = int(90 + 130 * confidence)
+        weight_hier = int(100 + 100 * confidence)
+        weight_action = int(80 + 120 * confidence)
+
+        # Provenance для узла
+        if source:
+            root.source = source
+        if evidence:
+            root.evidence = evidence[:200]
 
         # Иерархия (IS_A) — связываем концепт с ближайшей родительской категорией
         hierarchy = data.get("hierarchy", [])
         if hierarchy:
             parent = self.core.get_or_create_node(hierarchy[0], NodeType.ENTITY)
-            root.connect_to(parent, rel_type=RelationType.IS_A, weight=180)
+            root.connect_to(parent, rel_type=RelationType.IS_A, weight=weight_hier, source=source)
 
         # Свойства (HAS_PROPERTY)
         for prop in data.get("properties", []):
             pnode = self.core.get_or_create_node(prop, NodeType.PROPERTY)
-            root.connect_to(pnode, rel_type=RelationType.HAS_PROPERTY, weight=160)
+            root.connect_to(pnode, rel_type=RelationType.HAS_PROPERTY, weight=weight_prop, source=source)
 
         # Действия (CAN_DO) + профиль [K,M,S] на узле действия
         for act in data.get("actions", []):
@@ -261,13 +301,48 @@ class Lipid2Brain:
             anode = self.core.get_or_create_node(aname, NodeType.ACTION)
             if isinstance(act, dict) and "action_profile" in act:
                 anode.action_profile = list(act["action_profile"])
-            root.connect_to(anode, rel_type=RelationType.CAN_DO, weight=150)
+            root.connect_to(anode, rel_type=RelationType.CAN_DO, weight=weight_action, source=source)
 
         # Дельта-наследование (производный узел с родителем)
         parent_concept = data.get("parent_concept")
         if parent_concept:
             parent = self.core.get_or_create_node(parent_concept, NodeType.ENTITY)
-            root.connect_to(parent, rel_type=RelationType.IS_A, weight=180)
+            root.connect_to(parent, rel_type=RelationType.IS_A, weight=weight_hier, source=source)
+
+        # Записываем наблюдение в observations (как в Learner)
+        if record:
+            self._record_observation(concept, data, confidence, evidence, source)
+
+    def _record_observation(self, concept: str, data: dict, confidence: float,
+                            evidence: str, source: str):
+        """Записывает наблюдение (evidence + confidence) в world["observations"].
+
+        Наблюдения — это то, ЧТО МЫ ВИДЕЛИ и насколько были уверены. Они
+        отличаются от entities (что мы ЗНАЕМ). Без наблюдений нельзя отличить
+        факт из Вики (одно свидетельство) от факта, подтверждённого трижды.
+        """
+        key = f"{concept}|curiosity"
+        now = int(time.time())
+        prov_entry = {"source": source or "unknown",
+                      "evidence": (evidence or "")[:200],
+                      "at": now}
+        # Транзакция: чтение и запись под ОДНИМ замком. Иначе фоновое обучение
+        # и Учитель-агент могли пересечься между чтением и записью — и один
+        # снимок молча стёр правки другого.
+        with world_transaction(self.world_filepath) as world:
+            observations = world.setdefault("observations", {})
+            obs = observations.get(key)
+            if obs:
+                # Повторное свидетельство: support растёт, confidence берём максимум
+                cur_conf = max(float(obs.get("confidence", 0)), confidence)
+                supports = int(obs.get("support", 1)) + 1
+                prov = obs.setdefault("provenance", [])
+                prov.append(prov_entry)
+                observations[key] = {"confidence": cur_conf, "support": supports,
+                                     "provenance": prov}
+            else:
+                observations[key] = {"confidence": confidence, "support": 1,
+                                     "provenance": [prov_entry]}
 
     # ── РАБОТА С ВСЕЛЕННОЙ ─────────────────────────────────
 
@@ -279,16 +354,46 @@ class Lipid2Brain:
         давали одинаковый результат — пустой мир. При последующем merge
         («перечитать и слить») это СТИРАЕТ Вселенную, а не дополняет её.
         Теперь битый файл сохраняется рядом и событие громко пишется в stderr.
+
+        КЭШ (очередь, п.13). При 500+ сущностях разбор JSON на каждый запрос —
+        50–200 мс на вопрос, и «что такое кошка» заметно тормозит. Кэш привязан
+        к СИГНАТУРЕ файла (mtime_ns + size): чужая запись (Учитель в другом
+        потоке) меняет сигнатуру — и следующее чтение перечитает диск. Без
+        сигнатуры кэш означал бы «не вижу чужих правок».
         """
-        return read_world(self.world_filepath)
+        try:
+            st = os.stat(self.world_filepath)
+            sig = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            # Файла ещё нет — кэш невалиден, читаем как обычно
+            self._world_cache = None
+            self._world_sig = None
+            return read_world(self.world_filepath)
+        if self._world_cache is not None and self._world_sig == sig:
+            return self._world_cache
+        world = read_world(self.world_filepath)
+        self._world_cache = world
+        self._world_sig = sig
+        return world
 
     def _save_world(self, world: dict):
         """
         Атомарная запись. Открытие на "w" уссекает файл сразу: закрытие окна
         во время обучения оставляло на диске оборванный JSON, то есть потерю
         всей памяти из-за одного нажатия.
+
+        После записи кэш обновляется СРАЗУ: иначе следующий _load_world()
+        сравнил бы сигнатуру, увидел свежий mtime и перечитал файл — то есть
+        запись обесценила бы кэш (и мы платили бы за разбор дважды).
         """
         write_world(self.world_filepath, world)
+        try:
+            st = os.stat(self.world_filepath)
+            self._world_cache = world
+            self._world_sig = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            self._world_cache = None
+            self._world_sig = None
 
     def find_in_memory(self, concept: str) -> Optional[Dict[str, Any]]:
         """
@@ -319,15 +424,46 @@ class Lipid2Brain:
                     concept_clean = hit
 
         if concept_clean not in entities:
+            # Проверка: есть ли узел в графе (из observations), но нет в entities
+            graph_node = self.core.resolve_name(concept_clean)
+            if graph_node and graph_node in self.core.nodes:
+                return self._build_from_observations(concept_clean, world)
             return None
 
         entity_data = entities[concept_clean]
+        # РЕКУРСИВНЫЙ ОБХОД ИЕРАРХИИ (очередь, п.12).
+        # Раньше читался ОДИН уровень parent_concept: у «беркута» брался «орёл»,
+        # а «орёл» уже не поднимался к «птице» — и свойства с глубины >1 молча
+        # пропадали. Теперь базой становится БЛИЖАЙШИЙ ПРЕДОК с записью, а
+        # унаследованные свойства/действия и полная цепь категорий собираются
+        # до КОРНЯ (с защитой от циклов X→Y→X).
+        chain = self._ancestor_chain(concept_clean, entities)
+        base_data = entities.get(chain[-1], {}) if chain else entity_data
         found = None
-        if "parent_concept" in entity_data:
-            parent_data = entities.get(entity_data["parent_concept"], {})
-            found = {"base_entity": parent_data, "derived_entity": entity_data}
+        if chain:
+            found = {"base_entity": base_data, "derived_entity": entity_data}
         else:
             found = {"base_entity": entity_data, "derived_entity": {}}
+        # Наследование на глубину >1: свойства и действия предков ДОБАВЛЯЮТСЯ
+        # к своим (не заменяют), а цепь категорий — склейка hierarchy по всей
+        # линии. Без этого «беркут» не знал бы, что он птица.
+        inherited = self._inherit_ancestors(concept_clean, entities)
+        if inherited:
+            merged_base = dict(base_data)
+            props = list(merged_base.get("properties") or [])
+            for p in inherited.get("properties", []):
+                if p not in props:
+                    props.append(p)
+            merged_base["properties"] = props
+            acts = list(merged_base.get("actions") or [])
+            acts.extend(inherited.get("actions", []))
+            merged_base["actions"] = acts
+            hier = list(merged_base.get("hierarchy") or [])
+            for h in inherited.get("hierarchy", []):
+                if h not in hier:
+                    hier.append(h)
+            merged_base["hierarchy"] = hier
+            found["base_entity"] = merged_base
         # Плоский срез ЗАПИСИ (kind, participants, action_profile). Ответам о
         # глаголах не хватает именно его: под видом base_entity приходит
         # родитЕЛЬСкая запись, и «что такое гасить» отвечал бы по родителю.
@@ -338,7 +474,110 @@ class Lipid2Brain:
         # совпадает — и отвечает «недостаточно данных», хотя данные только что
         # достал. Именно эта несостыковка и выдавала пустые определения.
         found["matched_concept"] = concept_clean
+        found["ancestors"] = chain
         return found
+
+    def _ancestor_chain(self, concept: str, entities: dict) -> list:
+        """Цепочка предков от НЕПОСРЕДСТВЕННОГО к КОРНЮ (без самого concept).
+
+        Идёт по parent_concept, с защитой от циклов и от регистра ключей
+        (в world ключи иногда хранятся в другом регистре, чем ссылка).
+        Возвращает [] если предков нет.
+        """
+        def _lookup(name: str):
+            if name in entities:
+                return name
+            low = str(name).lower().strip()
+            for key in entities:
+                if str(key).lower().strip() == low:
+                    return key
+            return None
+
+        chain = []
+        seen = {str(concept).lower().strip()}
+        cur = entities.get(concept) or {}
+        while True:
+            parent = str(cur.get("parent_concept") or "").lower().strip()
+            if not parent or parent in seen:
+                break
+            key = _lookup(parent)
+            if key is None:
+                break
+            seen.add(parent)
+            chain.append(key)
+            cur = entities[key]
+        return chain
+
+    def _inherit_ancestors(self, concept: str, entities: dict) -> dict:
+        """Собирает унаследованное с ВСЕЙ линии предков (глубина >1).
+
+        Свойства/действия объединяются без дублей, hierarchy — склейка всех
+        цепей. Возвращает {} если наследовать нечего.
+        """
+        chain = self._ancestor_chain(concept, entities)
+        if not chain:
+            return {}
+        props, acts, hier = [], [], []
+        for key in chain:
+            flat = self._flatten_entity(entities.get(key) or {})
+            for p in flat.get("properties", []):
+                if p not in props:
+                    props.append(p)
+            for a in flat.get("actions", []):
+                name = action_name(a) or (a if isinstance(a, str) else "")
+                if not name:
+                    continue
+                if not any((action_name(x) or x) == name for x in acts):
+                    acts.append(a)
+            for h in flat.get("hierarchy", []):
+                if h not in hier:
+                    hier.append(h)
+        return {"properties": props, "actions": acts, "hierarchy": hier}
+
+    def _build_from_observations(self, concept: str, world: dict) -> Optional[Dict[str, Any]]:
+        """
+        Собирает псевдо-сущность из наблюдений (observations), когда в entities
+        записи нет, а в графе узел есть (восстановлен через replay_observations).
+        Это позволяет отвечать на вопросы про знания, выученные ТОЛЬКО из текстов,
+        без участия Учителя.
+        """
+        obs = world.get("observations", {})
+        # Ищем наблюдения где concept — head (субъект)
+        actions = []
+        properties = []
+        for key, v in obs.items():
+            if v.get("negated"):
+                continue
+            try:
+                head, rel, tail = key.split("|", 2)
+            except ValueError:
+                continue
+            if head != concept:
+                continue
+            if rel == "CAN_DO":
+                actions.append(tail)
+            elif rel == "HAS_PROPERTY":
+                properties.append(tail)
+        # Если нет наблюдений вообще — ничего не возвращаем
+        if not actions and not properties:
+            return None
+        # Строим псевдо-entity как в answer_what_does
+        pseudo_entity = {
+            "concept": concept,
+            "kind": "entity",
+            "properties": properties,
+            "actions": actions,
+            "hierarchy": [],
+            "definition": "",
+            "source": "observation",
+        }
+        return {
+            "base_entity": pseudo_entity,
+            "derived_entity": {},
+            "subject": pseudo_entity,
+            "matched_concept": concept,
+            "from_observations": True,
+        }
 
     # ── ТРЁХКАНАЛЬНОЕ САМООБУЧЕНИЕ ─────────────────────────
 
@@ -523,7 +762,6 @@ class Lipid2Brain:
             "derived_entity": {},
         }
 
-        world = self._load_world()
         key = concept.lower().strip()
         record = dict(data["base_entity"])
         record["provenance"] = [{"source": "user", "evidence": answer[:200],
@@ -532,9 +770,10 @@ class Lipid2Brain:
         # merge_entity, а не присваивание: ответ пользователя беднее статьи,
         # и прямое присваивание стирало ранее выученные свойства того же слова
         # (то же правило, что для Википедии и Учителя — см. core/records.py).
-        world["entities"][key] = merge_entity(world["entities"].get(key), record)
-        world["unknown_words"].pop(key, None)
-        self._save_world(world)
+        # Транзакция защищает от гонки с фоновым обучением.
+        with world_transaction(self.world_filepath) as world:
+            world["entities"][key] = merge_entity(world["entities"].get(key), record)
+            world["unknown_words"].pop(key, None)
         data["matched_concept"] = key
         return data
 
@@ -556,15 +795,15 @@ class Lipid2Brain:
         if matched:
             keys.add(str(matched).lower().strip())
         try:
-            world = self._load_world()
-            unknowns = world.setdefault("unknown_words", {})
-            doomed = [k for k in unknowns
-                      if k in keys or same_word(k, concept)
-                      or any(same_word(k, o) for o in keys)]
-            for k in doomed:
-                del unknowns[k]
+            doomed = []
+            with world_transaction(self.world_filepath) as world:
+                unknowns = world.setdefault("unknown_words", {})
+                doomed = [k for k in unknowns
+                          if k in keys or same_word(k, concept)
+                          or any(same_word(k, o) for o in keys)]
+                for k in doomed:
+                    del unknowns[k]
             if doomed:
-                self._save_world(world)
                 self._say(f"убрано из неизвестных: {', '.join(doomed)}")
         except Exception as exc:
             # Не критично для знания, но и не «тихо»: чистка не выполнена.
@@ -576,11 +815,40 @@ class Lipid2Brain:
         concept = base.get("concept", "").lower().strip()
         if not concept:
             return
-        self._integrate_entity_into_core(concept, base)
+        # Определяем канал и уверенность (единая логика для всех источников)
+        conf, evidence, src = self._channel_provenance(base)
+        self._integrate_entity_into_core(concept, base, confidence=conf,
+                                         evidence=evidence, source=src)
 
         derived = learned_data.get("derived_entity", {})
         if derived and derived.get("concept"):
-            self._integrate_entity_into_core(derived["concept"].lower().strip(), derived)
+            conf, evidence, src = self._channel_provenance(derived)
+            self._integrate_entity_into_core(derived["concept"].lower().strip(),
+                                             derived, confidence=conf,
+                                             evidence=evidence, source=src)
+
+    def _channel_provenance(self, data: dict):
+        """Возвращает (confidence, evidence, source) по каналу-источнику.
+
+        Правило одно на все каналы — отсюда и название. Раньше три пути
+        обучения писали разные веса (160 без confidence, 180, 150), и один
+        и тот же факт весил по-разному в зависимости от того, какой канал
+        его добыл. Теперь канал даёт только уверенность, а вес считает
+        _integrate_entity_into_core.
+        """
+        raw_src = str(data.get("source") or data.get("learned_from") or "llm").lower()
+        # Нормализуем имена каналов
+        if raw_src in ("wikipedia", "wiki", "teacher:wiki"):
+            channel = "wiki"
+        elif raw_src in ("user", "teacher:user", "пользователь"):
+            channel = "user"
+        elif raw_src in ("text", "teacher:text"):
+            channel = "text"
+        else:
+            channel = "llm"
+        conf = float(data.get("confidence") or self.CHANNEL_CONFIDENCE.get(channel, 0.6))
+        evidence = data.get("definition") or data.get("evidence") or ""
+        return conf, evidence, f"teacher:{channel}"
 
     # ── ОБУЧЕНИЕ ───────────────────────────────────────────
 
@@ -646,10 +914,11 @@ class Lipid2Brain:
         видеть, а не обнаруживать её через неделю по нулевой точности.
         """
         try:
-            world = self._load_world()
-            merged = merge_json(world.get("transitions"), self.transitions.to_json())
-            world["transitions"] = merged
-            self._save_world(world)
+            # Транзакция ОБЯЗАТЕЛЬНА именно здесь: это единственный путь, где
+            # два потока (цикл + Учитель) пишут ОДНУ секцию transitions.
+            with world_transaction(self.world_filepath) as world:
+                merged = merge_json(world.get("transitions"), self.transitions.to_json())
+                world["transitions"] = merged
             # Живая таблица обязана стать ОБЪЕДИНЕНИЕМ, иначе процесс продолжит
             # работать без чужого опыта, который только что сохранил.
             self.transitions.from_json(merged)

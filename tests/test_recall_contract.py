@@ -147,5 +147,74 @@ class TestGraphRecall(unittest.TestCase):
                             f"«{alien}» дало {ov} при пороге {thr} — пол шума уехал")
 
 
+DEEP_WORLD = {
+    "entities": {
+        "объекты": {"concept": "объекты", "hierarchy": [],
+                    "properties": ["существует"], "actions": []},
+        "животные": {"concept": "животные", "hierarchy": ["объекты"],
+                     "parent_concept": "объекты",
+                     "properties": ["живое"], "actions": []},
+        "птицы": {"concept": "птицы", "hierarchy": ["животные", "объекты"],
+                  "parent_concept": "животные",
+                  "properties": ["перья"],
+                  "actions": [{"name": "летать", "action_profile": [80, 10, 10]}]},
+        "беркут": {"concept": "беркут", "hierarchy": ["птицы", "животные", "объекты"],
+                   "parent_concept": "птицы",
+                   "properties": ["хищный"], "actions": []},
+    },
+    "relations": [],
+}
+
+
+class TestRecursiveHierarchy(unittest.TestCase):
+    """
+    Наследование сквозь НЕСКОЛЬКО уровней (очередь, п.12).
+
+    Прежний find_in_memory читал ОДИН parent_concept: у «беркута» находился
+    «птицы», а до «животных» и «объектов» он уже не поднимался. Свойства с
+    глубины >1 молча пропадали — при том что сама цепь categories в записи была.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from brain.lipid2_brain import Lipid2Brain
+        cls.tmp = tempfile.mkdtemp(prefix="lipid_deep_")
+        with open(os.path.join(cls.tmp, "lipid_world.json"), "w", encoding="utf-8") as f:
+            json.dump(DEEP_WORLD, f, ensure_ascii=False)
+        cls.brain = Lipid2Brain(memory_dir=cls.tmp)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_ancestor_chain_reaches_root(self):
+        """Цепь предков беркута: птицы -> животные -> объекты."""
+        entities = self.brain._load_world().get("entities", {})
+        chain = self.brain._ancestor_chain("беркут", entities)
+        self.assertEqual(chain, ["птицы", "животные", "объекты"])
+
+    def test_inherits_properties_from_all_levels(self):
+        """Свойства с глубины >1 (перья, живое) доходят до беркута."""
+        entities = self.brain._load_world().get("entities", {})
+        inh = self.brain._inherit_ancestors("беркут", entities)
+        for prop in ("перья", "живое", "существует"):
+            self.assertIn(prop, inh["properties"],
+                          f"свойство «{prop}» не унаследовано")
+
+    def test_find_in_memory_returns_inherited(self):
+        found = self.brain.find_in_memory("беркут")
+        props = found["base_entity"].get("properties", [])
+        self.assertIn("перья", props, "птичье свойство не дошло до беркута")
+        self.assertIn("живое", props, "свойство уровня животные не дошло")
+        self.assertEqual(found["ancestors"], ["птицы", "животные", "объекты"])
+
+    def test_cycle_does_not_hang(self):
+        """Цикл X→Y→X не должен зациклить обход."""
+        cyc = {"a": {"concept": "a", "parent_concept": "b"},
+               "b": {"concept": "b", "parent_concept": "a"}}
+        chain = self.brain._ancestor_chain("a", cyc)
+        self.assertEqual(chain, ["b"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

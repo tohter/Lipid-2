@@ -138,6 +138,89 @@ class TestExtractionContract(unittest.TestCase):
         self.assertEqual(facts_of(t), facts_of(t))
 
 
+class TestValueAndMeasure(unittest.TestCase):
+    """
+    Очередь, п.17: ЧИСЛА И МЕРЫ — ЗНАНИЕ (VALUE), А НЕ МУСОР.
+
+    ЗАМЕРЕНО до фикса:
+      * «Шкаф стоит пять тысяч рублей» — цена ТЕРЯЛАСЬ вовсе (в notes
+        честно стояло «значение цены не сохранено: нет разбора числительных»);
+      * «Кошка весит три килограмма» — рождало ЛОЖНУЮ валентность
+        CAN_DO(кошка, весить) + OBJECT_OF(весить, килограмм);
+      * «5000 рублей» вообще не доходило до экстрактора: цифры не попадали в
+        токены (регулярка требовала буквы в начале, а pymorphy3 даёт для
+        цифры POS=None, а не NUMR).
+    Теперь всё это — VALUE(субъект, "<число> <единица>").
+    """
+
+    def facts(self, text):
+        from core.extract import SimpleExtractor as SE
+        return SE().extract(text).facts
+
+    def values(self, text):
+        return [f for f in self.facts(text) if f.relation == "VALUE"]
+
+    def test_word_numeral_with_money(self):
+        v = self.values("Шкаф стоит пять тысяч рублей.")
+        self.assertTrue(v, "цена потеряна")
+        self.assertEqual(v[0].head, "шкаф")
+        self.assertEqual(v[0].tail, "5000 рублей")
+
+    def test_digit_numeral_with_money(self):
+        v = self.values("Шкаф стоит 5000 рублей.")
+        self.assertTrue(v, "цена цифрами потеряна — цифры не доходят до токенов")
+        self.assertEqual(v[0].tail, "5000 рублей")
+
+    def test_measure_is_value_not_action(self):
+        """«весит три килограмма» — величина, а не умение весить."""
+        v = self.values("Кошка весит три килограмма.")
+        self.assertTrue(v, "мера не записана как VALUE")
+        self.assertEqual((v[0].head, v[0].tail), ("кошка", "3 килограмма"))
+        self.assertNotIn(("кошка", "CAN_DO", "весить"),
+                         [(f.head, f.relation, f.tail) for f in self.facts(
+                             "Кошка весит три килограмма.")],
+                         "мера всё ещё записана как умение")
+
+    def test_multipliers_are_ranks_not_sum(self):
+        """«два миллиона триста тысяч» = 2 300 000, а не 302 или 1 000 302."""
+        v = self.values("Дом стоит два миллиона триста тысяч рублей.")
+        self.assertTrue(v)
+        self.assertEqual(v[0].tail, "2300000 рублей")
+
+    def test_verb_without_number_stays_action(self):
+        """Обратная сторона: «стоит дорого» — умение, а не цена.
+
+        Без числа/единицы VALUE выдумывать нельзя, иначе любое «стоит»
+        превратится в цену с пустым значением.
+        """
+        triples = [(f.head, f.relation, f.tail) for f in self.facts("Дом стоит дорого.")]
+        self.assertNotIn(("дом", "VALUE", "дорого"), triples)
+
+    def test_price_reaches_world_observations(self):
+        """Сквозной: VALUE-факт обязан лечь в мир наблюдением."""
+        lr = self._learner()
+        lr.learn_from_text("Шкаф стоит пять тысяч рублей.", source="урок")
+        from core.worldfile import read_world
+        obs = read_world(lr._lr_path).get("observations") or {}
+        self.assertTrue(any(k.endswith("|VALUE|5000 рублей") for k in obs),
+                        f"VALUE не дошёл до мира: {list(obs)}")
+
+    @staticmethod
+    def _learner():
+        import os, tempfile
+        from core.worldfile import write_world, read_world
+        from brain.learner import Learner
+        d = tempfile.mkdtemp(prefix="value-")
+        path = os.path.join(d, "lipid_world.json")
+        write_world(path, {"entities": {"шкаф": {"concept": "шкаф",
+                                                 "hierarchy": ["мебель"]}},
+                           "unknown_words": {}})
+        lr = Learner(load_world=lambda: read_world(path),
+                     save_world=lambda w: write_world(path, w))
+        lr._lr_path = path
+        return lr
+
+
 class StubTeacher:
     def __init__(self, answers=None):
         self.calls = []
@@ -410,6 +493,34 @@ class TestMergeRule(unittest.TestCase):
         self.assertLessEqual(len(m["provenance"]), 12,
                              "доказательства растут бесконечно — файл станет нечитабельным")
         self.assertGreater(len(m["provenance"]), 1, "доказательства потеряны")
+
+    def test_provenance_normalizes_string_and_object(self):
+        """
+        П.14: provenance — ЕДИНАЯ схема (объекты), а не смесь строк и объектов.
+
+        Раньше один канал писал "wiki:Флюгер", другой — {source, evidence, at}.
+        Любой код вида [(p["source"], p["at"]) for p in provenance] падал бы
+        на первой вики-записи. Теперь оба вида приводятся к объекту.
+        """
+        from core.records import merge_entity
+        m = merge_entity({}, {"provenance": ["wiki:Флюгер"]})
+        prov = m["provenance"]
+        self.assertEqual(len(prov), 1)
+        self.assertIsInstance(prov[0], dict, "строка не стала объектом")
+        self.assertEqual(prov[0]["source"], "wiki")
+        self.assertEqual(prov[0]["evidence"], "Флюгер")
+        # все записи обязаны быть объектами — тогда цикл по полям безопасен
+        for p in prov:
+            self.assertIn("source", p)
+            self.assertIn("evidence", p)
+
+    def test_provenance_does_not_duplicate_across_formats(self):
+        """Строка и объект об ОДНОМ источнике не должны давать двух записей."""
+        from core.records import merge_entity
+        m = merge_entity({}, {"provenance": ["wiki:Флюгер"]})
+        m = merge_entity(m, {"provenance": ["wiki:Флюгер"]})
+        self.assertEqual(len(m["provenance"]), 1,
+                         "одна и та же запись продублирована")
 
     def test_teacher_does_not_clobber_existing_entity(self):
         """

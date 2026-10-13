@@ -26,10 +26,14 @@ except Exception as _exc:
 try:
     # Атомарная запись: json.dump в открытый на "w" файл при обрыве процесса
     # оставляет ОБОРВАННЫЙ JSON — следующая загрузка считает мир повреждённым.
-    from core.worldfile import write_world, default_memory_dir
+    # world_lock закрывает гонку «прочитал -> изменил -> записал» с
+    # фоновым обучением (оба пишут один lipid_world.json).
+    from core.worldfile import write_world, default_memory_dir, world_lock
 except Exception as _exc:                              # pragma: no cover
     print(f"[teacher] core.worldfile недоступен ({_exc}) — запись НЕатомарная", file=sys.stderr, flush=True)
     write_world = None
+
+    from contextlib import nullcontext as world_lock
 
     def default_memory_dir(memory_dir=None, filename="lipid_world.json"):
         """Каталог памяти без core.worldfile — тот же порядок источников."""
@@ -281,62 +285,63 @@ class AgentTeacherV2:
             else:
                 data = content
 
-            world = self._load_world()
-            written = []
+            with world_lock():
+                world = self._load_world()
+                written = []
 
-            def put(ent, role):
-                """Записать одну сущность ответа модели, разобрав её имя.
+                def put(ent, role):
+                    """Записать одну сущность ответа модели, разобрав её имя.
 
-                Имя берёт _target_key (он же отбивает фантомы), а ключ
-                запоминается в written, чтобы не перечитывать мир повторно.
-                """
-                key = self._target_key(ent, role)
-                if not key or not isinstance(ent, dict) or not ent:
-                    return
-                prev = world["entities"].get(key)
-                if isinstance(prev, dict) and prev:
-                    # САМОЕ ЧАСТОЕ: базовый и производный концепт — одно слово
-                    # (запросили «флюгер», производного нет). Прежний код писал
-                    # base, а СРАЗУ ПОСЛЕ него перезаписывал ту же ячейку
-                    # вырожденным derived — и иерархия, свойства и действия
-                    # базовой сущности МОЛЧА СТИРАЛИСЬ. Отсюда пустые «свойства»
-                    # и «флюгер — это флюгер».
-                    #
-                    # Слияние делает merge_entity — ОДНА реализация на все
-                    # каналы: новое имеет право ДОБАВИТЬ (hierarchy, properties,
-                    # actions, delta_properties), но не СТЕРЕТЬ уже известное.
-                    # Раньше здесь лежала своя копия правил, и она расходилась
-                    # с общей при каждой правке.
-                    world["entities"][key] = merge_entity(prev, ent)
+                    Имя берёт _target_key (он же отбивает фантомы), а ключ
+                    запоминается в written, чтобы не перечитывать мир повторно.
+                    """
+                    key = self._target_key(ent, role)
+                    if not key or not isinstance(ent, dict) or not ent:
+                        return
+                    prev = world["entities"].get(key)
+                    if isinstance(prev, dict) and prev:
+                        # САМОЕ ЧАСТОЕ: базовый и производный концепт — одно слово
+                        # (запросили «флюгер», производного нет). Прежний код писал
+                        # base, а СРАЗУ ПОСЛЕ него перезаписывал ту же ячейку
+                        # вырожденным derived — и иерархия, свойства и действия
+                        # базовой сущности МОЛЧА СТИРАЛИСЬ. Отсюда пустые «свойства»
+                        # и «флюгер — это флюгер».
+                        #
+                        # Слияние делает merge_entity — ОДНА реализация на все
+                        # каналы: новое имеет право ДОБАВИТЬ (hierarchy, properties,
+                        # actions, delta_properties), но не СТЕРЕТЬ уже известное.
+                        # Раньше здесь лежала своя копия правил, и она расходилась
+                        # с общей при каждой правке.
+                        world["entities"][key] = merge_entity(prev, ent)
+                    else:
+                        world["entities"][key] = dict(ent)
+                        world["entities"][key].setdefault("concept", key)
+                    if key not in written:
+                        written.append(key)
+
+                # САМОЕ ЧАСТЕ: порядок важен. Сначала base, потом derived, чтобы
+                # вырожденный derived не перетянул на себя пустоту.
+                for role in ("base_entity", "derived_entity"):
+                    ent = data.get(role)
+                    if ent is not None:
+                        put(ent, role)
+
+                # Известка об ИТОГЕ, а не о намерениях модели: written наполняется
+                # только реально записанными ключами, поэтому фраза «записал во
+                # Вселенную» больше не звучит после отклонённых фантомов.
+                for concept in list(written):
+                    ent = world["entities"].get(concept)
+                    # Самоссылка parent_concept == concept — мусор, он превращает
+                    # «X — это X» в вечный цикл обхода иерархии.
+                    if isinstance(ent, dict) and \
+                            str(ent.get("parent_concept", "")).lower().strip() == concept:
+                        del ent["parent_concept"]
+
+                if write_world is not None:
+                    write_world(self.world_filepath, world)
                 else:
-                    world["entities"][key] = dict(ent)
-                    world["entities"][key].setdefault("concept", key)
-                if key not in written:
-                    written.append(key)
-
-            # САМОЕ ЧАСТЕ: порядок важен. Сначала base, потом derived, чтобы
-            # вырожденный derived не перетянул на себя пустоту.
-            for role in ("base_entity", "derived_entity"):
-                ent = data.get(role)
-                if ent is not None:
-                    put(ent, role)
-
-            # Известка об ИТОГЕ, а не о намерениях модели: written наполняется
-            # только реально записанными ключами, поэтому фраза «записал во
-            # Вселенную» больше не звучит после отклонённых фантомов.
-            for concept in list(written):
-                ent = world["entities"].get(concept)
-                # Самоссылка parent_concept == concept — мусор, он превращает
-                # «X — это X» в вечный цикл обхода иерархии.
-                if isinstance(ent, dict) and \
-                        str(ent.get("parent_concept", "")).lower().strip() == concept:
-                    del ent["parent_concept"]
-
-            if write_world is not None:
-                write_world(self.world_filepath, world)
-            else:
-                with open(self.world_filepath, "w", encoding="utf-8") as f:
-                    json.dump(world, f, ensure_ascii=False, indent=2)
+                    with open(self.world_filepath, "w", encoding="utf-8") as f:
+                        json.dump(world, f, ensure_ascii=False, indent=2)
 
             if written:
                 self._say("Учитель записал во Вселенную: " + ", ".join(written))

@@ -52,7 +52,7 @@ if __package__ in (None, ""):        # прямой запуск: python brain/l
 from core.extract import Fact, SimpleExtractor
 from core.logchannel import status as _status
 from core.morph import Morph
-from core.records import merge_entity
+from core.records import merge_entity, merge_unknown_entry
 from core.storage import NodeType, RelationType
 
 try:
@@ -577,7 +577,10 @@ class Learner:
             if cur is None:
                 fu[key] = u
             else:
-                cur["count"] = max(int(cur.get("count", 1)), int(u.get("count", 1)))
+                # Слияние по СТАРШИНСТВУ диагноза, а не по порядку чтения
+                # (очередь, п.15). Раньше count брали max, а status не сливали
+                # вовсе — и asked_empty мог быть завален старым not_asked.
+                fu[key] = merge_unknown_entry(cur, u)
         # Удаление — это тоже правка. Без этого шага снятие статуса «не знаю»
         # пропадало: слияние видело старую запись чужого снимка и возвращало
         # её, так что выученное слово снова числилось неизвестным.

@@ -247,7 +247,15 @@ Morph = MorphAnalyzerFacade()
 
 # Многоточие — ПЕРВЫМ в разделителе, иначе «...» дало бы пачку пустых «предложений».
 _SENT_SPLIT = re.compile(r"[.!?…]+")
-_WORD_RE = re.compile(r"[а-яёА-ЯЁa-zA-Z][а-яёА-ЯЁa-zA-Z\-]*")
+# Числа ЦИФРАМИ раньше не попадали в токены ВООБЩЕ: регулярное выражение
+# требовало буквы в начале, и «5000 рублей» превращалось в одинокое «рублей».
+# ЗАМЕРЕНО: pymorphy3 разбирает «5000» как POS=None (не NUMR), поэтому
+# недостаточно добавить цифры в regex — их часть речи выставляется в analyze()
+# ЯВНО (см. NUMERIC_RE ниже). Иначе токен получит content=False и снова исчезнет,
+# а цена останется неразобранной.
+_WORD_RE = re.compile(r"[а-яёА-ЯЁa-zA-Z0-9][а-яёА-ЯЁa-zA-Z0-9\-]*")
+# Число цифрами (целое или десятичное), не приклеенное к буквам.
+_NUMERIC_RE = re.compile(r"^\d+(?:[.,]\d+)?$")
 
 
 def split_sentences(text: str) -> List[str]:
@@ -269,8 +277,17 @@ def analyze(sentence: str) -> List[dict]:
         raw = w
         key = w.lower()
         variants = Morph.parse_all(key)
+        numeric = bool(_NUMERIC_RE.match(key))
+        if numeric:
+            # Цифра — это число. pymorphy3 даёт для неё POS=None, поэтому
+            # роль/тип проставляем сами: иначе токен невидим для экстрактора
+            # и цена («5000 рублей») теряется, как было ЗАМЕРЕНО.
+            variants = [{"pos": "NUMR", "lemma": key, "case": "",
+                         "number": "", "gender": "", "score": 0.95}]
         has_content = any(v["pos"] in CONTENT_POS for v in variants)
         content = has_content and not Morph.is_stop(key)
+        if numeric:
+            content = True
         best = variants[0]
         toks.append({
             "word": raw.lower(),

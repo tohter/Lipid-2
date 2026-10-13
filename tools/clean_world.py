@@ -36,7 +36,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from core.records import is_empty_entity, meaningful_categories
+from core.records import is_empty_entity, meaningful_categories, normalize_provenance
 from core.worldfile import read_world, write_world
 
 MEMORY_DIR = os.environ.get("LIPID2_MEMORY_DIR",
@@ -101,6 +101,25 @@ def plan(world: dict) -> tuple:
             changes.append(f"{name}: definition-обрывок {d[:40]!r} -> убрать "
                            f"(ветхая вырезка; лучше «знания нет», чем огрызок)")
             new.pop("definition", None)
+
+        # Шаг 1b. Происхождение к ЕДИНОЙ схеме (очередь, п.14). ЗАМЕРЕНО:
+        # в живом lipid_world.json в одном списке лежат и строки «wiki:Флюгер»
+        # (старый teacher_wiki), и объекты {source, evidence, at} (learner).
+        # Любой код вида [(p["source"]) for p in provenance] падает на строке.
+        # Миграция приводит обе формы к объекту; идемпотентно (повторный
+        # прогон изменений не даёт).
+        raw_prov = new.get("provenance")
+        if raw_prov is not None:
+            norm = normalize_provenance(raw_prov)
+            if norm != raw_prov:
+                kinds = sorted({type(x).__name__ for x in
+                                (raw_prov if isinstance(raw_prov, list) else [raw_prov])})
+                changes.append(f"{name}: provenance {kinds} -> единая схема "
+                               f"(объекты source/evidence/at)")
+                if norm:
+                    new["provenance"] = norm
+                else:
+                    new.pop("provenance", None)
 
         # Шаг 2. тавтологичные и служебные категории.
         hier = meaningful_categories(new.get("concept") or name, new.get("hierarchy"))

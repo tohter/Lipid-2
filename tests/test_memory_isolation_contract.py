@@ -254,3 +254,104 @@ class TestChannelSwitchesReachBrain(unittest.TestCase):
         out = brain._trigger_curiosity_and_learn("зюзя")
         self.assertIsNotNone(out, "включённый канал 3 не сработал")
         self.assertEqual(answers, ["зюзя"])
+
+
+class TestGuiSwitchesReachBrainFlags(unittest.TestCase):
+    """
+    Мутация M6 (очередь, п.16): ГАЛОЧКА ОКНА — ПЕРЕКЛЮЧАТЕЛЬ, А НЕ УКРАШЕНИЕ.
+
+    Дырка, из-за которой этот класс появился. Тесты TestChannelSwitchesReachBrain
+    выставляют brain.use_llm_teacher / brain.use_wiki_teacher НАПРЯМУЮ. Значит
+    они проверяют МОЗГ, но не ПРОВОД от окна к мозгу. Стоит сломать сам провод —
+    убрать строку в _push_channel_flags (или, как в мутации M6, заменить тело на
+    pass) — и ни один тест не краснеет:
+      * brain-тесты проходят, потому что сами выставляют флаги;
+      * test_gui_live/headless проверяет ТОЛЬКО 3-й канал (ask_user), а флаги
+        Учителя (LLM/Вики) не трогает вовсе.
+    ВОСПРОИЗВЕДЕНО 14.10.26: с телом `pass` в _push_channel_flags набор
+    оставался зелёным (10 + 1 тестов OK).
+
+    Здесь проверяется ИМЕННО ПРОВОД: вызывается НАСТОЯЩИЙ метод окна (unbound),
+    и утверждается, что значение галочки ДОШЛО до мозга. Любая правка, после
+    которой флаг не выставляется, обязана покраснить этот тест.
+    """
+
+    def _app(self):
+        """Объект-переключатель: только те поля, что читает метод."""
+        from ui.app_gui import Lipid2GUI
+        class _Journal:
+            def __init__(self):
+                self.rows = []
+
+            def add(self, text, *a, **k):
+                self.rows.append(text)
+
+        App = type("App", (), {})
+        app = App()
+        app.brain = type("Brain", (), {})()
+        app.journal = _Journal()
+        app.teacher_enabled = True
+        app.ask_enabled = True
+        app.experience_enabled = True
+        app._push = Lipid2GUI._push_channel_flags.__get__(app, type(app))
+        return app
+
+    def test_teacher_switch_reaches_both_teacher_flags(self):
+        app = self._app()
+        app.teacher_enabled = False
+        app._push()
+        self.assertFalse(app.brain.use_llm_teacher,
+                         "галочка «Учитель» НЕ дошла до LLM-канала: "
+                         "переключатель стал украшением")
+        self.assertFalse(app.brain.use_wiki_teacher,
+                         "галочка «Учитель» НЕ дошла до Вики-канала")
+
+    def test_teacher_switch_on_also_reaches(self):
+        app = self._app()
+        app.teacher_enabled = True
+        app._push()
+        self.assertTrue(app.brain.use_llm_teacher)
+        self.assertTrue(app.brain.use_wiki_teacher)
+
+    def test_ask_switch_reaches_brain(self):
+        app = self._app()
+        app.ask_enabled = False
+        app._push()
+        self.assertFalse(app.brain.ask_user_enabled,
+                         "галочка «спрашивать меня» НЕ дошла до мозга")
+
+    def test_experience_switch_reaches_brain(self):
+        app = self._app()
+        app.experience_enabled = False
+        app._push()
+        self.assertFalse(app.brain.learn_experience,
+                         "галочка опыта НЕ дошла до мозга")
+
+    def test_each_switch_is_independent(self):
+        """Три канала — ТРИ разных флага; один выключенный не гасит остальные."""
+        app = self._app()
+        app.teacher_enabled = False
+        app.ask_enabled = True
+        app.experience_enabled = True
+        app._push()
+        self.assertFalse(app.brain.use_llm_teacher)
+        self.assertFalse(app.brain.use_wiki_teacher)
+        self.assertTrue(app.brain.ask_user_enabled,
+                        "галочка Учителя погасила 3-й канал — флаги перепутаны")
+        self.assertTrue(app.brain.learn_experience)
+
+    def test_error_in_push_is_reported_not_silent(self):
+        """Если провод порвался исключением, окно обязано сказать, а не молчать."""
+        app = self._app()
+        class Anger:
+            @property
+            def use_llm_teacher(self):
+                raise RuntimeError("провод оборван")
+        app.brain = Anger()
+        app._push()
+        self.assertTrue(any("не дошли до мозга" in r for r in app.journal.rows),
+                        "исключение в _push_channel_flags проглочено молча")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

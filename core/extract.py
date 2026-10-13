@@ -104,10 +104,45 @@ MEASURE_LEMMAS = {"грамм", "килограмм", "тонна", "метр", 
 MONEY_LEMMAS = {"рубль", "копейка", "доллар", "евро", "цент", "цена", "стоимость",
                 "деньги", "тысяча", "миллион", "миллиард"}
 
+# ── ЧИСЛИТЕЛЬНЫЕ И МЕРЫ (очередь, п.17) ─────────────────────────────────────
+# Зачем. ЗАМЕРЕНО: «Шкаф стоит пять тысяч рублей» уходило в примечание
+# «значение цены не сохранено (нет разбора числительных)», а «Кошка весит три
+# килограмма» рождало ЛОЖНУЮ валентность: CAN_DO(кошка, весить) +
+# OBJECT_OF(весить, килограмм). То есть мера записывалась как умение и объект,
+# а само число терялось. Здесь словарь ЕДИНИЦ и МНОЖИТЕЛЕЙ: «пять тысяч» =
+# 5 * 1000. Без множителей «пять тысяч рублей» дало бы 5 или 1000, а не 5000.
+NUM_ONES = {"ноль": 0, "один": 1, "одна": 1, "одно": 1, "два": 2, "две": 2,
+            "три": 3, "четыре": 4, "пять": 5, "шесть": 6, "семь": 7,
+            "восемь": 8, "девять": 9, "десять": 10, "одиннадцать": 11,
+            "двенадцать": 12, "тринадцать": 13, "четырнадцать": 14,
+            "пятнадцать": 15, "шестнадцать": 16, "семнадцать": 17,
+            "восемнадцать": 18, "девятнадцать": 19}
+NUM_TENS = {"двадцать": 20, "тридцать": 30, "сорок": 40, "пятьдесят": 50,
+            "шестьдесят": 60, "семьдесят": 70, "восемьдесят": 80,
+            "девяносто": 90}
+NUM_HUNDREDS = {"сто": 100, "двести": 200, "триста": 300,
+                "четыреста": 400, "пятьсот": 500, "шестьсот": 600,
+                "семьсот": 700, "восемьсот": 800, "девятьсот": 900}
+# Множители: «тысяча»/«миллион» — это И существительные, И разряды числа.
+NUM_MULTIPLIERS = {"тысяча": 1000, "тысячи": 1000, "тысяч": 1000,
+                   "миллион": 10 ** 6, "миллиона": 10 ** 6, "миллионов": 10 ** 6,
+                   "миллиард": 10 ** 9, "миллиарда": 10 ** 9,
+                   "миллиардов": 10 ** 9}
+# Глаголы, после которых число/мера — это ЗНАЧЕНИЕ, а не умение.
+VALUE_VERBS = {"стоить", "весить", "обойтись", "потянуть", "равняться",
+               "составлять", "достигать", "насчитывать"}
+
+# Модальные глаголы: модальность -> HAS_PROPERTY, инфинитив -> CAN_DO
+# (наблюдаемое действие уже даёт CAN_DO через основную логику)
+MODAL_VERBS = {
+    "уметь", "мочь", "хотеть", "пытаться",
+    "смочь", "захотеть", "захотеться",
+    "знать", "успеть", "начать", "перестать", "продолжать",
+    "должен", "надо", "нужно", "следует",
+}
 
 @dataclass
 class Fact:
-    """Один атомарный факт из одного предложения."""
     head: str
     relation: str
     tail: str
@@ -219,6 +254,11 @@ class SimpleExtractor:
         # Ценовая конструкция: глагол «стоить» + деньги. Отличать надо от
         # действия, иначе «шкаф» получит умение «стоить».
         money_sentence = self._is_price(content)
+        # Мера вообще (вес/длина/объём/цена): глагол меры + число или единица.
+        # ЗАЧЕМ ОТДЕЛЬНО: «Кошка весит три килограмма» НЕ ценовое, но тоже
+        # рождало ложное CAN_DO(кошка, весить) — мера должна давать VALUE,
+        # а не умение, и для этого нужен свой флаг.
+        value_sentence = self._is_value_sentence(content)
         # Именная связка без глагола: «Вася — это инженер», «кошка это животное».
         # Частицу «это» и тире мы ловим ЯВНО, потому что морфология тут бессильна:
         # оба существительных стоят в ИМ.п. и согласуются в числе, так что по
@@ -264,11 +304,14 @@ class SimpleExtractor:
         # 1) подлежащее -> сказуемое (действие или свойство)
         if pred is not None:
             kind = self._clause_pred_role(pred)
-            if kind == "action" and subj is not None and money_sentence:
-                # «шкаф стоит 5000 рублей»: глагол «стоить» — это цена, а не
-                # умение шкафа. Умения в графе используются для ответов «что
-                # умеет X», и цена тамappearance как умение выглядит абсурдно.
-                res.notes.append("цена, а не действие")
+            if kind == "action" and subj is not None and (money_sentence
+                                                          or value_sentence):
+                # «шкаф стоит 5000 рублей», «кошка весит три килограмма»:
+                # глагол меры — это ЗНАЧЕНИЕ, а не умение субъекта. Умения в
+                # графе используются для ответов «что умеет X», и цена/вес там
+                # как умение выглядят абсурдно (ЗАМЕРЕНО: «кошка CAN_DO
+                # весить» + «весить OBJECT_OF килограмм»).
+                res.notes.append("цена/мера, а не действие")
             elif kind == "action" and subj is not None:
                 res.facts.append(self._fact(subj, pred, "CAN_DO", res.sentence, neg))
                 if pred.get("prep"):
@@ -308,6 +351,39 @@ class SimpleExtractor:
 
         # 2) зависимые при сказуемом: объект / инструмент / получатель / место
         used = {subj_taken, id(pred)}
+
+        # ОБРАБОТКА МОДАЛЬНЫХ ГЛАГОЛОВ: если сказуемое — модальный глагол
+        # (уметь, мочь, хотеть, пытаться...) и есть инфинитив,
+        # заменяем CAN_DO(субъект, модальность) на:
+        #   HAS_PROPERTY(субъект, модальность_инфинитив) + CAN_DO(субъект, инфинитив)
+        # Это отражает: «уметь X» = свойство, а «X» = умение.
+        if (pred is not None and subj is not None
+                and self._clause_pred_role(pred) == "action"
+                and pred["lemma"] in MODAL_VERBS):
+            inf = self._find_infinitive_dep(content, pred, used)
+            if inf is not None:
+                # Удаляем CAN_DO(субъект, модальность), созданный выше
+                res.facts = [f for f in res.facts
+                             if not (f.head == subj["lemma"]
+                                     and f.relation == "CAN_DO"
+                                     and f.tail == pred["lemma"])]
+                # Добавляем HAS_PROPERTY(субъект, модальность_инфинитив)
+                mod_variant = {
+                    "lemma": f"{pred['lemma']}_{inf['lemma']}",
+                    "pos": "VERB",
+                    "case": "",
+                    "number": "",
+                    "gender": "",
+                    "score": 0.9,
+                }
+                res.facts.append(self._fact_from_variant(
+                    subj["lemma"], pred, "HAS_PROPERTY",
+                    res.sentence, neg, mod_variant))
+                # Добавляем CAN_DO(субъект, инфинитив)
+                res.facts.append(self._fact(subj, inf, "CAN_DO",
+                                            res.sentence, neg, variant=inf))
+                used.add(id(inf))
+
         governed = [t for t in content if id(t) not in used and t["role"] != "property"]
         # ИМЕННОЙ режим = сказуемое НЕ смысловой глагол (связка или
         # прилагательное): «хвост собаки мокрый» — «собаки» определитель при
@@ -354,13 +430,29 @@ class SimpleExtractor:
                 return subj_lemma
             return content[best]["lemma"]
 
-        if money_sentence:
-            # ЦЕНА. Без разбора числительных «пять тысяч рублей» свелось бы к
-            # узлам «тысяча» и «рубль», связанным со «стоить», — то есть в граф
-            # попала бы ложная валентность вместо значения цены. Правильнее
-            # ничего не записать и честно сказать почему, чем записать мусор.
-            res.notes.append("ценовое предложение: значение цены не сохранено "
-                             "(нет разбора числительных)")
+        if money_sentence or value_sentence:
+            # ЦЕНА / МЕРА. До п.17 здесь было «ничего не записать и сказать
+            # почему»: «пять тысяч рублей» свелось бы к узлам «тысяча» и
+            # «рубль», связанным со «стоить». Теперь число РАЗБИРАЕТСЯ
+            # (_parse_amount), и знание сохраняется как VALUE, а не теряется.
+            # Субъект обязателен: без него VALUE вешать не на что, и
+            # записать меру в граф было бы некуда — тогда честный отказ.
+            amount = self._amount_in(content)
+            if amount is not None and (subj is not None or head):
+                anchor = subj_lemma or head or ""
+                if anchor:
+                    res.facts.append(Fact(
+                        head=anchor, relation="VALUE", tail=amount["phrase"],
+                        evidence=res.sentence, negated=neg,
+                        confidence=0.7))
+                    res.notes.append("цена/мера записана как VALUE: %s"
+                                     % amount["phrase"])
+                else:
+                    res.notes.append("цена/мера есть, но субъект не найден — "
+                                     "VALUE не записан")
+            else:
+                res.notes.append("ценовое/мерное предложение: число не разобрано — "
+                                 "VALUE не записан")
             res.facts = self._dedup(res.facts)
             return res
 
@@ -527,6 +619,20 @@ class SimpleExtractor:
             return "other"
         return "action"
 
+    def _find_infinitive_dep(self, content: List[dict], pred: dict,
+                               used: set) -> Optional[dict]:
+        """
+        Находит инфинитив, зависящий от модального глагола-сказуемого.
+        Возвращает токен инфинитива или None.
+        """
+        for t in content:
+            if id(t) in used or t is pred or t["role"] != "action":
+                continue
+            inf = self._pick(t, ("INFN",))
+            if inf is not None:
+                return t
+        return None
+
     # ── актёр и владение ───────────────────────────────────
 
     @staticmethod
@@ -554,6 +660,145 @@ class SimpleExtractor:
         return (any(t["lemma"] in MONEY_LEMMAS for t in content)
                 or any(t["pos"] == "NUMR" for t in content)
                 or any(any(v["pos"] == "NUMR" for v in t["variants"]) for t in content))
+
+    @staticmethod
+    def _is_value_sentence(content: List[dict]) -> bool:
+        """
+        Предложение-ЗНАЧЕНИЕ: глагол меры (весить/стоить/равняться...) плюс
+        число или единица измерения. «Кошка весит три килограмма»,
+        «шкаф стоит пять тысяч рублей», «путь равняется ста метрам».
+
+        Это НЕ то же, что _is_price (только деньги): вес и длина тоже
+        значения, и без своего флага они бы падали в ложную валентность
+        CAN_DO (ЗАМЕРЕНО до п.17).
+        """
+        verbs = {t["lemma"] for t in content if t["role"] == "action"}
+        if not (verbs & VALUE_VERBS):
+            return False
+        has_num = any(t["pos"] == "NUMR"
+                      or any(v["pos"] == "NUMR" for v in t["variants"])
+                      for t in content)
+        has_unit = any(t["lemma"] in MEASURE_LEMMAS or t["lemma"] in MONEY_LEMMAS
+                       for t in content)
+        return has_num or has_unit
+
+    @staticmethod
+    def _num_word(lemma: str) -> Optional[int]:
+        """Слово-числительное -> число. 'пять'->5, 'сорок'->40, 'сто'->100."""
+        lw = (lemma or "").lower()
+        for table in (NUM_ONES, NUM_TENS, NUM_HUNDREDS):
+            if lw in table:
+                return table[lw]
+        return None
+
+    @staticmethod
+    def _num_token_value(tok: dict) -> Optional[int]:
+        """
+        Число из токена: цифрами ('5000') или словом ('пять').
+
+        ЦИФРОВАЯ запись читается из САМОГО СЛОВА, а не из разбора: pymorphy3
+        даёт для «5000» лемму «5000», и терять её нельзя. Словесная —
+        через лемму варианта NUMR (лемма уже нормализует 'пять/пяти' -> 'пять').
+        """
+        w = (tok.get("word") or "").strip()
+        digits = w.replace(" ", "").replace("\u00a0", "")
+        if digits.isdigit():
+            return int(digits)
+        for v in tok.get("variants", []):
+            if v.get("pos") == "NUMR":
+                val = SimpleExtractor._num_word(v.get("lemma") or "")
+                if val is not None:
+                    return val
+        return SimpleExtractor._num_word(w)
+
+    def _parse_amount(self, content: List[dict], start: int) -> Optional[dict]:
+        """
+        Разобрать число с мерой начиная с позиции start.
+
+        Возвращает {'value': int, 'measure': str|None, 'phrase': str,
+                   'end': int} либо None, если числа/меры здесь нет.
+
+        ПОЧЕМУ ручной разбор, а не сумма всех NUMR подряд: «два миллиона
+        триста тысяч» — это 2_300_000, и множители работают как разряды.
+        Сложить 2+300 = 302 (а тем более 2+1000000) — значит записать в граф
+        цену, которой никто не называл.
+        """
+        i = start
+        total = 0
+        have = False
+        # Разбор в два прохода: единицы/десятки/сотни накапливаются, а
+        # множитель («тысяча»/«миллион») умножает накопленное.
+        pending = 0
+        while i < len(content):
+            t = content[i]
+            lw = (t.get("lemma") or t.get("word") or "").lower()
+            mult = NUM_MULTIPLIERS.get(lw)
+            if mult is not None and (have or pending):
+                base = pending if pending else 1
+                total += base * mult
+                pending = 0
+                have = True
+                i += 1
+                continue
+            if t.get("pos") == "NUMR" or any(v.get("pos") == "NUMR"
+                                              for v in t.get("variants", [])):
+                val = self._num_token_value(t)
+                if val is None:
+                    break
+                pending += val
+                have = True
+                i += 1
+                continue
+            break
+        if not have:
+            return None
+        total += pending
+        # Мера — существительное сразу после числа ('рублей', 'килограмма').
+        # Предлог между числом и мерой допустим ('на пять тысяч рублей'),
+        # но не глагол: «пять кошек спят» — это НЕ мера «кошек»
+        # при числе, а подлежащее, и VALUE тут был бы выдумкой.
+        measure = None
+        measure_word = ""
+        end = i
+        j = i
+        while j < len(content) and j < i + 2:
+            t = content[j]
+            if t.get("pos") == "NOUN" or any(v.get("pos") == "NOUN"
+                                               for v in t.get("variants", [])):
+                measure = (t.get("lemma") or t.get("word") or "").lower()
+                measure_word = (t.get("word") or measure).lower()
+                end = j + 1
+                break
+            j += 1
+        if measure is None:
+            end = i
+        # В ФРАЗЕ — поверхностная форма («5000 рублей»), а НЕ лемма
+        # («5000 рубль»): это то, что человек произнёс, и именно это
+        # читается в ответе «что известно про шкаф».
+        phrase = str(total)
+        if measure_word:
+            phrase = "%d %s" % (total, measure_word)
+        return {"value": total, "measure": measure, "phrase": phrase, "end": end}
+
+    def _amount_in(self, content: List[dict]) -> Optional[dict]:
+        """
+        Найти число с мерой в ЛЮБОМ месте предложения.
+
+        Почему не всегда с начала: «Шкаф стоит пять тысяч рублей» и «Пять
+        тысяч рублей стоит шкаф» — одно и то же знание; искать только в позиции
+        0 значит терять второй порядок слов. Перебираем все NUMR-позиции и
+        берём ПЕРВЫЙ удачный разбор (первое число — главное в мере).
+        """
+        for idx, t in enumerate(content):
+            is_num = (t.get("pos") == "NUMR"
+                      or any(v.get("pos") == "NUMR"
+                             for v in t.get("variants", [])))
+            if not is_num:
+                continue
+            got = self._parse_amount(content, idx)
+            if got is not None:
+                return got
+        return None
 
     @staticmethod
     def _possession(toks: List[dict]) -> Tuple[Optional[dict], Optional[dict]]:

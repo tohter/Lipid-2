@@ -260,9 +260,11 @@ class Lipid2GUI:
         self.experience_enabled = True
 
         self._build_ui()
-        self._report_encoder()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._pump()
+
+        # Инициализируем SDR-кодировщик в фоне, чтобы окно появилось сразу
+        self.jobs.start(self._init_encoder, label="SDR-кодировщик")
 
         if brain is not None:
             self._attach_brain(brain)
@@ -280,6 +282,12 @@ class Lipid2GUI:
         from brain.lipid2_brain import Lipid2Brain
         brain = Lipid2Brain()
         self._ui_q.put(("brain", brain))
+
+    def _init_encoder(self):
+        """Инициализирует SDR-кодировщик в фоне, не блокируя GUI."""
+        from core.encoder import get_encoder
+        enc = get_encoder()
+        self._ui_q.put(("encoder_ready", enc))
 
     def _attach_brain(self, brain):
         self.brain = brain
@@ -697,6 +705,8 @@ class Lipid2GUI:
                 self._set_buttons(busy=payload)
             elif kind == "brain":
                 self._attach_brain(payload)
+            elif kind == "encoder_ready":
+                self._report_encoder(payload)
             elif kind == "kb":
                 self._refresh_kb()
             elif kind == "chat":
@@ -757,13 +767,16 @@ class Lipid2GUI:
             except (tk.TclError, TypeError, ValueError):
                 pass
 
-    def _report_encoder(self):
+    def _report_encoder(self, enc=None):
         """
         Какая SDR-схема работает РЕАЛЬНО — постоянно на виду, не в пролетающей
         строке. На буквенном хэше приложение выглядит здоровым и отвечает,
         но overlap несвязанных слов у него ВЫШЕ, чем у синонимов: узнавание и
         пороги 13/17 теряют смысл. Пользователь обязан видеть это сразу.
         """
+        if enc is None:
+            from core.encoder import get_encoder
+            enc = get_encoder()
         try:
             name, semantic, cfg = encoder_info()
         except Exception as exc:

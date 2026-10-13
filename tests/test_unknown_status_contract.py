@@ -369,5 +369,66 @@ class TestVerbsAreNotEntities(unittest.TestCase):
         self.assertIn("гасить", w["entities"])
 
 
+class TestUnknownStatusMergeByRank(unittest.TestCase):
+    """
+    Очередь, п.15: при слиянии двух снимков мира статус обязан пережить
+    слияние ПО СТАРШИНСТВУ (asked_empty > action_no_profile > not_asked),
+    а не по порядку чтения. Иначе неверный диагноз возвращается:
+      * asked_empty заваливается старым not_asked -> слово снова спрашивают
+        (сжигаем минуты на уже отвеченный вопрос);
+      * not_asked затирается asked_empty с глагола -> слово НАВСЕГДА
+        снимается с изучения.
+    """
+
+    def test_asked_empty_beats_not_asked_in_any_order(self):
+        from core.records import merge_unknown_entry
+        asked = {"status": "asked_empty", "count": 1}
+        not_asked = {"status": "not_asked", "count": 5}
+        for a, b in ((asked, not_asked), (not_asked, asked)):
+            with self.subTest(order=(a["status"], b["status"])):
+                m = merge_unknown_entry(a, b)
+                self.assertEqual(m["status"], "asked_empty",
+                                 "not_asked завалил asked_empty")
+                self.assertEqual(m["count"], 5, "count — максимум, а не от порядка")
+
+    def test_action_no_profile_beats_not_asked(self):
+        from core.records import merge_unknown_entry
+        m = merge_unknown_entry({"status": "not_asked"},
+                                {"status": "action_no_profile"})
+        self.assertEqual(m["status"], "action_no_profile")
+
+    def test_asked_empty_beats_action_no_profile(self):
+        from core.records import merge_unknown_entry
+        m = merge_unknown_entry({"status": "action_no_profile"},
+                                {"status": "asked_empty"})
+        self.assertEqual(m["status"], "asked_empty")
+
+    def test_missing_status_loses_to_any_explicit(self):
+        from core.records import merge_unknown_entry
+        m = merge_unknown_entry({"count": 2}, {"status": "not_asked"})
+        self.assertEqual(m["status"], "not_asked",
+                         "явный диагноз проиграл отсутствию статуса")
+
+    def test_loser_fields_are_not_lost(self):
+        """reason/seen_as проигравшего не должны исчезнуть без следа."""
+        from core.records import merge_unknown_entry
+        m = merge_unknown_entry(
+            {"status": "asked_empty", "reason": "все каналы молчали"},
+            {"status": "not_asked", "seen_as": "флюгер"})
+        self.assertEqual(m["status"], "asked_empty")
+        self.assertEqual(m["reason"], "все каналы молчали")
+        self.assertEqual(m["seen_as"], "флюгер")
+
+    def test_merge_is_order_independent(self):
+        from core.records import merge_unknown_entry
+        a = {"status": "not_asked", "count": 3, "seen_as": "a"}
+        b = {"status": "asked_empty", "count": 7, "reason": "r"}
+        m1, m2 = merge_unknown_entry(a, b), merge_unknown_entry(b, a)
+        self.assertEqual(m1["status"], m2["status"])
+        self.assertEqual(m1["count"], m2["count"])
+        self.assertEqual(m1["seen_as"], m2["seen_as"])
+        self.assertEqual(m1["reason"], m2["reason"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
