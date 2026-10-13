@@ -654,5 +654,166 @@ class TestBrainExperience(unittest.TestCase):
                                  self._world()["transitions"]["rows"]})
 
 
+class TestExperienceParticipatesInAnswer(unittest.TestCase):
+    """
+    Очередь п.24: Experience участвует в ОТВЕТЕ, а не только считает точность.
+
+    Замер, который замок обязан удержать: цикл — измерительный прибор,
+    но его предсказание обязано менять порядок ответа и быть видимым.
+    И одновременно: у него НЕТ прав записи и он молчит, когда выключен.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="l2ans-")
+        os.environ["LIPID2_MEMORY_DIR"] = self.dir
+
+    def tearDown(self):
+        os.environ.pop("LIPID2_MEMORY_DIR", None)
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _brain_with_experience(self):
+        from brain.lipid2_brain import Lipid2Brain
+        b = Lipid2Brain(memory_dir=self.dir)
+        b.use_llm_teacher = b.use_wiki_teacher = b.ask_user_enabled = False
+        # опыт: после «кошка» всегда «пить» (4 подтверждения -> сила 4)
+        for _ in range(4):
+            b.experience_from_text("Кошка пьёт молоко.", save=False)
+        # и знание: кошка умеет пить И спать (два кандидата — есть что упорядочить)
+        world = b._load_world()
+        world.setdefault("observations", {})["кошка|CAN_DO|пить"] = {
+            "head": "кошка", "relation": "CAN_DO", "tail": "пить",
+            "confidence": 0.9, "negated": False, "evidence": "t",
+            "source": "text", "support": 1}
+        world["observations"]["кошка|CAN_DO|спать"] = {
+            "head": "кошка", "relation": "CAN_DO", "tail": "спать",
+            "confidence": 0.9, "negated": False, "evidence": "t",
+            "source": "text", "support": 1}
+        world.setdefault("entities", {})["кошка"] = {
+            "concept": "кошка", "definition": "домашнее животное",
+            "hierarchy": ["кошачьи"], "properties": [], "actions": ["пить"]}
+        b._save_world(world)
+        return b
+
+    def test_prediction_is_public_and_reads_experience(self):
+        b = self._brain_with_experience()
+        pred = b.predict_next("кошка")
+        self.assertTrue(pred, "опыт накоплен, а предсказание пусто")
+        self.assertEqual(pred[0]["tail"], "пить")
+        self.assertEqual(pred[0]["strength"], 4)
+        self.assertAlmostEqual(pred[0]["norm"], 4 / float(MAX_STRENGTH), places=4)
+
+    def test_prediction_resolves_word_forms(self):
+        """«кошки» и «кошку» — та же лемма, что хранит цикл."""
+        b = self._brain_with_experience()
+        for form in ("кошка", "кошки", "кошку", "кошкой"):
+            pred = b.predict_next(form)
+            self.assertTrue(pred, f"форма {form!r} не нашла опыт леммы")
+            self.assertEqual(pred[0]["tail"], "пить")
+
+    def test_disabled_loop_predicts_nothing(self):
+        """Выключенный цикл молчит — предсказание не выдумывается."""
+        b = self._brain_with_experience()
+        b.learn_experience = False
+        self.assertEqual(b.predict_next("кошка"), [])
+
+    def test_answer_orders_expected_action_first(self):
+        """Опыт меняет ПОРЯДОК ответа и говорит, почему это первое."""
+        b = self._brain_with_experience()
+        ans = b.process_input("Что делает кошка?")
+        self.assertIn("опыт", ans.lower(),
+                      "ответ не показал, что опыт участвовал")
+        self.assertIn("пить", ans)
+        self.assertIn("4/15", ans, "сила предсказания обязана быть видимой числом")
+
+    def test_prediction_creates_no_entities(self):
+        """Чтение опыта — не запись. Сущностей не появляется."""
+        b = self._brain_with_experience()
+        before = set(b._load_world().get("entities", {}))
+        b.predict_next("динозавр")
+        b.process_input("Что делает динозавр?")
+        self.assertEqual(set(b._load_world().get("entities", {})), before)
+
+    def test_interaction_reports_facts_not_placeholder(self):
+        """Взаимодействие читает связи, а не печатает заглушку про симулятор."""
+        b = self._brain_with_experience()
+        ans = b.process_input("Что происходит, когда кошка видит молоко")
+        self.assertNotIn("Векторный просчёт", ans)
+
+
+class TestForceIsConsumedVisibly(unittest.TestCase):
+    """
+    Очередь п.25: сила (переход) не копится молча.
+
+    Вторая половина п.25: цикл должен уметь ТОРМОЗИТЬ/ОКЛИКАТЬ запись, которой
+    опыт противоречит. Полномочий писать в онтологию у него нет (это замок из
+    TestCortexHasNoWriteRightsToOntology), поэтому расход силы выражен как
+    ВИДИМЫЙ диагноз расхождения.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="l2force-")
+        os.environ["LIPID2_MEMORY_DIR"] = self.dir
+
+    def tearDown(self):
+        os.environ.pop("LIPID2_MEMORY_DIR", None)
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _brain(self):
+        from brain.lipid2_brain import Lipid2Brain
+        b = Lipid2Brain(memory_dir=self.dir)
+        b.use_llm_teacher = b.use_wiki_teacher = b.ask_user_enabled = False
+        return b
+
+    def _add_obs(self, b, head, tail, relation="CAN_DO", weight=180, negated=False):
+        world = b._load_world()
+        world.setdefault("observations", {})[f"{head}|{relation}|{tail}"] = {
+            "head": head, "relation": relation, "tail": tail,
+            "confidence": 0.9, "negated": negated, "weight": weight,
+            "evidence": "t", "source": "text", "support": 1}
+        b._save_world(world)
+
+    def test_strong_ontology_without_experience_is_flagged(self):
+        """Вес есть, опыт молчит — это расхождение, а не «всё хорошо»."""
+        b = self._brain()
+        self._add_obs(b, "вода", "гасить", weight=180)
+        conflicts = b.experience_conflicts()
+        kinds = {c["kind"] for c in conflicts}
+        self.assertIn("ontology_without_experience", kinds)
+
+    def test_conflict_is_reported_loudly_after_experience(self):
+        b = self._brain()
+        self._add_obs(b, "вода", "гасить", weight=180)
+        metrics = b.experience_from_text("Вода гасит пламя.", save=False)
+        self.assertIn("conflicts", metrics)
+        self.assertGreaterEqual(metrics["conflicts"], 1)
+
+    def test_strong_experience_without_ontology_is_flagged(self):
+        """Опыт ждёт сильно, а связи в онтологии нет — тоже расхождение."""
+        b = self._brain()
+        for _ in range(8):
+            b.experience_from_text("Кошка пьёт молоко.", save=False)
+        kinds = {c["kind"] for c in b.experience_conflicts()}
+        self.assertIn("experience_without_ontology", kinds)
+
+    def test_negated_observation_is_not_a_conflict(self):
+        """Отрицание — не «онтология утверждает»: это отдельный флаг."""
+        b = self._brain()
+        self._add_obs(b, "вода", "гасить", weight=180, negated=True)
+        kinds = {c["kind"] for c in b.experience_conflicts()}
+        self.assertNotIn("ontology_without_experience", kinds)
+
+    def test_conflict_inspector_writes_nothing(self):
+        """Инспектор — только чтение: мир до и после совпадает побайтово."""
+        b = self._brain()
+        self._add_obs(b, "вода", "гасить", weight=180)
+        path = os.path.join(self.dir, "lipid_world.json")
+        with open(path, "rb") as fh:
+            before = fh.read()
+        b.experience_conflicts()
+        with open(path, "rb") as fh:
+            after = fh.read()
+        self.assertEqual(before, after, "инспектор изменил файл Вселенной")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

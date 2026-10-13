@@ -2,7 +2,7 @@ import os
 import json
 import re
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 # Импортируем вынесенный IR-парсер
 from brain.ir import IRParser
@@ -901,6 +901,20 @@ class Lipid2Brain:
         metrics = self.cortex.process_stream(text, verbose=False)
         if save and metrics.get("ticks"):
             self._save_transitions()
+        # СИЛА РАСХОДУЕТСЯ НЕ МОЛЧА (очередь п.25): расхождение онтологии и
+        # опыта обязано быть видно сразу, а не обнаруживаться через неделю
+        # по странным ответам. Мы НЕ правим вес здесь (у цикла нет прав
+        # записи) — мы называем противоречие вслух.
+        if metrics.get("ticks"):
+            conflicts = self.experience_conflicts()
+            if conflicts:
+                metrics["conflicts"] = len(conflicts)
+                worst = conflicts[0]
+                self._say(f"⚠️ опыт ⟷ онтология: расхождений {len(conflicts)}; "
+                          f"напр. «{worst['head']}→{worst['tail']}» "
+                          f"(вес {worst['weight']}, опыт {worst['strength']}/15)")
+            else:
+                metrics["conflicts"] = 0
         return metrics
 
     def _save_transitions(self) -> None:
@@ -924,6 +938,120 @@ class Lipid2Brain:
             self.transitions.from_json(merged)
         except Exception as exc:
             self._say(f"⚠️ опыт НЕ сохранён: {type(exc).__name__}: {exc}")
+
+    # ── ОПЫТ УЧАСТВУЕТ В ОТВЕТЕ (очередь п.24) ────────────
+
+    def predict_next(self, concept: str, k: int = 1) -> List[Dict[str, Any]]:
+        """
+        Что ОПЫТ цикла ждёт после этого концепта — БЕЗ обучения и БЕЗ записи.
+
+        До этой правки Experience был измерительным прибором: цикл считал
+        точность и молчал. Предсказание «кошка -> пить» не подсказывало
+        brain/ir, какое знание показать первым (memory.txt, п.24). Здесь
+        появляется ЕДИНСТВЕННЫЙ вход, которым ответы читают опыт: словарь
+        {"tail", "strength", "norm"} для top-k хвостов.
+
+        Три честных ограничения (каждое — не «на будущее», а прямо сейчас):
+          1. Опыт НЕ создаёт знание. Если цикла нет или он выключен — пустой
+             список, а не догадка. Выключенный канал обязан молчать.
+          2. Имя концепта сводится к канону (лемма/резолвер), иначе «кошки»
+             и «кошка» разошлись бы по двум разным рядкам таблицы.
+          3. Возвращается СИЛА 0..15 отдельным полем `norm` (0.0..1.0):
+             вызывающий сам решает, достаточен ли опыт. Порог не выдумывается
+             здесь — его нет в замерах.
+        """
+        if not getattr(self, "learn_experience", False):
+            return []
+        canon = self.core.resolve_name(concept) or self.lemmas_world.resolve_name(concept)
+        if not canon:
+            canon = (concept or "").lower().strip()
+        # Цикл хранит ЛЕММЫ (core/cortex.py::experience_sentences), а не формы
+        # из запроса. Без этого шага «кошки» не находило рядок «кошка» и опыт
+        # молча не участвовал в ответе на падежную форму — та же ловушка, что
+        # закрывали у find_in_memory. Импорт ЛОКАЛЬНЫЙ: мозг обязан работать
+        # без pymorphy3 (эвристика), а не падать на импорте.
+        if not self.transitions.known_tails(canon):
+            try:
+                from core.morph import Morph
+                lemma = Morph.lemma(canon)
+                if lemma and self.transitions.known_tails(lemma):
+                    canon = lemma
+            except Exception:
+                # Морфологии нет — остаёмся на сыром имени. Молчать нельзя,
+                # но и падать нечем: пустой результат ниже сам скажет «опыта
+                # нет», а не притворится «опыт есть».
+                pass
+        out = []
+        for tail, strength in self.transitions.top(canon, k):
+            if strength <= 0:
+                continue
+            out.append({"tail": tail, "strength": strength,
+                        "norm": strength / float(self.transitions.max_strength)})
+        return out
+
+    def experience_conflicts(self) -> List[Dict[str, Any]]:
+        """
+        Противоречия ОНТОЛОГИЯ ↔ ОПЫТ — только ЧТЕНИЕ, без записи.
+
+        Очередь п.25: сила (переход) накоплена, но не расходовалась — цикл не
+        умел ни подсказывать, ни ТОРМОЗИТЬ запись факта, которому опыт
+        противоречит. Подсказывать теперь умеет predict_next (п.24); здесь —
+        вторая половина: противоречие обязано быть ВИДНО, а не лежать молча.
+
+        Что считается противоречием (берём из experiments/PLASTICITY_CONTRACT.md,
+        а не из головы):
+          * онтология УТВЕРЖДАЕТ (weight >= 150), а опыт почти не видел связи
+            (strength <= 3) -> факт в базе есть, но наблюдения его не
+            подтверждают;
+          * опыт СИЛЬНО ждёт (strength >= 8), а онтологической связи нет
+            совсем -> опыт накопил, а знание не оформлено (это же лечит
+            consolidate_during_sleep, п.23 — но там нужна запись, а здесь
+            только сообщение).
+
+        ВАЖНО: возвращается список диагнозов, НИЧЕГО не пишется в Вселенную.
+        У цикла нет прав записи, и этот инспектор их не выдаёт: он называет
+        расхождение, а решение (спать, понизить вес, добавить связь) — не его.
+        """
+        conflicts: List[Dict[str, Any]] = []
+        # 1. онтология сильна, опыт молчит
+        for v in (self._load_world().get("observations") or {}).values():
+            if not isinstance(v, dict) or v.get("negated"):
+                continue
+            if v.get("relation") != "CAN_DO":
+                continue
+            head = str(v.get("head", "")).lower().strip()
+            tail = str(v.get("tail", "")).lower().strip()
+            if not head or not tail:
+                continue
+            weight = int(v.get("weight", 0) or 0)
+            strength = self.transitions.get(head, tail)
+            if weight >= 150 and strength <= 3:
+                conflicts.append({"kind": "ontology_without_experience",
+                                  "head": head, "tail": tail,
+                                  "weight": weight, "strength": strength})
+        # 2. опыт силён, онтологии нет
+        for head in self.transitions.heads():
+            for tail in self.transitions.known_tails(head):
+                strength = self.transitions.get(head, tail)
+                if strength < 8:
+                    continue
+                if not self._has_can_do(head, tail):
+                    conflicts.append({"kind": "experience_without_ontology",
+                                      "head": head, "tail": tail,
+                                      "weight": 0, "strength": strength})
+        return conflicts
+
+    def _has_can_do(self, head: str, tail: str) -> bool:
+        """Есть ли CAN_DO(head, tail) в наблюдениях Вселенной. Только чтение."""
+        for v in (self._load_world().get("observations") or {}).values():
+            if not isinstance(v, dict) or v.get("negated"):
+                continue
+            if v.get("relation") != "CAN_DO":
+                continue
+            if str(v.get("head", "")).lower().strip() == head \
+                    and str(v.get("tail", "")).lower().strip() == tail:
+                return True
+        return False
 
     # ── ГЛАВНАЯ ТОЧКА ВХОДА ────────────────────────────────
 
@@ -1129,8 +1257,20 @@ class Lipid2Brain:
                 if data else ""
             return (f"[Lipid-2]: Я не знаю, что делает '{name}'"
                     f"{known}. Скажи сам — я запомню.")
+        # ОПЫТ ПОДСКАЗЫВАЕТ ПОРЯДОК (п.24). Не заменяет знание и не выдумывает
+        # новое: он лишь ставит ожидаемое продолжение первым и говорит вслух,
+        # ПОЧЕМУ оно первое. Цикл не имеет прав записи — здесь только чтение.
+        predicted = self.predict_next(name, k=1)
+        ordered = sorted(set(acts))
+        hint = ""
+        if predicted and predicted[0]["tail"] in ordered:
+            exp = predicted[0]["tail"]
+            ordered.remove(exp)
+            ordered.insert(0, exp)
+            hint = (f" Опыт ждёт первым «{exp}» "
+                    f"(сила {predicted[0]['strength']}/15).")
         return (f"[Lipid-2]: '{name}' умеет: "
-                f"{', '.join(sorted(set(acts)))}.")
+                f"{', '.join(ordered)}.{hint}")
 
     @staticmethod
     def _describe_action(concept: str, ent: dict, properties: bool = False) -> str:
@@ -1159,9 +1299,46 @@ class Lipid2Brain:
         return head
 
     def _handle_interaction(self, subjects: list) -> str:
-        """Обработка взаимодействия двух и более сущностей."""
-        subj_str = " и ".join(subjects)
-        return f"[Lipid-2]: Запущен анализ взаимодействия между [{subj_str}]. (Векторный просчёт [K, S, M] симулятора)."
+        """Обработка взаимодействия двух и более сущностей.
+
+        ОПЫТ УЧАСТВУЕТ (п.24): для первого субъекта цикл подсказывает, чего он
+        ждёт следующим. Если среди перечисленных субъектов есть ожидаемый —
+        говорим это прямо, а не рисуем «векторный просчёт симулятора» (та
+        строка была заглушкой: она не читала ни графа, ни опыта).
+        """
+        head = subjects[0] if subjects else ""
+        other = subjects[1] if len(subjects) > 1 else ""
+        facts = self._facts_between(subjects)
+        parts = []
+        if facts:
+            parts.append("известные связи: " + ", ".join(facts))
+        predicted = self.predict_next(head, k=1) if head else []
+        if predicted and other and predicted[0]["tail"] == other.lower().strip():
+            exp = predicted[0]
+            parts.append(f"опыт ждёт после '{head}' именно '{exp['tail']}' "
+                         f"(сила {exp['strength']}/15)")
+        if parts:
+            return f"[Lipid-2]: Про {' и '.join(subjects)} — " + "; ".join(parts) + "."
+        return (f"[Lipid-2]: Прямых наблюдений между {' и '.join(subjects)} "
+                f"нет, и опыт не предсказывает их порядок.")
+
+    def _facts_between(self, subjects: list) -> List[str]:
+        """
+        Связи ВСЕЛЕННОЙ между перечисленными субъектами — текстовыми фактами.
+
+        Только чтение. Пустой список = «связей нет», а НЕ «не искали»:
+        вызывающий (_handle_interaction) сам решает, что сказать в пустоте.
+        """
+        names = {s.lower().strip() for s in subjects if s}
+        out: List[str] = []
+        for v in (self._load_world().get("observations") or {}).values():
+            if not isinstance(v, dict):
+                continue
+            h = str(v.get("head", "")).lower().strip()
+            t = str(v.get("tail", "")).lower().strip()
+            if h in names and t in names and not v.get("negated"):
+                out.append(f"{h} —{v.get('relation', '?')}-> {t}")
+        return out
 
     # ── ДОСТУП ДЛЯ GUI / ХОРМОНЫ ──────────────────────────
 
