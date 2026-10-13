@@ -45,8 +45,12 @@ from typing import Any, Dict, Optional
 # внутри процесса нужен ещё и мьютекс.
 _LOCK = threading.RLock()
 
+# «transitions» — сила переходов предиктивного цикла (core/transitions.py).
+# Ключ ОБЯЗАН быть в EMPTY_WORLD: read_world() дописывает отсутствующие ключи
+# именно из него. Без строки здесь первый же писатель снимка убрал бы
+# накопленный опыт молча, без единого сообщения.
 EMPTY_WORLD: Dict[str, Any] = {"entities": {}, "relations": [], "observations": {},
-                               "unknown_words": {}}
+                               "unknown_words": {}, "transitions": {}}
 
 
 def _complain(text: str) -> None:
@@ -111,8 +115,7 @@ def read_world(path: str, *, loud: bool = True) -> Dict[str, Any]:
     пока битые байты не перезаписаны.
     """
     if not os.path.exists(path):
-        return {"entities": {}, "relations": [], "observations": {},
-                "unknown_words": {}}
+        return _empty_world()
     try:
         with _LOCK:
             with open(path, "r", encoding="utf-8") as fh:
@@ -127,17 +130,25 @@ def read_world(path: str, *, loud: bool = True) -> Dict[str, Any]:
                    "[world]    сохранить копию не удалось\n")
                 + "[world]    работаю с ПУСТЫМ миром: любое сохранение сейчас "
                   "перезапишет Вселенную. Разберитесь с файлом до обучения.")
-        return {"entities": {}, "relations": [], "observations": {},
-                "unknown_words": {}}
+        return _empty_world()
     if not isinstance(world, dict):
         if loud:
             _complain(f"[world] ⛔ {os.path.basename(path)} содержит {type(world).__name__}, "
                       "а не объект JSON — работаю с пустым миром")
-        return {"entities": {}, "relations": [], "observations": {},
-                "unknown_words": {}}
+        return _empty_world()
     for key, default in EMPTY_WORLD.items():
         world.setdefault(key, dict(default) if isinstance(default, dict) else list(default))
     return world
+
+
+def _empty_world() -> Dict[str, Any]:
+    """
+    Пустой мир. ОДНА функция, а не четыре литерала: разошедшиеся копии
+    «пустого» мира — это дыра, через которую секция исчезает из файла
+    (проверено на «transitions»: три литерала совпадали, четвёртый — нет).
+    """
+    return {k: (dict(v) if isinstance(v, dict) else list(v))
+            for k, v in EMPTY_WORLD.items()}
 
 
 def write_world(path: str, world: dict) -> None:

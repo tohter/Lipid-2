@@ -10,9 +10,10 @@ from brain.ir import IRParser
 from teachers.teacher1 import AgentTeacherV2       # Канал 1: локальная LLM (Gemma/llama.cpp)
 from teachers.teacher_wiki import WikiTeacher      # Канал 2: интернет (Википедия)
 # Импортируем нейроморфное ядро (SDR / STDP / Гормоны)
-from core.cortex import Hormones
+from core.cortex import Hormones, PredictiveCortex
 from core.graph import GraphMemory
 from brain.learner import Learner, TeacherDisabled, TeacherUnavailable
+from core.transitions import merge_json, table_from_world
 from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
@@ -96,6 +97,24 @@ class Lipid2Brain:
         if n:
             print(f"[Brain]: восстановлено из наблюдений: {n} связей")
             self.core.sync_lemmas()
+
+        # ── ПРЕДИКТИВНЫЙ ЦИКЛ (core/cortex.py) ──────────────────────────
+        # Тот же принцип, что у переключателей каналов: выключенный цикл не
+        # должен трогать НИЧЕГО, включая цифры отчёта. Молча работающий
+        # «экспериментальный модуль» в GUI — способ получить числа, которые
+        # никто не просил и никто не проверяет.
+        self.learn_experience = True
+        # Таблица переходов — ЕДИНСТВЕННАЯ запись, которую цикл имеет право
+        # создавать; она же и всё его долговременное состояние. До этого опыт
+        # писался в веса синапсов и терялся при перезапуске (замер — в
+        # docstring core/cortex.py, пункты D и E).
+        self.transitions = table_from_world(self._load_world())
+        # Гормоны ПЕРЕДАЮТСЯ, а не создаются заново: иначе GUI рисует шкалу
+        # мозга, а цикл живёт со своей, и «дофамин 255» в окне ничего не
+        # говорит о том, что происходило в цикле.
+        self.cortex = PredictiveCortex(self.core,
+                                      transitions=self.transitions,
+                                      hormones=self.hormones)
 
     def _resolve_known_form(self, word: str):
         """Форма слова -> имя известной сущности (ядро, затем Вселенная)."""
@@ -581,6 +600,12 @@ class Lipid2Brain:
                                            allow_teacher=allow_teacher)
         rep.channel_calls = dict(self.channel_calls)
         rep.channel_found = dict(self.channel_found)
+        # Опыт того же текста наблюдает предиктивный цикл. Отдельным шагом, а
+        # не внутри Learner'а: у них РАЗНЫЕ права. Learner пишет знания во
+        # Вселенную, цикл считает ожидания и не имеет права создавать ни узлов,
+        # ни фактов — смешав это, нельзя было бы разобраться, откуда взялась
+        # запись (тот же дефект, что чинили со счётчиками каналов).
+        rep.experience = self.experience_from_text(text)
         # Учились — значит мир изменился: резолвер форм Вселенной обязан
         # увидеть новые имена, иначе следующее предложение спросит LLM про
         # уже выученное слово.
@@ -590,6 +615,46 @@ class Lipid2Brain:
         if rep.unknown:
             self.hormones.cortisol = min(255, self.hormones.cortisol + 40)
         return rep
+
+    # ── ПРЕДИКТИВНЫЙ ЦИКЛ: ОПЫТ И ЕГО СОХРАНЕНИЕ ───────────
+
+    def experience_from_text(self, text: str, save: bool = True) -> Dict[str, Any]:
+        """
+        Пропустить текст через цикл «предсказание -> ошибка» и сохранить опыт.
+
+        Возвращает метрики сеанса, а не молчит: точность цикла обязана быть
+        видна рядом с точностью узнавания, иначе «система предсказывает»
+        останется unverifiable утверждением. Отдельно от learn_from_text —
+        чтобы вызывающий мог наблюдать и текст, который НЕ учит (вопрос
+        пользователя тоже опыт).
+        """
+        if not self.learn_experience:
+            return {"disabled": True}
+        metrics = self.cortex.process_stream(text, verbose=False)
+        if save and metrics.get("ticks"):
+            self._save_transitions()
+        return metrics
+
+    def _save_transitions(self) -> None:
+        """
+        Сохранить опыт секцией «transitions» Единой Вселенной.
+
+        read-modify-write через merge_json, а не запись своего снимка: файл
+        пишут и другие (Learner, Википедия, чистильщик), и прямой снимок стёр бы
+        чужие переходы. Максимум при слиянии делает порядок записей
+        несущественным. Ошибка сохранения НЕ глотается: потерю опыта надо
+        видеть, а не обнаруживать её через неделю по нулевой точности.
+        """
+        try:
+            world = self._load_world()
+            merged = merge_json(world.get("transitions"), self.transitions.to_json())
+            world["transitions"] = merged
+            self._save_world(world)
+            # Живая таблица обязана стать ОБЪЕДИНЕНИЕМ, иначе процесс продолжит
+            # работать без чужого опыта, который только что сохранил.
+            self.transitions.from_json(merged)
+        except Exception as exc:
+            self._say(f"⚠️ опыт НЕ сохранён: {type(exc).__name__}: {exc}")
 
     # ── ГЛАВНАЯ ТОЧКА ВХОДА ────────────────────────────────
 

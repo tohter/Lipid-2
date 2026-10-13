@@ -43,7 +43,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 if __package__ in (None, ""):        # прямой запуск: python brain/learner.py
     import os as _os, sys as _sys
@@ -171,6 +171,11 @@ class LearningReport:
     # когда слово записал пользователь.
     channel_calls: Dict[str, int] = field(default_factory=dict)
     channel_found: Dict[str, int] = field(default_factory=dict)
+    # Метрики предиктивного цикла на том же тексте (core/cortex.py). ПУСТО,
+    # если цикл выключен. Держится отдельно от узнавания: «узнал слово» и
+    # «угадал следующее слово» — РАЗНЫЕ утверждения, и в одну цифру их сводить
+    # нельзя (замер: мягкая мера давала 59.6% там, где строго 0%).
+    experience: Dict[str, Any] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
     quality: Dict[str, bool] = field(default_factory=dict)
 
@@ -212,6 +217,23 @@ class LearningReport:
             lines.append("  осталось неизвестным: " + ", ".join(self.unknown[:12]))
         lines.append(f"  из них НЕ спрашивали: {self.not_asked_words}"
                      + (f" — {', '.join(self.not_asked[:8])}" if self.not_asked else ""))
+        exp = self.experience or {}
+        if exp.get("disabled"):
+            lines.append("  предиктивный цикл: ВЫКЛЮЧЕН (чисел предсказаний нет)")
+        elif exp:
+            # Покрытие обязательно рядом с точностью: «0 ошибок» при покрытии 0%
+            # означает «опыта ещё нет», а не «ни разу не ошиблись».
+            lines.append(
+                f"  предсказание: тиков {exp.get('ticks', 0)}"
+                f"   угадано продолжений: {exp.get('hits', 0)}"
+                f"   ошибок: {exp.get('misses', 0)}"
+                f"   без ожидания: {exp.get('no_expectation', 0)}"
+                f"   точность: {exp.get('accuracy_strict', 0.0):.0%}"
+                f"   покрытие: {exp.get('coverage', 0.0):.0%}")
+            lines.append(
+                f"  переходов накоплено: {exp.get('transitions', 0)}"
+                f"   близко по битам, но НЕ то слово: {exp.get('soft_overlap_hits', 0)}"
+                f"   новых: {exp.get('new_transitions', 0)}")
         for n in self.notes[:6]:
             lines.append("  ! " + n)
         return "\n".join(lines)
@@ -687,9 +709,16 @@ class Learner:
         self._store_entity(entities, verb, rec, source, sf.sentence, rep,
                            mark_learned=False)
         if not prof:
+            # Формулировка обязана описывать НАСТОЯЩЕГО потребителя профиля.
+            # Здесь было «предиктивный цикл это действие не оценит»; после
+            # подключения цикла (core/cortex.py) он читает ТОЛЬКО силу
+            # переходов и к K/M/S не обращается вовсе — warning ссылался на
+            # несуществующего потребителя. Профиль нужен самому профилированию
+            # действий (memory.txt п.1), о чём и следует сообщать.
             note = (f"«{verb}»: действие закреплено БЕЗ профиля K/M/S — "
                     f"в справочнике core/actions.py такого нет. Узел и связи "
-                    f"работают, но предиктивный цикл это действие не оценит")
+                    f"работают; не заполнена только тройка K/M/S (сейчас она "
+                    f"есть у одного глагола — см. memory.txt п.1)")
             if note not in rep.notes:
                 rep.notes.append(note)
                 _status("⚠️ " + note)

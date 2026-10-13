@@ -241,6 +241,7 @@ class Lipid2GUI:
         self.brain = None
         self.var_teacher = tk.BooleanVar(value=True)
         self.var_ask = tk.BooleanVar(value=False)
+        self.var_experience = tk.BooleanVar(value=True)
         # РЕАЛЬНОЕ состояние каналов для рабочих потоков. Tk-переменную читать
         # из чужого потока НЕЛЬЗЯ: на этой машине это дало
         # RuntimeError: main thread is not in main loop. Поэтому галочка
@@ -256,6 +257,7 @@ class Lipid2GUI:
         self.last_channel_found = {}
         self.teacher_enabled = True
         self.ask_enabled = False
+        self.experience_enabled = True
 
         self._build_ui()
         self._report_encoder()
@@ -395,7 +397,9 @@ class Lipid2GUI:
         for var, text, attr in ((self.var_teacher,
                                  "спрашивать Учителя (LLM / Вики)", "teacher_enabled"),
                                 (self.var_ask,
-                                 "спрашивать меня (3-й канал)", "ask_enabled")):
+                                 "спрашивать меня (3-й канал)", "ask_enabled"),
+                                (self.var_experience,
+                                 "наблюдать опыт (предсказания)", "experience_enabled")):
             c = tk.Checkbutton(top, text=text, variable=var, bg=BG, fg=FG,
                                selectcolor=BG_PANEL, activebackground=BG,
                                activeforeground=FG, highlightthickness=0, bd=0,
@@ -422,19 +426,25 @@ class Lipid2GUI:
 
         note = tk.Frame(panel, bg=BG_PANEL)
         note.pack(fill="x", pady=(8, 6), ipadx=8, ipady=4)
-        tk.Label(note, text="⚠  Симуляции нет намеренно — это не сломанная вкладка",
-                 bg=BG_PANEL, fg="#e5c07b",
+        tk.Label(note, text="◉  Предиктивный цикл подключён — это НЕ заглушка",
+                 bg=BG_PANEL, fg="#98c379",
                  font=("DejaVu Sans", 10, "bold"), anchor="w").pack(fill="x",
                                                                     padx=8, pady=(6, 2))
         for line in (
-                "Что должно появиться: прогон последовательностей опыта на базе "
-                "знаний — предиктивный цикл, STDP, гормоны.",
-                "Почему нет сейчас: PredictiveCortex отключён от живого мозга "
-                "(живёт в legacy/), а IR-интерпретатор умеет только «что такое X / "
-                "свойства X / взаимодействие X и Y».",
-                "Что нужно: решить судьбу PredictiveCortex (подключить к обучению "
-                "или удалить) и доработать IR либо написать поверх него простой "
-                "языковой движок.",
+                "Что работает: цикл «предсказание -> ошибка -> пластичность» "
+                "наблюдает тот же текст, что и обучение. Граница предложения "
+                "разрывает опыт; вход лемматизируется; силы переходов живут "
+                "секцией transitions в lipid_world.json и переживают перезапуск.",
+                "Чего цикл НЕ делает: не пишет знания, не создаёт узлов и не "
+                "трогает уверенность фактов (weight онтологии). У него своя "
+                "шкала 0..15 — иначе «факт сомнительный» и «следующее слово "
+                "редко угадывали» стали бы одним числом.",
+                "Числа видны в отчёте обучения: строгая точность (угадано "
+                "именно продолжение) и покрытие (доля тиков, где было что "
+                "проверять). Без покрытия «0 ошибок» означает «опыта нет».",
+                "Что ещё не сделано: IR-интерпретатор умеет только «что такое X "
+                "/ свойства X / взаимодействие X и Y», отдельного режима "
+                "прогона последовательностей нет — опыт набирается обучением.",
                 "Ниже — настоящий диалог с ядром: он работает и отвечает по любой "
                 "форме выученного слова."):
             tk.Label(note, text="•  " + line, bg=BG_PANEL, fg=FG_DIM,
@@ -481,6 +491,7 @@ class Lipid2GUI:
             brain.use_llm_teacher = bool(self.teacher_enabled)
             brain.use_wiki_teacher = bool(self.teacher_enabled)
             brain.ask_user_enabled = bool(self.ask_enabled)
+            brain.learn_experience = bool(self.experience_enabled)
         except Exception as exc:
             self.journal.add(f"⚠ переключатели каналов не дошли до мозга: "
                              f"{type(exc).__name__}: {exc}", "warn")

@@ -39,9 +39,21 @@ def keeps_content_without_definition(rec: dict) -> bool:
 def plan(world: dict) -> tuple:
     """Возвращает (исправленный мир, список изменений). Сам мир НЕ меняет."""
     changes = []
-    out = {"entities": {}, "observations": dict(world.get("observations") or {}),
-           "unknown_words": dict(world.get("unknown_words") or {}),
-           "relations": list(world.get("relations") or [])}
+    # Ключи, о которых чистильщик ЗНАЕТ и пересобирает сам. Всё остальное
+    # обязан унести с собой нетронутым: мир пишется по принципу «прочитал ->
+    # изменил -> записал», и список из четырёх ключей молча СТИРАЛ бы любую
+    # новую секцию. ЗАМЕРЕНО на «transitions» (сила переходов предиктивного
+    # цикла): план не трогал файл, а запись после него уменьшала мир на весь
+    # накопленный опыт — худший вид потери данных, потому что без единого
+    # предупреждения.
+    KNOWN = ("entities", "observations", "unknown_words", "relations")
+    out = {k: v for k, v in world.items() if k not in KNOWN}
+    out.update({
+        "observations": dict(world.get("observations") or {}),
+        "unknown_words": dict(world.get("unknown_words") or {}),
+        "relations": list(world.get("relations") or []),
+        "entities": {},
+    })
     for name, rec in (world.get("entities") or {}).items():
         if not isinstance(rec, dict):
             changes.append(f"{name}: запись не-объект -> unknown_words")

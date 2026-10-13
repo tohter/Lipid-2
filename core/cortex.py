@@ -1,8 +1,85 @@
+"""
+core/cortex.py — предиктивный цикл, гомеостаз и гормоны.
+
+ЧТО ЗДЕСЬ ИЗМЕНИЛОСЬ И ПОЧЕМУ (замеры 2026-07-13, полный протокол —
+tests/test_cortex_experience_contract.py)
+--------------------------------------------------------------------------------
+Цикл был написан корректно как СТЕД и жил в legacy/. Попытка подключить его к
+живому мозгу «как есть» дала четыре измеренных дефекта:
+
+ A. ПРЕДСКАЗАНИЕ НЕ ПРО СЛЕДУЮЩЕЕ СЛОВО ОПЫТА.
+    _predict брал самый тяжёлый синапс, а у узла из Вселенной самый тяжёлый —
+    ВСЕГДА IS_A (180 против CAN_DO 150). ЗАМЕРЕНО:
+        _predict(«кошка») -> «кошачьи»
+    Цикл предсказывал категорию концепта, то есть на фразе «кошка сидит на
+    подоконнике» угадывал «кошачьи» вместо «подоконник». Он не ошибался — он
+    отвечал на другой вопрос.
+
+ B. ХИТ БЫЛ МЯГЧЕ, ЧЕМ ВЫГЛЯДЕЛО.
+    hit = overlap(pred, actual) >= 13 ИЛИ имя==факт. При шумовом поле ~10 и
+    форме того же слова 18-19 «попаданием» считалось «предсказал кошку, пришла
+    кошка в другом падеже» и даже «огонь -> пламя» (overlap 17). ЗАМЕРЕНО на 9
+    controlных парах: мягкий критерий даёт 4 «попадания», строгий — 1.
+    В отчёте это выглядело как 59.6% точности там, где строго 0 угаданных
+    продолжений. Пороги 13/17 при этом НЕ отменяются: они про РАСПОЗНАВАНИЕ
+    входа (замер на 15 000 слов), а не про сверку предсказания с фактом.
+    РАЗНЫЕ ОПЕРАЦИИ — РАЗНЫЕ МЕРЫ. Мягкая мера осталась, но называется
+    отдельно (soft_overlap_hits) и в точность не входит.
+
+ C. МУСОР В ГРАФЕ.
+    Поток токенизировался посимвольно и каждый промах порождал
+    get_or_create_node(actual): после 20 предложений из 14 узлов стало 43,
+    включая сущности «а», «и», «на», «когда», «что», а «кошка» и «кошки»
+    стали ДВУМЯ узлами (дубли). Ныне: вход лемматизируется и фильтруется тем же
+    стоп-листом core/morph, что и экстрактор; цикл НЕ имеет права создавать
+    узлы графа — он читает и считает.
+
+ D. ОПЫТ ИСЧЕЗАЛ ПРИ ПЕРЕЗАПУСКЕ.
+    _on_hit/_on_miss писали в out_synapses_typed, persist для них был
+    save_to_disk() -> lipid_db.json, а мозг собирает граф из
+    lipid_world.json. Итог: наработанное STDP обнулялось при закрытии окна.
+    Ныне опыт живёт в core/transitions.py и сохраняется секцией «transitions»
+    в Единой Вселенной (переживает перезапуск, переносим в C).
+
+ E. ГЛАВНОЕ: ЦИКЛ ЗАТИРАЛ УВЕРЕННОСТЬ ОНТОЛОГИИ.
+    Тот же weight, что learner хранит как УВЕРЕННОСТЬ в факте (90+130*conf,
+    правило «вес никогда не понижаем»), цикл трактовал как ЧАСТОТУ ПЕРЕХОДА.
+    ЗАМЕРЕНО на «кошка -> кошачьи» (IS_A, вес 180 = онтология из Вселенной):
+        один промах: 180 -> 116      одно попадание: 116 -> 231
+    После этого по весу нельзя отличить «факт сомнительный» от «следующее слово
+    редко угадывали». Ныне у цикла ЕСТЬ СВОЁ ЧИСЛО (сила перехода 0..15), и к
+    weight у него ДОСТУПА НЕТ — ни на чтение в предсказании, ни на запись.
+
+ ЧЕМ ЦИКЛ ПОСЛЕ ЭТОГО ЯВЛЯЕТСЯ: наблюдателем за последовательностью опыта,
+ который считает ожидания и ошибается вслух числами. Он НЕ добывает знания:
+ bootstrap неизвестного — работа Learner'а и трёх каналов с бюджетами,
+ лимитами и статусами asked_empty/not_asked. Прежний _ask_teacher был
+ duck-typing'ом поверх учителей: он не трогал channel_calls (значит, его работу
+ было НЕЧЕМ проверить — тот же дефект, что чинили в срезе 312040b), не уважал
+ переключатели каналов и писал integrate_knowledge(weight=180) в обход
+ merge_entity, то есть перезаписывал известные записи. Путь удалён; если в цикл
+ передают учителя, он КРИЧИТ, а не молча игнорирует.
+"""
+from __future__ import annotations
+
 import dataclasses
-from typing import Optional, Tuple
+import os
+import sys
+from typing import List, Optional, Tuple
+
+# Та же конвенция, что в core/graph.py: модуль можно запустить как скрипт
+# (python core/cortex.py) — ниже self-check, полезный без тестового раннера.
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from core.sdr import SDR1024
 from core.graph import GraphMemory, Node
-from core.storage import NodeType, RelationType
+from core.transitions import TransitionTable
+
+
+def _complain(text: str) -> None:
+    sys.stderr.write(text if text.endswith("\n") else text + "\n")
+    sys.stderr.flush()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -13,16 +90,26 @@ from core.storage import NodeType, RelationType
 class Homeostasis:
     predictability: int = 200  # 0..255 — насколько мир предсказуем
 
+
 @dataclasses.dataclass
 class Hormones:
-    dopamine:       int = 0    # Закрепление успеха
-    norepinephrine: int = 0    # Удивление, пластичность
-    cortisol:       int = 0    # Стресс ошибки
+    dopamine: int = 0            # закрепление успеха
+    norepinephrine: int = 0      # удивление, пластичность
+    cortisol: int = 0            # стресс ошибки
 
     def decay(self):
-        self.dopamine       = max(0, self.dopamine       - 40)
+        # ДЕКАЙТ ПОСЛЕДНИМ и только у владельца шкалы. Мозг передаёт циклу СВОИ
+        # гормоны (GUI показывает одну шкалу, а не две расходящиеся), и если бы
+        # каждый цикл гасил чужие значения на своём тике, «дофамин» в окне
+        # перестал бы означать что-либо понятное: его гасили бы два writers
+        # с разной частотой.
+        self.dopamine = max(0, self.dopamine - 40)
         self.norepinephrine = max(0, self.norepinephrine - 60)
-        self.cortisol       = max(0, self.cortisol       - 30)
+        self.cortisol = max(0, self.cortisol - 30)
+
+    def as_dict(self) -> dict:
+        return {"dopamine": self.dopamine, "norepinephrine": self.norepinephrine,
+                "cortisol": self.cortisol}
 
 
 # ─────────────────────────────────────────────────────────────
@@ -31,209 +118,326 @@ class Hormones:
 
 class PredictiveCortex:
     """
-    Соединяет SDR (core/sdr.py) + Граф (core/graph.py) + Биохимию (этот модуль)
-    в единую петлю: восприятие → предсказание → ошибка → пластичность.
+    Петля «восприятие -> предсказание -> ошибка -> пластичность» над ТАБЛИЦЕЙ
+    ПЕРЕХОДОВ, а не над весами онтологии (см. docstring модуля, пункты A/E).
 
-    Учитель (LLMTeacher) вызывается ТОЛЬКО при полностью неизвестном концепте.
-    После bootstrap мозг учится самостоятельно через поток опыта.
+    ОТВЕТСТВЕННОСТЬ:
+      * предсказать продолжение по накопленному опыту;
+      * измерить ошибку двумя честными мерами (строгая и мягкая);
+      * обновить СИЛУ ПЕРЕХОДА (единственное, что цикл имеет право менять);
+      * ничего не записывать во Вселенную и в граф.
+
+    ПРАВА ЗАПИСИ: только transitions + собственные гормоны/статистика.
     """
 
-    # ── ПОРОГИ ────────────────────────────────────────────────
+    # ── ПОРОГИ (все — из замеров, experiments/RESULTS.md) ─────
     #
-    # Старые значения (UNKNOWN=2, HIT=4) были выведены для буквенного хэша,
-    # где ФОН = 0.68/20, а «кошка~кот» = 3/20. С эмбеддинговым кодировщиком
-    # шкала перевернулась, и по замерам на 20 000 реальных русских слов
-    # (experiments/final_eval.py):
-    #
-    #   несвязанные слова ............... 0-1 бит из 20
-    #   сильный синоним (огонь/пламя) ... 17
-    #   форма того же слова (кошка/кошке) 19
-    #   ЛУЧШИЙ чужой узел при N=20 000 ... 8-10 (медиана), p99 = 16-17
-    #
-    # То есть 2 теперь означает «почти чужое», а 4 — «шум». Порог сдвинут
-    # вверх, к шумовому полу живого языка.
-    UNKNOWN_CEILING       = 13   # ниже — точно неизвестен, Учитель обязателен
-    KNOWN_FLOOR           = 17   # выше — точно известен (своя форма слова)
-    # Перекрытие, достаточное для «попадания» предсказания.
-    HIT_THRESHOLD         = 13
-    # Начальный вес нового синапса-гипотезы
-    NEW_SYNAPSE_WEIGHT    = 60
+    # Шумовой пол живого языка ~10 бит из 20 и НЕ растёт с размером графа
+    # (500 -> 15 000 узлов, experiments/final_eval.py). Цена ошибки асимметрична:
+    #          t     FP      FN
+    #         12    11.1%    0.0%
+    #         13     0.0%   25.0%
+    # Держим FP = 0: ложное «узнал» = Учитель не позван = ложь в графе,
+    # исправлять нечем; пропуск стоит один лишний вызов LLM.
+    UNKNOWN_CEILING = 13   # ниже — точно неизвестен
+    KNOWN_FLOOR = 17       # выше — точно известен (своя форма слова)
 
-    def __init__(self, graph: GraphMemory, teacher=None):
-        self.graph       = graph
-        self.teacher     = teacher       # LLMTeacher или None (автономный режим)
+    # мягкая МЕРА близости предсказания (не порог решения!): overlap бита в бит.
+    SOFT_OVERLAP = 13
+
+    def __init__(self, graph: GraphMemory, teacher=None,
+                 transitions: Optional[TransitionTable] = None,
+                 hormones: Optional[Hormones] = None):
+        """
+        teacher: параметр оставлен ТОЛЬКО чтобы не молчать. У цикла нет права
+        добывать знания — у Learner'а для этого есть бюджеты, лимиты и статусы.
+        Передать учителя = получить предупреждение в stderr, а не тихий обход
+        правил записи.
+        """
+        self.graph = graph
+        self.transitions = transitions if transitions is not None else TransitionTable()
         self.homeostasis = Homeostasis()
-        self.hormones    = Hormones()
-        self.tick_count  = 0
-        self.stats       = {"hits": 0, "misses": 0, "unknowns": 0,
-                            "new_synapses": 0, "ambiguous": 0}
-        # Оценка шумового пола графа пересчитывается порциями: она нужна, чтобы
-        # «неизвестное» не зависело от размера словаря.
-        self._noise_floor  = 0
+        # Мозг передаёт СВОИ гормоны: две независимые шкалы «дофамина» в одном
+        # процессе — это гарантия, что GUI показывает не то, что происходит.
+        self.hormones = hormones if hormones is not None else Hormones()
+        self.tick_count = 0
+        self.stats = {
+            "ticks": 0,
+            "hits": 0,               # СТРОГОЕ совпадение предсказания с фактом
+            "soft_overlap_hits": 0,  # близко по битам, но НЕ то слово (метрика)
+            "misses": 0,             # было ожидание и оно не сбылось
+            "no_expectation": 0,     # опыта нет — это НЕ ошибка, см. below
+            "surprises": 0,          # реальность оказалась словом вне ожиданий
+            "unknown_input": 0,      # распознан не был текущий концепт
+            "skipped": 0,            # служебное слово: тика не было
+            "new_transitions": 0,
+        }
+        self._noise_floor = 0
         self._floor_stamps = 0
-        self._last_second  = 0      # перекрытие с лучшим ЧУЖИМ (для диагностики)
+        self._last: dict = {}
+        # КТО гасит гормоны: владелец шкалы (цикл один) или хозяин (мозг).
+        self._owns_hormones = hormones is None
+        if teacher is not None:
+            _complain("[cortex] ⛔ PredictiveCortex НЕ принимает Учителя: добывать "
+                      "знание — задача Learner'а (бюджет, лимиты, статусы "
+                      "asked_empty/not_asked, запись через merge_entity). "
+                      "Учитель ПРОИГНОРИРОВАН циклом, а не подключён.")
 
     # ── ПУБЛИЧНЫЕ МЕТОДЫ ─────────────────────────────────────
 
-    def process_stream(self, text: str, verbose: bool = True):
+    def observe(self, current: str, following: str, verbose: bool = False) -> dict:
         """
-        Обрабатывает текст как поток опыта.
-        Каждая пара соседних слов (N, N+1) — один тик предиктивного цикла.
+        Один тик: чем закончилось «{current} ...» при наблюдении {following}.
+
+        Ожидается, что ОБА слова уже приведены к лемме/имени узла вызывающим
+        (см. process_stream и brain.experience_from_text). Здесь нет
+        get_or_create_node: право создавать узлы у того, кто понимает, что он
+        создаёт — у Learner'а и каналов знания.
         """
-        words = [w.strip(".,!?;:\"'()") for w in text.lower().split() if w.strip(".,!?;:\"'()")]
-        if len(words) < 2:
-            print("⚠️  Слишком мало токенов для обучения.")
-            return
+        current = (current or "").lower().strip()
+        following = (following or "").lower().strip()
+        if not current or not following or current == following:
+            # current == following — не «успех предсказания», а отсутствие
+            # наблюдения: цикл не знает слов. Считать это попаданием = рисовать
+            # точность из воздуха.
+            self.stats["skipped"] += 1
+            self._last = {"skipped": True, "reason": "пустой или повторный тик"}
+            return self._last
 
-        print(f"\n{'='*60}")
-        print(f"📡 ПОТОК: {len(words)} токенов, {len(words)-1} тиков")
-        print(f"{'='*60}")
+        self.tick_count += 1
+        self.stats["ticks"] += 1
+        self._floor_stamps += 1
+        if self._floor_stamps % 64 == 1:
+            self.recalibrate_floor()
 
-        for i in range(len(words) - 1):
-            self._tick(
-                input_word      = words[i],
-                actual_next     = words[i + 1],
-                verbose         = verbose
-            )
+        if not self._is_known(current):
+            self.stats["unknown_input"] += 1
+            self.hormones.norepinephrine = min(255, self.hormones.norepinephrine + 160)
+            if verbose:
+                print(f"── «{current}»: не распознан (шумовой пол {self._noise_floor}) "
+                      f"— опыта не накапливаем")
 
-        self.print_xray()
+        predicted = self.transitions.top_name(current)
+        strength = self.transitions.get(current, following)
+        expected_strength = self.transitions.get(current, predicted) if predicted else 0
+
+        strict_hit = predicted is not None and predicted == following
+        soft_hit = (predicted is not None
+                    and SDR1024(predicted).overlap(SDR1024(following)) >= self.SOFT_OVERLAP)
+
+        # ── ПЛАСТИЧНОСТЬ: только сила перехода. weight онтологии не трогаем.
+        if predicted is None:
+            self.stats["no_expectation"] += 1
+            self.transitions.confirm(current, following)
+            self.stats["new_transitions"] += 1
+            self.hormones.norepinephrine = min(255, self.hormones.norepinephrine + 40)
+            outcome = "no_expectation"
+        elif strict_hit:
+            self.stats["hits"] += 1
+            self.transitions.confirm(current, following)
+            self.homeostasis.predictability = min(255, self.homeostasis.predictability + 15)
+            self.hormones.dopamine = min(255, self.hormones.dopamine + 120)
+            outcome = "hit"
+        else:
+            self.stats["misses"] += 1
+            if soft_hit:
+                self.stats["soft_overlap_hits"] += 1
+            # Ожидание было и не сбылось: оно слабеет. Реальность записывается
+            # как новое ожидание — иначе цикл никогда не научится.
+            self.transitions.surprise(current, predicted)
+            if self.transitions.get(current, following) == 0:
+                self.stats["surprises"] += 1
+                self.stats["new_transitions"] += 1
+            self.transitions.confirm(current, following)
+            self.hormones.norepinephrine = min(255, self.hormones.norepinephrine + 120)
+            self.hormones.cortisol = min(255, self.hormones.cortisol + 100)
+            self.homeostasis.predictability = max(0, self.homeostasis.predictability - 25)
+            outcome = "miss"
+
+        if self._owns_hormones:
+            # Шкала принадлежит циклу -> он её и гасит. Если шкалу одолжил мозг,
+            # decay() вызывает ОН: иначе два владельца гасили бы значения с
+            # разной частотой и «дофамин» в GUI стал бы нечитаемым.
+            self.hormones.decay()
+        self._last = {
+            "current": current, "predicted": predicted, "actual": following,
+            "outcome": outcome, "strict_hit": strict_hit, "soft_hit": soft_hit,
+            "strength_before": strength, "expected_strength": expected_strength,
+            "strength_after": self.transitions.get(current, following),
+        }
+        if verbose:
+            mark = {"hit": "✅", "miss": "💥", "no_expectation": "🌱"}[outcome]
+            print(f"── «{current}» → ждал «{predicted or '?'}», факт «{following}» "
+                  f"{mark} (сила {self._last['strength_after']})")
+        return self._last
+
+    def process_stream(self, text: str, verbose: bool = True) -> dict:
+        """
+        Поток опыта: соседние значимые слова ВНУТРИ предложения.
+
+        Граница предложения — РАЗРЫВ опыта, а не соседство. Первый вариант
+        склеивал весь текст в одну цепочку, и на «…на подоконнике. Кошка спит.»
+        возникал переход «подоконник -> кошка»: ЗАМЕРЕНО (ticks=7 вместо 5 на
+        трёх предложениях). Иначе цикл выучал бы порядок предложений документа,
+        а не структуру мира.
+
+        Лемматизация и стоп-фильтр — здесь (это вход цикла), а не в observe():
+        без них цикл плодил узлы и считал предлог «на» концептом (дефект C).
+        """
+        sentences = [s for s in self.experience_sentences(text) if len(s) >= 2]
+        if not sentences:
+            print("⚠️  Нет ни одного предложения из двух значимых слов — "
+                  "предсказывать нечего")
+            return self.metrics()
+        ticks = sum(len(s) - 1 for s in sentences)
+        if verbose:
+            print(f"\n{'=' * 60}\n📡 ПОТОК: {len(sentences)} предложений, "
+                  f"{ticks} тиков опыта\n{'=' * 60}")
+        for words in sentences:
+            for i in range(len(words) - 1):
+                self.observe(words[i], words[i + 1], verbose=verbose)
+        if verbose:
+            self.print_xray()
+        return self.metrics()
+
+    def experience_sentences(self, text: str) -> List[List[str]]:
+        """
+        Текст -> по предложениям: цепочки лемм значимых слов.
+
+        Служебные слова (предлоги, союзы, местоимения, глаголы-паразиты)
+        выбрасываются ТЕМ ЖЕ стоп-листом, что у экстрактора: цикл и экстрактор
+        обязаны видеть ОДИН и тот же лексикон, иначе их отчёты про один текст не
+        сходятся, а сравнить их — единственный способ проверить оба.
+        """
+        from core.morph import Morph, split_sentences
+        out: List[List[str]] = []
+        for sentence in split_sentences(text):
+            chain: List[str] = []
+            for tok in _analyze(sentence):
+                if not tok["content"]:
+                    continue
+                lem = (tok["lemma"] or tok["word"]).lower().strip()
+                if not lem or Morph.is_stop(lem):
+                    continue
+                chain.append(lem)
+            if chain:
+                out.append(chain)
+        return out
+
+    def experience_stream(self, text: str) -> List[str]:
+        """
+        Плоская версия потока — для диагностики и отчётов. НЕ для обучения:
+        она теряет границы предложений (см. process_stream).
+        """
+        return [w for chain in self.experience_sentences(text) for w in chain]
+    def predict(self, word: str) -> Optional[str]:
+        """Публичное предсказание: чего цикл ждёт после слова. Ничего не пишет."""
+        return self.transitions.top_name((word or "").lower().strip())
 
     def query(self, word: str) -> None:
-        """Запрос что мозг знает о концепте — без обучения."""
-        input_sdr  = SDR1024(word.lower())
+        """Что известно о концепте — БЕЗ обучения и без записи."""
+        word = (word or "").lower().strip()
+        input_sdr = SDR1024(word)
         best_node, overlap = self._recall(input_sdr)
         thr = self.unknown_threshold()
         verdict = "УЗНАН" if overlap >= thr else "НЕИЗВЕСТЕН"
-
         print(f"\n── Запрос: «{word}»")
         print(f"   SDR-перекрытие с лучшим узлом: {overlap}/{SDR1024.TARGET_ON_BITS}"
               f" (порог {thr}, шумовой пол графа {self._noise_floor}) → {verdict}")
-
-        # SDR-ассоциации по всему графу
+        top = self.transitions.top(word, 3)
+        if top:
+            print("   Ожидания по опыту (сила 0..15): " +
+                  ", ".join(f"«{t}» {s}" for t, s in top))
+        else:
+            print("   Ожиданий нет: этот контекст ещё не наблюдался")
         matches = self.graph.recall_by_sdr(input_sdr, top_k=5)
         if matches:
             print("   SDR-резонанс:")
             for name, ov, sim in matches:
                 bar = "█" * int(sim * 10) + "░" * (10 - int(sim * 10))
-                print(f"   • [{name:15s}] {bar} {ov}/20 ({sim*100:.0f}%)")
-
-        # Типизированные связи из графа
+                print(f"   • [{name:15s}] {bar} {ov}/20 ({sim * 100:.0f}%)")
         self.graph.print_node_associations(word)
 
+    def metrics(self) -> dict:
+        """
+        Публичные числа сеанса. ДВЕ точности и объяснение, почему они разные:
+        одна цифра «точность» уже вела проект к самообману (дефект B).
+        """
+        ticks = self.stats["ticks"]
+        decided = self.stats["hits"] + self.stats["misses"]
+        return {
+            "ticks": ticks,
+            "hits": self.stats["hits"],
+            "misses": self.stats["misses"],
+            "soft_overlap_hits": self.stats["soft_overlap_hits"],
+            "no_expectation": self.stats["no_expectation"],
+            "surprises": self.stats["surprises"],
+            "unknown_input": self.stats["unknown_input"],
+            "skipped": self.stats["skipped"],
+            "new_transitions": self.stats["new_transitions"],
+            # строгая: угаданное ПРОДОЛЖЕНИЕ (имя в имя)
+            "accuracy_strict": (self.stats["hits"] / ticks) if ticks else 0.0,
+            # доля тиков, где было ЧТО проверять (без неё «0 ошибок» означает
+            # «опыта нет», а не «ни разу не ошиблись»)
+            "coverage": (decided / ticks) if ticks else 0.0,
+            "accuracy_when_expected": (self.stats["hits"] / decided) if decided else 0.0,
+            "transitions": self.transitions.size(),
+            "predictability": self.homeostasis.predictability,
+            "hormones": self.hormones.as_dict(),
+            "noise_floor": self._noise_floor,
+            "hormones_shared_with_brain": not self._owns_hormones,
+        }
+
     def print_xray(self):
-        """Рентгеновский снимок внутреннего состояния."""
+        m = self.metrics()
+
         def bar(v):
             return "█" * (v // 25) + "░" * (10 - v // 25) + f" ({v:3d}/255)"
-
-        total = self.stats["hits"] + self.stats["misses"]
-        acc   = (self.stats["hits"] / total * 100) if total > 0 else 0.0
 
         print("\n┌" + "─" * 56 + "┐")
         print("│ 🧬 СОСТОЯНИЕ ЯДРА                                        │")
         print("├" + "─" * 56 + "┤")
-        print(f"│ Предсказуемость : {bar(self.homeostasis.predictability)}    │")
-        print(f"│ Дофамин         : {bar(self.hormones.dopamine)}    │")
-        print(f"│ Норадреналин    : {bar(self.hormones.norepinephrine)}    │")
-        print(f"│ Кортизол        : {bar(self.hormones.cortisol)}    │")
+        print(f"│ Предсказуемость : {bar(m['predictability'])}    │")
+        print(f"│ Дофамин         : {bar(m['hormones']['dopamine'])}    │")
+        print(f"│ Норадреналин    : {bar(m['hormones']['norepinephrine'])}    │")
+        print(f"│ Кортизол        : {bar(m['hormones']['cortisol'])}    │")
         print("├" + "─" * 56 + "┤")
-        print(f"│ Тиков: {self.tick_count:<6} Точность: {acc:5.1f}%  "
-              f"Новых синапсов: {self.stats['new_synapses']:<5}  │")
-        print(f"│ Попаданий: {self.stats['hits']:<5} Ошибок: {self.stats['misses']:<5} "
-              f"Неизвестных: {self.stats['unknowns']:<5}      │")
+        print(f"│ Тиков: {m['ticks']:<6} строгая точн.: {m['accuracy_strict'] * 100:5.1f}%  "
+              f"переходов: {m['transitions']:<5} │")
+        print(f"│ Попаданий: {m['hits']:<5} Ошибок: {m['misses']:<5} "
+              f"без ожидания: {m['no_expectation']:<5}     │")
+        print(f"│ Близко по битам, но не то слово: {m['soft_overlap_hits']}   "
+              f"покрытие: {m['coverage'] * 100:4.0f}%│")
         print("└" + "─" * 56 + "┘")
 
     # ── ВНУТРЕННИЕ МЕХАНИЗМЫ ─────────────────────────────────
 
-    def _tick(self, input_word: str, actual_next: str, verbose: bool):
-        """Один тик предиктивного цикла."""
-        self.tick_count += 1
-        # Пол шума — свойство графа, поэтому пересчитываем его редко и пачкой,
-        # а не на каждом входе (иначе одно узнавшееся слово уносило бы порог за потолок).
-        self._floor_stamps += 1
-        if self._floor_stamps % 64 == 1:
-            self.recalibrate_floor()
-        input_sdr      = SDR1024(input_word)
-        actual_next_sdr = SDR1024(actual_next)
-
-        # 1. Распознавание текущего концепта
-        best_node, best_overlap = self._recall(input_sdr)
-
-        # Точное имя в графе — это узнавание сильнее любого SDR-шума.
-        recognized_exactly = input_word in self.graph.nodes
-        threshold = self.unknown_threshold()
-
-        if best_overlap < threshold and not recognized_exactly:
-            # Полностью неизвестен → bootstrap
-            self.stats["unknowns"] += 1
-            self.hormones.norepinephrine = min(255, self.hormones.norepinephrine + 160)
-            if verbose:
-                print(f"\n── #{self.tick_count} «{input_word}»: ❓ НЕИЗВЕСТЕН "
-                      f"(overlap={best_overlap}, порог={threshold}, "
-                      f"шум.пол={self._noise_floor})")
-            best_node = self._bootstrap_unknown(input_word, verbose)
-        else:
-            if best_node is None:
-                best_node = self.graph.get_or_create_node(input_word, NodeType.ENTITY)
-
-        # 2. Предсказание следующего концепта (лучший синапс по весу)
-        predicted_node, predicted_weight = self._predict(best_node)
-
-        # 3. Сравнение предсказания с реальностью
-        if predicted_node is not None:
-            # Совпадение = либо точное имя, либо SDR-перекрытие выше порога.
-            match_overlap = predicted_node.sdr.overlap(actual_next_sdr)
-            hit = match_overlap >= self.HIT_THRESHOLD or predicted_node.name == actual_next
-        else:
-            match_overlap = 0
-            hit = False
-
-        if verbose:
-            pred_str = f"«{predicted_node.name}»" if predicted_node else "?"
-            mark = "✅" if hit else "💥"
-            print(f"\n── #{self.tick_count} «{input_word}» → pred:{pred_str} "
-                  f"real:«{actual_next}» {mark}")
-
-        # 4. Пластичность — STDP
-        if hit:
-            self._on_hit(best_node, predicted_node, actual_next, match_overlap, verbose)
-        else:
-            self._on_miss(best_node, predicted_node, actual_next, verbose)
-
-        self.hormones.decay()
+    def _is_known(self, word: str) -> bool:
+        """Распознан ли концепт (точное имя или SDR выше адаптивного порога)."""
+        if word in self.graph.nodes:
+            return True
+        _node, overlap = self._recall(SDR1024(word))
+        return overlap >= self.unknown_threshold()
 
     def _recall(self, sdr: SDR1024) -> Tuple[Optional[Node], int]:
         """
-        Лучший узел по SDR-перекрытию через индекс (матрица, а не Python-цикл).
-        Прежний вариант был O(N) тяжёлых операций на каждый тик и упирался
-        в скорость раньше, чем в качество.
+        Лучший узел по SDR-перекрытию через индекс (матрица, не Python-цикл).
+        ЗДЕСЬ ЭТО ТОЛЬКО ДИАГНОСТИКА распознавания входа: предсказание больше
+        не ходит в граф (дефект A: самый тяжёлый синапс — это категория).
         """
-        key, ov, second = self.graph.index.best_and_second(sdr)
-        self._last_second = second
+        key, ov, _second = self.graph.index.best_and_second(sdr)
         if key is None:
             return None, 0
         return self.graph.nodes.get(key), ov
 
     # ── шумовой пол и порог неизвестного ────────────────────
-    def recalibrate_floor(self):
+    def recalibrate_floor(self) -> int:
         """
-        Оценка шумового пола: НАСКОЛЬКО сильно типичное слово графа пересекается
-        со своим ближайшим соседом. Меряется самими узлами графа, а не текущим
-        входом.
-
-        Почему не от входа: первый вариант брал перекрытие текущего слова. Если
-        слово узнавалось (19-20 бит), «пол» выпрыгивал на 20, порог уезжал за
-        потолок, и следующее незнакомое слово объявлялось известным. Пол — свойство
-        ГРАФА, а не запроса.
-
-        Замер на 15 000 настоящих русских слов (hunspell ru_RU):
-            размер графа   медиана пола   лучший overlap у СЛОВА, КОТОРОГО НЕТ
-                   500            10                    8
-                 2 000             9                   11
-                 8 000            10                   12
-                15 000            10                   12
-        Пол держится на ~10 битах и почти НЕ растёт со словарём. У буквенного
-        хэша он рос лавинообразно — из-за этого фиксированный UNKNOWN_THRESHOLD=2
-        молча превращался в «всё неизвестно» по мере роста графа.
+        Шумовой пол графа: насколько типичное слово графа пересекается со своим
+        ближайшим соседом. Меряется САМИМ ГРАФОМ, а не текущим входом: первый
+        вариант брал перекрытие входа, и узнавшее слово (19-20 бит) уносило
+        «пол» за потолок — следующее незнакомое слово объявлялось известным.
+        Замер на 15 000 русских слов: пол ~10 и почти не растёт со словарём.
         """
         floor = self.graph.index.self_probe_floor()
         if floor.get("n"):
@@ -241,192 +445,38 @@ class PredictiveCortex:
         return self._noise_floor
 
     def unknown_threshold(self) -> int:
-        """
-        Порог неопределённости: пол шумов + запас, зажатый между потолком и
-        нижним этажом.
-
-        Запас +4 и порядок зажатки выбраны по замеру цены ошибки (t — порог,
-        FP — незнакомое слово ложно объявлено известным, FN — форму слова в
-        графе не узнали):
-                 t     FP      FN
-                11    22.2%    0.0%
-                12    11.1%    0.0%
-                13     0.0%   25.0%
-                14     0.0%   25.0%
-        Держим FP = 0. Асимметрия сознательная: ложное «узнал» означает, что
-        Учитель НЕ вызван и в граф записано чужое знание — его нечем поправить.
-        Промах по форме слова стоит только одного лишнего вызова Учителя.
-        """
+        """Пол шума + запас, зажатый между 13 и 17. Вывод — в experiments/."""
         return max(self.UNKNOWN_CEILING,
                    min(self.KNOWN_FLOOR, self._noise_floor + 4))
 
-    def _predict(self, node: Optional[Node]) -> Tuple[Optional[Node], int]:
-        """Лучший синапс по весу → предсказание следующего концепта."""
-        if node is None or not node.out_synapses_typed:
-            return None, 0
 
-        best_target = None
-        best_weight = -1
-        for target_name, syn_info in node.out_synapses_typed.items():
-            w = syn_info["weight"]
-            if w > best_weight:
-                best_weight = w
-                best_target = target_name
+def _analyze(sentence: str) -> List[dict]:
+    """
+    Разбор предложения. Импорт локальный и один на все вызовы: цикл обязан
+    запускаться там, где нет pymorphy3 (эвристика + available=False), а не
+    падать на импорте.
+    """
+    from core.morph import analyze
+    return analyze(sentence)
 
-        if best_target and best_target in self.graph.nodes:
-            return self.graph.nodes[best_target], best_weight
-        return None, 0
 
-    def _on_hit(self, src_node: Node, pred_node: Node,
-                actual_word: str, overlap: int, verbose: bool):
-        """Совпадение — дофамин + STDP-усиление правильного синапса."""
-        self.stats["hits"] += 1
-        self.hormones.dopamine = min(255, self.hormones.dopamine + 120)
-        self.homeostasis.predictability = min(255, self.homeostasis.predictability + 15)
-
-        delta = max(10, self.hormones.dopamine >> 2)
-        syn   = src_node.out_synapses_typed.get(pred_node.name)
-        if syn:
-            old_w         = syn["weight"]
-            syn["weight"] = min(255, old_w + delta)
-            if verbose:
-                print(f"   📈 «{src_node.name}»→«{pred_node.name}»: {old_w}→{syn['weight']}")
-
-    def _on_miss(self, src_node: Node, pred_node: Optional[Node],
-                 actual_word: str, verbose: bool):
-        """Ошибка — кортизол + ослабление неверного синапса + новая гипотеза."""
-        self.stats["misses"] += 1
-        self.hormones.norepinephrine = min(255, self.hormones.norepinephrine + 120)
-        self.hormones.cortisol       = min(255, self.hormones.cortisol       + 100)
-        self.homeostasis.predictability = max(0, self.homeostasis.predictability - 25)
-
-        # Ослабляем только НЕВЕРНЫЙ предсказанный синапс
-        if pred_node is not None:
-            syn = src_node.out_synapses_typed.get(pred_node.name)
-            if syn:
-                penalty       = self.hormones.cortisol >> 1
-                old_w         = syn["weight"]
-                syn["weight"] = max(0, old_w - penalty)
-                if verbose:
-                    print(f"   📉 «{src_node.name}»→«{pred_node.name}»: {old_w}→{syn['weight']}")
-
-        # Создаём или укрепляем синапс к реальному следующему слову
-        target_node = self.graph.get_or_create_node(actual_word, NodeType.ENTITY)
-        existing    = src_node.out_synapses_typed.get(actual_word)
-
-        if existing:
-            old_w           = existing["weight"]
-            existing["weight"] = min(255, old_w + self.NEW_SYNAPSE_WEIGHT)
-            if verbose:
-                print(f"   💡 «{src_node.name}»→«{actual_word}»: {old_w}→{existing['weight']}")
-        else:
-            src_node.connect_to(target_node, rel_type=RelationType.CAUSES,
-                                weight=self.NEW_SYNAPSE_WEIGHT)
-            self.stats["new_synapses"] += 1
-            if verbose:
-                print(f"   💡 НОВЫЙ СИНАПС: «{src_node.name}»→«{actual_word}» "
-                      f"[вес={self.NEW_SYNAPSE_WEIGHT}]")
-
-    def _ask_teacher(self, word: str):
-        """
-        Duck-typed запрос к Учителю. Учителя в проекте РАЗНЫЕ по интерфейсу:
-          - AgentTeacherV2  -> run_agent(base_concept, derived_concept, filename), ничего не возвращает
-          - WikiTeacher     -> fetch_concept(word) -> {"base_entity": {...}, "derived_entity": {...}}
-        Возвращает dict в формате GraphMemory.integrate_knowledge либо None.
-        Никакой путь Учителя не должен ронять предиктивный цикл.
-        """
-        if self.teacher is None:
-            return None
-
-        raw = None
-        try:
-            for method in ("fetch_concept_properties", "fetch_concept", "run"):
-                fn = getattr(self.teacher, method, None)
-                if callable(fn):
-                    raw = fn(word)
-                    break
-            else:
-                # Учитель умеет только писать во Вселенную (AgentTeacherV2) —
-                # дергаем run_agent и забираем результат из графа всезнания.
-                run = getattr(self.teacher, "run_agent", None)
-                if callable(run):
-                    # Учитель с тех пор ВОЗВРАЩАЕТ записанное; чтение с диска
-                    # осталось запасным путём для учителей, которые возвращают
-                    # None, но знание всё равно оставляют во Вселенной.
-                    raw = run(base_concept=word, derived_concept=word)
-                    if raw is None:
-                        raw = self._read_teacher_world(word)
-        except Exception as exc:                       # сеть/LLM/парсинг — не роняем цикл
-            print(f"   ⚠️  Учитель молчит ({type(exc).__name__}: {exc})")
-            return None
-
-        return self._normalize_teacher_knowledge(raw)
-
-    def _read_teacher_world(self, word: str):
-        """Вычитывает концепт из Единой Вселенной, если Учитель пишет только туда."""
-        path = getattr(self.teacher, "world_filepath", None)
-        if not path:
-            return None
-        try:
-            import json, os
-            if not os.path.exists(path):
-                return None
-            with open(path, "r", encoding="utf-8") as f:
-                world = json.load(f)
-            return world.get("entities", {}).get(word.lower().strip())
-        except Exception:
-            return None
-
-    @staticmethod
-    def _normalize_teacher_knowledge(raw):
-        """
-        Приводит ответы любого Учителя к одному виду:
-            {"concept", "category", "properties", "actions"}
-        Иначе integrate_knowledge проглатывает ответ молча.
-        """
-        if not isinstance(raw, dict):
-            return None
-        if "base_entity" in raw:                        # формат Вселенной (Wiki/LLM)
-            raw = raw.get("base_entity") or {}
-        if not raw or "concept" not in raw:
-            return None
-
-        hierarchy = raw.get("hierarchy") or []
-        category = raw.get("category") or (hierarchy[0] if hierarchy else "")
-
-        actions = []
-        for act in raw.get("actions", []) or []:
-            if isinstance(act, dict):
-                actions.append(act.get("name", ""))
-            elif isinstance(act, str):
-                actions.append(act)
-
-        return {
-            "concept": str(raw["concept"]).lower().strip(),
-            "category": str(category).lower().strip() if category else "",
-            "properties": [str(p).lower().strip() for p in raw.get("properties", []) or [] if p],
-            "actions": [a.lower().strip() for a in actions if a],
-        }
-
-    def _bootstrap_unknown(self, word: str, verbose: bool) -> Node:
-        """
-        Концепт полностью неизвестен.
-        Учитель даёт начальные IS_A / HAS_PROPERTY — дальше учимся сами.
-        """
-        if self.teacher is not None:
-            if verbose:
-                print(f"   📡 Bootstrap: запрос к Учителю для «{word}»...")
-            knowledge = self._ask_teacher(word)
-            if knowledge:
-                self.graph.integrate_knowledge(knowledge, weight=180)
-                node = self.graph.nodes.get(word.lower())
-                if node:
-                    if verbose:
-                        print(f"   📚 Учитель дал базу для «{word}»")
-                    return node
-
-        # Учителя нет или не ответил → пустой узел, опыт научит
-        node = self.graph.get_or_create_node(word, NodeType.ENTITY)
-        if verbose:
-            print(f"   🆕 Пустой узел «{word}» (автономный режим)")
-        return node
+if __name__ == "__main__":
+    # Быстрая самопроверка без тестового раннера: python core/cortex.py
+    graph = GraphMemory()
+    for w in ("кошка", "собака", "вода", "пламя", "огонь", "подоконник",
+              "спать", "молоко"):
+        graph.get_or_create_node(w)
+    graph.sync_lemmas()
+    nodes_before = set(graph.nodes)
+    loop = PredictiveCortex(graph)
+    text = ("Кошка сидит на подоконнике. Кошка пьёт молоко. "
+            "Собака бегает во дворе. Кошка пьёт молоко.")
+    loop.process_stream(text, verbose=True)
+    m = loop.metrics()
+    print("\nПосле цикла узел «пить» создан?", "пить" in graph.nodes,
+          "| новых узлов:", set(graph.nodes) - nodes_before)
+    print("ожидаемое продолжение после «кошка»:", loop.predict("кошка"))
+    loop.query("кошка")
+    print("\n⚠  ТИКИ:", m["ticks"], "СТРОГАЯ ТОЧНОСТЬ:",
+          f"{m['accuracy_strict']:.0%}", "ПОКРЫТИЕ:", f"{m['coverage']:.0%}",
+          "ПЕРЕХОДОВ:", m["transitions"])

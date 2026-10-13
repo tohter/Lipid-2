@@ -96,6 +96,36 @@ class TestPlan(unittest.TestCase):
                          json.dumps(twice, sort_keys=True))
         self.assertEqual(ch2, [], "повторный прогон нашёл то, что уже исправил")
 
+    def test_sections_unknown_to_the_migrator_are_carried_through(self):
+        """
+        Миграция пересобирает мир, а не правит на месте, и список переносимых
+        ключей был ЖЁСТКИМ: всё, чего чистильщик не знает, исчезало из файла
+        без единого слова. ЗАМЕРЕНО на секции «transitions» (сила переходов
+        предиктивного цикла): план не нашёл ни одного изменения, а запись после
+        него уменьшила Вселенную на весь накопленный опыт. Худший вид потери
+        данных — та, о которой не сказали.
+        """
+        sections = {
+            "transitions": {"version": 1, "pack": 2,
+                            "rows": [{"head": "кошка", "tails": ["спать"],
+                                      "strengths": [3]}]},
+            "совсем_неизвестный_ключ": {"важное": [1, 2, 3]},
+        }
+        world = {"entities": {"пчела": {"concept": "пчела",
+                                        "definition": "Пчёлы (лат",
+                                        "hierarchy": ["пчёлы"]}},
+                 "relations": [], "observations": {}, "unknown_words": {}}
+        world.update(sections)
+        clean, changes = clean_world.plan(world)
+        for name, payload in sections.items():
+            self.assertIn(name, clean, f"секция «{name}» выброшена из мира")
+            self.assertEqual(clean[name], payload,
+                             f"секция «{name}» искажена чистильщиком, который "
+                             "про неё ничего не знает")
+        # и что миграция РАБОТАЕТ, а не просто копирует всё подряд
+        self.assertTrue(changes)
+        self.assertIn("пчела", clean["unknown_words"])
+
 
 class TestWriteMode(unittest.TestCase):
 
