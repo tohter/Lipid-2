@@ -112,6 +112,23 @@ class Hormones:
                 "cortisol": self.cortisol}
 
 
+def _empty_stats() -> dict:
+    """Нулевой набор счётчиков. ОДНО место: два набора (сеанс и жизнь)
+    обязаны иметь ОДИНАКОВЫЕ ключи, иначе lifetime тихо отстанет по полю
+    и сравнить их станет нельзя."""
+    return {
+        "ticks": 0,
+        "hits": 0,               # СТРОГОЕ совпадение предсказания с фактом
+        "soft_overlap_hits": 0,  # близко по битам, но НЕ то слово (метрика)
+        "misses": 0,             # было ожидание и оно не сбылось
+        "no_expectation": 0,     # опыта нет — это НЕ ошибка, см. observe
+        "surprises": 0,          # реальность оказалась словом вне ожиданий
+        "unknown_input": 0,      # распознан не был текущий концепт
+        "skipped": 0,            # служебное слово: тика не было
+        "new_transitions": 0,
+    }
+
+
 # ─────────────────────────────────────────────────────────────
 # ПРЕДИКТИВНОЕ КОРТИКАЛЬНОЕ ЯДРО
 # ─────────────────────────────────────────────────────────────
@@ -161,17 +178,17 @@ class PredictiveCortex:
         # процессе — это гарантия, что GUI показывает не то, что происходит.
         self.hormones = hormones if hormones is not None else Hormones()
         self.tick_count = 0
-        self.stats = {
-            "ticks": 0,
-            "hits": 0,               # СТРОГОЕ совпадение предсказания с фактом
-            "soft_overlap_hits": 0,  # близко по битам, но НЕ то слово (метрика)
-            "misses": 0,             # было ожидание и оно не сбылось
-            "no_expectation": 0,     # опыта нет — это НЕ ошибка, см. below
-            "surprises": 0,          # реальность оказалась словом вне ожиданий
-            "unknown_input": 0,      # распознан не был текущий концепт
-            "skipped": 0,            # служебное слово: тика не было
-            "new_transitions": 0,
-        }
+        # ДВЕ пары счётчиков, и это не украшение.
+        #   session  — числа ТЕКУЩЕГО потока (обнуляются в process_stream)
+        #   lifetime — всё, что цикл видел за жизнь процесса
+        # Раньше счётчик был ОДИН и пожизненный: отчёт второго урока печатал
+        # сумму первого и второго. Ровно тот дефект, что уже чинили с
+        # channel_calls в мозгу: «угадано 18» после третьего урока означает
+        # «неизвестно что», а не «на этом тексте 18». lifetime оставлен
+        # намеренно — накопленная точность по всей жизни тоже полезна, но
+        # обязана называть СВОЁ имя.
+        self.stats = _empty_stats()
+        self.lifetime = _empty_stats()
         self._noise_floor = 0
         self._floor_stamps = 0
         self._last: dict = {}
@@ -184,6 +201,26 @@ class PredictiveCortex:
                       "Учитель ПРОИГНОРИРОВАН циклом, а не подключён.")
 
     # ── ПУБЛИЧНЫЕ МЕТОДЫ ─────────────────────────────────────
+
+    def _bump(self, key: str) -> None:
+        """
+        Единственная точка, где счётчик увеличивается.
+
+        Оба набора (сеанс и жизнь) правятся ЗДЕСЬ, а не в двух местах внутри
+        observe(): расхождение между ними — тот же тихий дефект, что «session
+        забыли обнулить». Ключ обязано видеть _empty_stats(): опечатка обязана
+        упасть, а не завести новую счётную корзинку из ниоткуда.
+        """
+        if key not in self.stats:
+            raise KeyError(f"неизвестный счётчик {key!r}; известны: "
+                           f"{sorted(self.stats)}")
+        self.stats[key] += 1
+        self.lifetime[key] += 1
+
+    def reset_session(self) -> None:
+        """Начать новый сеанс: числа ТЕКУЩЕГО потока обнуляются, накопленное
+        за жизнь процесса остаётся в self.lifetime."""
+        self.stats = _empty_stats()
 
     def observe(self, current: str, following: str, verbose: bool = False) -> dict:
         """
@@ -200,18 +237,18 @@ class PredictiveCortex:
             # current == following — не «успех предсказания», а отсутствие
             # наблюдения: цикл не знает слов. Считать это попаданием = рисовать
             # точность из воздуха.
-            self.stats["skipped"] += 1
+            self._bump("skipped")
             self._last = {"skipped": True, "reason": "пустой или повторный тик"}
             return self._last
 
         self.tick_count += 1
-        self.stats["ticks"] += 1
+        self._bump("ticks")
         self._floor_stamps += 1
         if self._floor_stamps % 64 == 1:
             self.recalibrate_floor()
 
         if not self._is_known(current):
-            self.stats["unknown_input"] += 1
+            self._bump("unknown_input")
             self.hormones.norepinephrine = min(255, self.hormones.norepinephrine + 160)
             if verbose:
                 print(f"── «{current}»: не распознан (шумовой пол {self._noise_floor}) "
@@ -227,27 +264,27 @@ class PredictiveCortex:
 
         # ── ПЛАСТИЧНОСТЬ: только сила перехода. weight онтологии не трогаем.
         if predicted is None:
-            self.stats["no_expectation"] += 1
+            self._bump("no_expectation")
             self.transitions.confirm(current, following)
-            self.stats["new_transitions"] += 1
+            self._bump("new_transitions")
             self.hormones.norepinephrine = min(255, self.hormones.norepinephrine + 40)
             outcome = "no_expectation"
         elif strict_hit:
-            self.stats["hits"] += 1
+            self._bump("hits")
             self.transitions.confirm(current, following)
             self.homeostasis.predictability = min(255, self.homeostasis.predictability + 15)
             self.hormones.dopamine = min(255, self.hormones.dopamine + 120)
             outcome = "hit"
         else:
-            self.stats["misses"] += 1
+            self._bump("misses")
             if soft_hit:
-                self.stats["soft_overlap_hits"] += 1
+                self._bump("soft_overlap_hits")
             # Ожидание было и не сбылось: оно слабеет. Реальность записывается
             # как новое ожидание — иначе цикл никогда не научится.
             self.transitions.surprise(current, predicted)
             if self.transitions.get(current, following) == 0:
-                self.stats["surprises"] += 1
-                self.stats["new_transitions"] += 1
+                self._bump("surprises")
+                self._bump("new_transitions")
             self.transitions.confirm(current, following)
             self.hormones.norepinephrine = min(255, self.hormones.norepinephrine + 120)
             self.hormones.cortisol = min(255, self.hormones.cortisol + 100)
@@ -283,7 +320,13 @@ class PredictiveCortex:
 
         Лемматизация и стоп-фильтр — здесь (это вход цикла), а не в observe():
         без них цикл плодил узлы и считал предлог «на» концептом (дефект C).
+
+        СЧЁТЧИКИ СЕАНСА ОБНУЛЯЮТСЯ ЗДЕСЬ: возвращаемые метрики описывают
+        ИМЕННО этот текст. До этого они копились с запуска процесса, и отчёт
+        второго урока печатал сумму первого и второго. lifetime остаётся
+        пожизненным и доступен отдельным ключом metrics()["lifetime"].
         """
+        self.reset_session()
         sentences = [s for s in self.experience_sentences(text) if len(s) >= 2]
         if not sentences:
             print("⚠️  Нет ни одного предложения из двух значимых слов — "
@@ -330,6 +373,7 @@ class PredictiveCortex:
         она теряет границы предложений (см. process_stream).
         """
         return [w for chain in self.experience_sentences(text) for w in chain]
+
     def predict(self, word: str) -> Optional[str]:
         """Публичное предсказание: чего цикл ждёт после слова. Ничего не пишет."""
         return self.transitions.top_name((word or "").lower().strip())
@@ -360,21 +404,17 @@ class PredictiveCortex:
 
     def metrics(self) -> dict:
         """
-        Публичные числа сеанса. ДВЕ точности и объяснение, почему они разные:
-        одна цифра «точность» уже вела проект к самообману (дефект B).
+        Публичные ЧИСЛА ТЕКУЩЕГО ПОТОКА. ДВЕ точности и объяснение, почему они
+        разные: одна цифра «точность» уже вела проект к самообману (дефект B).
+
+        «Текущего потока» — не «за жизнь процесса»: см. self.stats/self.lifetime.
+        Пожизненные числа лежат в metrics()["lifetime"], а не под теми же
+        именами, чтобы нельзя было перепутать «на этом уроке» и «когда-либо».
         """
         ticks = self.stats["ticks"]
         decided = self.stats["hits"] + self.stats["misses"]
         return {
-            "ticks": ticks,
-            "hits": self.stats["hits"],
-            "misses": self.stats["misses"],
-            "soft_overlap_hits": self.stats["soft_overlap_hits"],
-            "no_expectation": self.stats["no_expectation"],
-            "surprises": self.stats["surprises"],
-            "unknown_input": self.stats["unknown_input"],
-            "skipped": self.stats["skipped"],
-            "new_transitions": self.stats["new_transitions"],
+            **{k: v for k, v in self.stats.items()},
             # строгая: угаданное ПРОДОЛЖЕНИЕ (имя в имя)
             "accuracy_strict": (self.stats["hits"] / ticks) if ticks else 0.0,
             # доля тиков, где было ЧТО проверять (без неё «0 ошибок» означает
@@ -386,6 +426,9 @@ class PredictiveCortex:
             "hormones": self.hormones.as_dict(),
             "noise_floor": self._noise_floor,
             "hormones_shared_with_brain": not self._owns_hormones,
+            # Сумма за жизнь процесса. Названа СВОИМ ключом: смешанная с
+            # текущими числами, она превращала «на этом уроке» в «за всё время».
+            "lifetime": {k: v for k, v in self.lifetime.items()},
         }
 
     def print_xray(self):

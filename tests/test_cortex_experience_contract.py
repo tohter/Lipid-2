@@ -418,6 +418,80 @@ class TestSentenceBoundary(unittest.TestCase):
         self.assertEqual(cortex.transitions.get("подоконник", "кошка"), 0)
 
 
+class TestSessionCounters(unittest.TestCase):
+    """
+    Метрики должны описывать ТЕКУЩИЙ текст, а не всю жизнь процесса.
+
+    Тот же дефект, что уже чинили с brain.channel_calls: счётчик был один и
+    пожизненный. Отчёт второго урока печатал сумму первого и второго, и
+    «угадано 18» при восьми тиках на уроке означало «неизвестно что». Проверка
+    обязана быть обратимой: если после второго текста числа РАВНЫ первому —
+    обнуления нет и проверка зелёна по ошибке.
+    """
+
+    FIRST = "Кошка пьёт молоко. Собака ест мясо."
+    SECOND = "Ветер гонит облака. Дождь смывает пыль."
+
+    def test_second_stream_does_not_sum_the_first(self):
+        """Метрики второго текста = метрики того же текста на ЧИСТОМ цикле.
+
+        Сравнивать с числом первого текста бессмысленно (разные предложения ->
+        разное число тиков); сравнивать надо с ЭТАЛОНОМ: тот же текст, тот же
+        граф, но цикл ни чего не видел раньше. Разница = протёкший прошлый опыт.
+        """
+        cortex = PredictiveCortex(make_graph())
+        first = cortex.process_stream(self.FIRST, verbose=False)
+        second = cortex.process_stream(self.SECOND, verbose=False)
+        fresh = PredictiveCortex(make_graph())
+        alone = fresh.process_stream(self.SECOND, verbose=False)
+        for key in ("ticks", "hits", "misses", "no_expectation", "skipped",
+                    "unknown_input", "new_transitions", "soft_overlap_hits"):
+            self.assertEqual(second[key], alone[key],
+                             f"{key}: на втором тексте {second[key]}, а на том же "
+                             f"тексте с чистого листа {alone[key]} — числа первого "
+                             f"текста протекли во второй (первый дал {first[key]})")
+        self.assertEqual(second["accuracy_strict"], alone["accuracy_strict"])
+        self.assertEqual(second["coverage"], alone["coverage"])
+
+    def test_lifetime_survives_session_reset(self):
+        """lifetime — тоже публичное число и обязано РАСТИ, а не обнуляться."""
+        cortex = PredictiveCortex(make_graph())
+        first = cortex.process_stream(self.FIRST, verbose=False)
+        second = cortex.process_stream(self.SECOND, verbose=False)
+        self.assertEqual(first["lifetime"]["ticks"], first["ticks"])
+        self.assertEqual(second["lifetime"]["ticks"],
+                         first["ticks"] + second["ticks"],
+                         "пожизненный счётчик обнулили вместе с сеансом — "
+                         "тогда его вообще нечего показывать")
+
+    def test_report_numbers_cannot_exceed_ticks(self):
+        """Арифметика отчёта: hits+misses+no_expectation == ticks.
+
+        Счётчики правятся в двух ветках; если одна ветка забывает обнуление или
+        удваивает, сумма расходится и ВСЕ проценты в отчёте врут.
+        """
+        cortex = PredictiveCortex(make_graph())
+        for text in (self.FIRST, self.SECOND, self.FIRST, self.SECOND):
+            m = cortex.process_stream(text, verbose=False)
+            self.assertEqual(m["hits"] + m["misses"] + m["no_expectation"],
+                             m["ticks"],
+                             f"расхождение по тикам на «{text[:20]}…»: {m}")
+            self.assertLessEqual(m["hits"], m["ticks"])
+            self.assertLessEqual(m["accuracy_strict"], 1.0)
+
+    def test_unknown_counter_fails_loud(self):
+        """Опечатка в имени счётчика обязана упасть, а не завести новую корзину."""
+        cortex = PredictiveCortex(make_graph())
+        with self.assertRaises(KeyError):
+            cortex._bump("hits_with_a_typo")
+
+    def test_both_counter_sets_have_identical_keys(self):
+        cortex = PredictiveCortex(make_graph())
+        self.assertEqual(set(cortex.stats), set(cortex.lifetime),
+                         "наборы счётчиков разошлись по полям — сравнивать их "
+                         "станет нельзя, а расхождение не увидит никто")
+
+
 # ─────────────────────────────────────────────────────────────
 # ЦИКЛ НЕ ДОБЫВАЕТ ЗНАНИЯ
 # ─────────────────────────────────────────────────────────────
@@ -462,7 +536,7 @@ class TestCortexDoesNotTeachItself(unittest.TestCase):
         owner.hormones.dopamine = 200
         owner.process_stream("кошка молоко. кошка спать.", verbose=False)
         self.assertLess(owner.hormones.dopamine, 200,
-                        "собственная шкала не衰减ирует — цикл не «живёт»")
+                        "собственная шкала не затухает — цикл не «живёт»")
 
 
 # ─────────────────────────────────────────────────────────────
