@@ -144,6 +144,7 @@ class LearningReport:
     entities_updated: int = 0
     observations_new: int = 0
     observations_seen: int = 0
+    events_new: int = 0
     skipped: int = 0
     low_confidence: int = 0
     new_concepts: List[str] = field(default_factory=list)
@@ -190,7 +191,8 @@ class LearningReport:
             f"  предложений: {self.sentences}   значимых слов: {self.content_words}"
             f"   распознано: {self.known_words} ({acc:.0%})   незнакомых: {self.seen_unknown_words}   выучено сейчас: {len(self.learned_concepts) + len(self.learned_actions)}",
             f"  фактов извлечено: {self.facts}   новых наблюдений: {self.observations_new}"
-            f"   подтверждено существующих: {self.observations_seen}",
+            f"   подтверждено существующих: {self.observations_seen}"
+            f"   событий рассказа: {self.events_new}",
             f"  сущностей создано: {self.entities_created}   дополнено: {self.entities_updated}",
             f"  обращений к Учителю: {self.teacher_calls}"
             f"   успешно: {self.teacher_success}   пропущено фактов: {self.skipped}"
@@ -481,6 +483,13 @@ class Learner:
                 self._apply_fact(fact, sf, resolve, entities, observations,
                                  source, rep)
 
+        # 2b) СОБЫТИЯ — в отдельную секцию мира, НЕ в онтологию.
+        # «Кошка СЪЕЛА канарейку» — происшествие во времени, а не знание о
+        # кошке. Смешать их — значит утверждать «кошка ест канареек» из одного
+        # случая. События нужны СИМУЛЯТОРУ (порядок во времени), и он читает их
+        # из этой секции.
+        self._record_events(world, sentences, source, rep)
+
         # resolved=выученные: удаление из unknown_words — ТОЖЕ изменение,
         # которое обязано пережить слияние, иначе «чужой писатель» resurrect-ит
         # старую запись и файл снова враньё про одно и то же слово.
@@ -509,6 +518,31 @@ class Learner:
         return rep
 
     # ── РЕЗЕРВНАЯ КОПИЯ И ТОЧКА ВОССТАНОВЛЕНИЯ ─────────────
+    def _record_events(self, world: dict, sentences, source: str,
+                       rep: LearningReport) -> None:
+        """
+        Записать СОБЫТИЯ рассказа в секцию "events" мира.
+
+        Ключ дедупликации — (subject, action, obj, order): один и тот же
+        рассказ, прочитанный дважды, не должен удваивать события (иначе
+        симулятор увидит два пожара и найдёт причину не там).
+        """
+        events = world.setdefault("events", [])
+        seen = {(e.get("subject"), e.get("action"), e.get("obj"), e.get("order"))
+                for e in events if isinstance(e, dict)}
+        for sf in sentences:
+            for ev in sf.events:
+                key = (ev.subject, ev.action, ev.obj, ev.order)
+                if key in seen:
+                    continue
+                seen.add(key)
+                events.append({
+                    "subject": ev.subject, "action": ev.action, "obj": ev.obj,
+                    "tense": ev.tense, "order": ev.order,
+                    "evidence": (ev.evidence or sf.sentence)[:220],
+                    "source": source,
+                })
+                rep.events_new += 1
 
     def replay_observations(self, world: dict) -> int:
         """
@@ -571,6 +605,20 @@ class Learner:
             cur["confidence"] = max(float(cur.get("confidence", 0)),
                                     float(obs.get("confidence", 0)))
             cur["negated"] = bool(cur.get("negated")) or bool(obs.get("negated"))
+        # СОБЫТИЯ — аддитивно, как наблюдения: чужой рассказ не должен теряться.
+        fev = fresh.setdefault("events", [])
+        if not isinstance(fev, list):
+            fev = fresh["events"] = []
+        seen_ev = {(e.get("subject"), e.get("action"), e.get("obj"),
+                    e.get("order")) for e in fev if isinstance(e, dict)}
+        for e in (world.get("events") or []):
+            if not isinstance(e, dict):
+                continue
+            key = (e.get("subject"), e.get("action"), e.get("obj"),
+                   e.get("order"))
+            if key not in seen_ev:
+                seen_ev.add(key)
+                fev.append(e)
         fu = fresh.setdefault("unknown_words", {})
         for key, u in (world.get("unknown_words") or {}).items():
             cur = fu.get(key)
@@ -634,6 +682,12 @@ class Learner:
     def _apply_fact(self, fact: Fact, sf, resolve, entities, observations,
                     source: str, rep: LearningReport) -> None:
         if fact.confidence < self.min_confidence:
+            rep.skipped += 1
+            return
+        if fact.is_event:
+            # СОБЫТИЕ — не знание о мире, а происшествие. В онтологию оно НЕ
+            # идёт (см. _record_events): иначе «кошка съела канарейку» станет
+            # утверждением «кошка ест канареек». Факт учтён как событие.
             rep.skipped += 1
             return
         head = resolve(fact.head) or fact.head

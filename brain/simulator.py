@@ -26,6 +26,7 @@ brain/simulator.py — ЧЕРНОВИК симулятора Lipid-2.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from dataclasses import dataclass, field
@@ -183,6 +184,42 @@ class Simulator:
         self.knowledge = StaticKnowledge(world)
         self.schemes = load_schemes(world)
         self.events: List[Event] = []
+        # Событий в статической базе НЕТ — они живут в отдельном файле рассказа
+        # (load_story/load_events). Конструктор статику не трогает.
+
+    # ── наполнение рассказа из данных ────────────────────
+    def load_events(self, records) -> int:
+        """
+        Загрузить СОБЫТИЯ рассказа.
+
+        Принимает ЛИБО список записей, ЛИБО мир (dict) с секцией "events" —
+        по тому же формату, что пишет Learner. Формат записи:
+        {subject, action, obj?, tense?, order?, evidence?}. События сортируются
+        по order: рассказ читается по предложениям, и порядок в файле может не
+        совпасть с порядком в тексте.
+        """
+        if isinstance(records, dict):
+            records = records.get("events") or []
+        for rec in records or []:
+            if not isinstance(rec, dict):
+                continue
+            subject = str(rec.get("subject", "")).lower().strip()
+            action = str(rec.get("action", "")).lower().strip()
+            if not subject or not action:
+                continue
+            self.events.append(Event(
+                subject=subject, action=action,
+                obj=str(rec.get("obj", "")).lower().strip(),
+                order=int(rec.get("order", len(self.events))),
+                text=str(rec.get("evidence", ""))))
+        self.events.sort(key=lambda e: e.order)
+        return len(self.events)
+
+    def load_story(self, path: str) -> int:
+        """Прочитать файл рассказа ({"events": [...]}) и загрузить события."""
+        with open(path, encoding="utf-8") as fh:
+            story = json.load(fh)
+        return self.load_events(story.get("events") or [])
 
     # ── наполнение рассказа (пока вручную) ─────────────────
     def add_event(self, subject: str, action: str, obj: str = "",
@@ -276,18 +313,19 @@ class Simulator:
 # ─────────────────────────────────────────────────────────────
 
 def build_fire_rain_simulator() -> Simulator:
-    """Собирает демонстрационный симулятор из учебной базы fire_rain_world.json."""
-    import json
-    import os
+    """
+    Собирает демонстрационный симулятор: СТАТИКА из fire_rain_world.json,
+    СОБЫТИЯ — из отдельного файла рассказа fire_rain_story.json.
+
+    События больше НЕ добавляются здесь руками (разрыв A): рассказ живёт в
+    данных, а симулятор — его интерпретатор.
+    """
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    db = os.path.join(root, "experiments", "fire_rain_world.json")
-    with open(db, encoding="utf-8") as fh:
+    exp = os.path.join(root, "experiments")
+    with open(os.path.join(exp, "fire_rain_world.json"), encoding="utf-8") as fh:
         world = json.load(fh)
     sim = Simulator(world)
-    # Три предложения рассказа — пока прописаны вручную (симулятор не читает).
-    sim.add_event("пожар", "начаться", text="На опушке леса начался пожар.")
-    sim.add_event("дождь", "лить", text="Но тут полил сильный дождь.")
-    sim.add_event("пожар", "остановиться", text="Пожар остановился.")
+    sim.load_story(os.path.join(exp, "fire_rain_story.json"))
     return sim
 
 

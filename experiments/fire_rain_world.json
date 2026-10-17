@@ -4,84 +4,177 @@
     "дождь": {
       "concept": "дождь",
       "definition": "атмосферные осадки в виде капель воды",
-      "hierarchy": ["вода"],
-      "properties": ["сильный"],
-      "actions": ["лить"],
-      "provenance": [{"source": "experiment:fire_rain", "evidence": "учебный мир", "at": null}]
+      "hierarchy": [
+        "вода"
+      ],
+      "properties": [
+        "сильный"
+      ],
+      "actions": [
+        "лить"
+      ],
+      "provenance": [
+        {
+          "source": "experiment:fire_rain",
+          "evidence": "учебный мир",
+          "at": null
+        }
+      ]
     },
     "вода": {
       "concept": "вода",
       "definition": "прозрачная жидкость, основа осадков",
-      "hierarchy": ["вещество"],
-      "properties": ["жидкая"],
-      "actions": ["гасить"],
-      "provenance": [{"source": "experiment:fire_rain", "evidence": "учебный мир", "at": null}]
+      "hierarchy": [
+        "вещество"
+      ],
+      "properties": [
+        "жидкая"
+      ],
+      "actions": [
+        "гасить"
+      ],
+      "provenance": [
+        {
+          "source": "experiment:fire_rain",
+          "evidence": "учебный мир",
+          "at": null
+        }
+      ]
     },
     "пожар": {
       "concept": "пожар",
       "definition": "неконтролируемое горение, уничтожающее растительность",
-      "hierarchy": ["бедствие"],
-      "properties": ["сильный"],
-      "actions": ["начаться", "остановиться"],
-      "provenance": [{"source": "experiment:fire_rain", "evidence": "учебный мир", "at": null}]
+      "hierarchy": [
+        "бедствие"
+      ],
+      "properties": [
+        "сильный"
+      ],
+      "actions": [
+        "начаться",
+        "остановиться"
+      ],
+      "provenance": [
+        {
+          "source": "experiment:fire_rain",
+          "evidence": "учебный мир",
+          "at": null
+        }
+      ]
     },
     "огонь": {
       "concept": "огонь",
       "definition": "процесс горения, дающий пламя и тепло",
-      "hierarchy": ["процесс"],
-      "properties": ["горячий"],
-      "actions": ["гореть"],
-      "provenance": [{"source": "experiment:fire_rain", "evidence": "учебный мир", "at": null}]
+      "hierarchy": [
+        "процесс"
+      ],
+      "properties": [
+        "горячий"
+      ],
+      "actions": [
+        "гореть"
+      ],
+      "provenance": [
+        {
+          "source": "experiment:fire_rain",
+          "evidence": "учебный мир",
+          "at": null
+        }
+      ]
     },
     "пламя": {
       "concept": "пламя",
       "definition": "светящаяся часть огня",
-      "hierarchy": ["огонь"],
-      "properties": ["яркое"],
+      "hierarchy": [
+        "огонь"
+      ],
+      "properties": [
+        "яркое"
+      ],
       "actions": [],
-      "provenance": [{"source": "experiment:fire_rain", "evidence": "учебный мир", "at": null}]
+      "provenance": [
+        {
+          "source": "experiment:fire_rain",
+          "evidence": "учебный мир",
+          "at": null
+        }
+      ]
     },
     "опушка": {
       "concept": "опушка",
       "definition": "край леса",
-      "hierarchy": ["место"],
+      "hierarchy": [
+        "место"
+      ],
       "properties": [],
       "actions": [],
-      "provenance": [{"source": "experiment:fire_rain", "evidence": "учебный мир", "at": null}]
+      "provenance": [
+        {
+          "source": "experiment:fire_rain",
+          "evidence": "учебный мир",
+          "at": null
+        }
+      ]
     },
     "лес": {
       "concept": "лес",
       "definition": "множество деревьев, растущих на большой площади",
-      "hierarchy": ["природа"],
-      "properties": ["густой"],
+      "hierarchy": [
+        "природа"
+      ],
+      "properties": [
+        "густой"
+      ],
       "actions": [],
-      "provenance": [{"source": "experiment:fire_rain", "evidence": "учебный мир", "at": null}]
+      "provenance": [
+        {
+          "source": "experiment:fire_rain",
+          "evidence": "учебный мир",
+          "at": null
+        }
+      ]
     }
   },
   "relations": [],
   "observations": {
     "дождь|IS_A|вода": {
-      "head": "дождь", "relation": "IS_A", "tail": "вода",
-      "confidence": 0.95, "negated": false,
-      "evidence": "дождь — это вода (осадки)", "source": "experiment:fire_rain",
+      "head": "дождь",
+      "relation": "IS_A",
+      "tail": "вода",
+      "confidence": 0.95,
+      "negated": false,
+      "evidence": "дождь — это вода (осадки)",
+      "source": "experiment:fire_rain",
       "support": 1
     },
     "пожар|HAS_PART|огонь": {
-      "head": "пожар", "relation": "HAS_PART", "tail": "огонь",
-      "confidence": 0.95, "negated": false,
-      "evidence": "пожар — это горение, то есть огонь", "source": "experiment:fire_rain",
+      "head": "пожар",
+      "relation": "HAS_PART",
+      "tail": "огонь",
+      "confidence": 0.95,
+      "negated": false,
+      "evidence": "пожар — это горение, то есть огонь",
+      "source": "experiment:fire_rain",
       "support": 1
     },
     "вода|CAN_DO|гасить": {
-      "head": "вода", "relation": "CAN_DO", "tail": "гасить",
-      "confidence": 0.98, "negated": false,
-      "evidence": "вода гасит огонь (закон)", "source": "experiment:fire_rain",
+      "head": "вода",
+      "relation": "CAN_DO",
+      "tail": "гасить",
+      "confidence": 0.98,
+      "negated": false,
+      "evidence": "вода гасит огонь (закон)",
+      "source": "experiment:fire_rain",
       "support": 1
     },
     "гасить|OBJECT_OF|огонь": {
-      "head": "гасить", "relation": "OBJECT_OF", "tail": "огонь",
-      "confidence": 0.95, "negated": false,
-      "evidence": "гасят именно огонь", "source": "experiment:fire_rain",
+      "head": "гасить",
+      "relation": "OBJECT_OF",
+      "tail": "огонь",
+      "confidence": 0.95,
+      "negated": false,
+      "evidence": "гасят именно огонь",
+      "source": "experiment:fire_rain",
       "support": 1
     }
   },
@@ -91,14 +184,33 @@
     "process_stopped": {
       "question": "почему прекратился",
       "steps": [
-        {"kind": "edge", "role": "parts", "from": "$subject",
-         "relation": "HAS_PART", "fallback": "self"},
-        {"kind": "edge", "role": "agents", "from": "$cause_subject",
-         "relation": "IS_A", "mode": "transitive"},
-        {"kind": "edge", "role": "verbs", "from": "$agents",
-         "relation": "CAN_DO"},
-        {"kind": "edge", "role": "targets", "from": "$verbs",
-         "relation": "OBJECT_OF", "match": "$parts"}
+        {
+          "kind": "edge",
+          "role": "parts",
+          "from": "$subject",
+          "relation": "HAS_PART",
+          "fallback": "self"
+        },
+        {
+          "kind": "edge",
+          "role": "agents",
+          "from": "$cause_subject",
+          "relation": "IS_A",
+          "mode": "transitive"
+        },
+        {
+          "kind": "edge",
+          "role": "verbs",
+          "from": "$agents",
+          "relation": "CAN_DO"
+        },
+        {
+          "kind": "edge",
+          "role": "targets",
+          "from": "$verbs",
+          "relation": "OBJECT_OF",
+          "match": "$parts"
+        }
       ],
       "answer": "потому что {agents} {verbs:fin} {targets}"
     }

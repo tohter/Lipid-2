@@ -30,6 +30,16 @@ core/extract.py — Извлечение фактов из простого ру
   причастных оборотов. Правила выше проверяются по одному предложению, и ошибка
   видна сразу. Придаточные («кошка, которая спит, пушистая») метод держит плохо —
   это фиксируется заметкой, а не маскируется.
+
+СТАТИКА vs СОБЫТИЯ (задача 32)
+  Экстрактор выдаёт не только факты, но и СОБЫТИЯ. Граница — ГРАММАТИЧЕСКАЯ:
+    * настоящее время / связка / модальность -> ФАКТ («кошки едят птиц»);
+    * личный глагол в ПРОШЕДШЕМ времени     -> СОБЫТИЕ («кошка съела канарейку»).
+  У события есть порядок (номер предложения) и время — это ДИНАМИКА рассказа,
+  она идёт в отдельную секцию мира "events", а не в онтологию. Иначе один
+  случай («съела») стал бы вечным утверждением («кошка ест канареек»).
+  Признак финитности — наличие ВРЕМЕНИ, а не лица: pymorphy3 у глаголов
+  прошедшего времени лицо НЕ выдаёт, а выдаёт род (замерено).
 """
 if __package__ in (None, ""):        # прямой запуск: python core/extract.py
     # Тогда в sys.path лежит папка core/, а не корень проекта — без этого
@@ -150,14 +160,50 @@ class Fact:
     negated: bool = False
     confidence: float = 0.6
     ambiguous: bool = False       # Suitable variants > 1: связь правдоподобна, но не доказана
+    # СТАТИКА или ДИНАМИКА. "fact" — «что есть» (связка, свойство, наст. время);
+    # "event" — «что произошло» (личный глагол в прошедшем времени). Нужно,
+    # чтобы событие рассказа можно было отличить от знания и не свалить его в
+    # онтологию (см. experiments/EVENTS_TASK.md).
+    predicate: str = "fact"
 
     def key(self) -> Tuple[str, str, str]:
         return (self.head, self.relation, self.tail)
 
+    @property
+    def is_event(self) -> bool:
+        return self.predicate == "event"
+
     def __repr__(self) -> str:
         flags = "".join([" /НЕ/" if self.negated else "",
-                         " /?" if self.ambiguous else ""])
+                         " /?" if self.ambiguous else "",
+                         " /СОБЫТИЕ/" if self.is_event else ""])
         return f"{self.head} --{self.relation}{flags}--> {self.tail}"
+
+
+@dataclass
+class EventRecord:
+    """
+    СОБЫТИЕ рассказа: единица ДИНАМИКИ, а не онтологии.
+
+    Почему отдельно от Fact: «кошка СЪЕЛА канарейку» — не знание о кошке, а
+    происшествие во времени. Смешать их — значит научить базу утверждать
+    «кошка ест канареек» из одного случая, а симулятор оставить без порядка
+    событий (он и рисовался руками: sim.add_event).
+
+    Поля: субъект/действие/объект (леммы), tense (past/pres/иной),
+    order — номер предложения в рассказе, evidence — исходная фраза.
+    """
+    subject: str
+    action: str
+    obj: str = ""
+    tense: str = ""
+    order: int = 0
+    evidence: str = ""
+    negated: bool = False
+
+    def describe(self) -> str:
+        tail = f" -> {self.obj}" if self.obj else ""
+        return f"{self.subject} {self.action}{tail}"
 
 
 # Часть речи, означающая ДЕЙСТВИЕ. ИНФИНИТИВ — отдельная часть речи (INFN),
@@ -178,6 +224,7 @@ class SentenceFacts:
     """Разбор одного предложения: факты, значимые леммы, замечания о неуверенности."""
     sentence: str
     facts: List[Fact] = field(default_factory=list)
+    events: List[EventRecord] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
     tokens: List[dict] = field(default_factory=list)
 
@@ -234,13 +281,16 @@ class SimpleExtractor:
 
     def extract_text(self, text: str) -> List[SentenceFacts]:
         out = []
-        for s in split_sentences(text):
-            sf = self.extract(s)
-            if sf.facts or sf.content_lemmas:
+        # ПОРЯДОК ВО ВРЕМЕНИ = ПОРЯДОК ПРЕДЛОЖЕНИЙ. Рассказ читается слева
+        # направо; событию присваивается индекс предложения. Это единственный
+        # доступный признак времени без разметки дат (см. EVENTS_TASK.md).
+        for idx, s in enumerate(split_sentences(text)):
+            sf = self.extract(s, order=idx)
+            if sf.facts or sf.content_lemmas or sf.events:
                 out.append(sf)
         return out
 
-    def extract(self, sentence: str) -> SentenceFacts:
+    def extract(self, sentence: str, order: int = 0) -> SentenceFacts:
         res = SentenceFacts(sentence=sentence.strip())
         toks = self._tag_prepositions(analyze(sentence))
         res.tokens = toks
@@ -510,12 +560,88 @@ class SimpleExtractor:
         if self._has_subordinate(toks):
             res.notes.append("придаточное: связи могут быть разорваны")
 
+        # СТАТИКА vs ДИНАМИКА: пометить и вынести СОБЫТИЯ рассказа.
+        # Делается ПОСЛЕ сборки фактов и ДО dedup — метка predicate входит в
+        # вывод, но dedup ключуется по (head,relation,tail) и её сохранит.
+        self._collect_events(res, subj, pred, order, neg)
+
         # Одно и то же отношение может родиться из разных ветвей (например,
         # «кошка пушистая» — и из сказуемого, и из привязки прилагательного).
         # Оставляем самое уверенное: дубли в графе выглядели бы как подтверждение
         # факта, которого не было.
         res.facts = self._dedup(res.facts)
         return res
+
+    # ── СТАТИКА / ДИНАМИКА ─────────────────────────────────
+
+    @staticmethod
+    def _predicate_tense(pred: Optional[dict]) -> str:
+        """
+        Время личного глагола-сказуемого: past / pres / fut / "".
+
+        pymorphy3 даёт граммему tense. Нам нужно РАЗЛИЧИТЬ прошедшее от
+        настоящего: «кошка СЪЕЛА канарейку» — происшествие, «кошка ЕСТ птиц» —
+        общее знание о виде. Без этого различия рассказ целиком осядет в
+        онтологию как вечные истины.
+        """
+        if pred is None:
+            return ""
+        for v in pred["variants"]:
+            if v["pos"] in ("VERB", "PRTF", "GRND") and v.get("tense"):
+                return v["tense"]
+        return ""
+
+    def _collect_events(self, res: SentenceFacts, subj: Optional[dict],
+                        pred: Optional[dict], order: int, neg: bool) -> None:
+        """
+        Если предложение описывает ПРОИСШЕСТВИЕ — создать EventRecord и
+        пометить его факты как события.
+
+        ПРИЗНАК СОБЫТИЯ (грамматический, не смысловой):
+          * сказуемое — личный глагол (есть лицо), НЕ связка, НЕ модальный;
+          * время — ПРОШЕДШЕЕ («съела», «полил», «остановился»).
+        Инфинитив и связка («является») событий не задают: это описание, а не
+        случай. Модальный глагол («умеет») — свойство, а не происшествие.
+        """
+        if pred is None or self._is_copula_form(pred):
+            return
+        if self._clause_pred_role(pred) != "action":
+            return
+        if pred["lemma"] in MODAL_VERBS:
+            return
+        # ЗАМЕР: у глаголов ПРОШЕДШЕГО времени pymorphy3 НЕ ВЫДАЁТ лицо
+        # (см. /tmp/t_m.py: «разозлилась» -> person='', tense='past'), а выдаёт
+        # род. Поэтому фильтр «есть лицо» отсекал РОВНО те глаголы, которые
+        # нам нужны, и событий не находилось ни одного. Признак финитности —
+        # наличие ВРЕМЕНИ (инфинитив его не имеет), а не лица.
+        tense = self._predicate_tense(pred)
+        if not tense:
+            # инфинитив / причастие без времени — не происшествие
+            return
+        if tense != "past":
+            # Событие — то, что УЖЕ произошло. Настоящее и будущее описывают
+            # закон или план, а не рассказанное происшествие.
+            return
+
+        subject = subj["lemma"] if subj is not None else "?"
+        action = pred["lemma"]
+        obj = ""
+        # Объект события — ПЕРВЫЙ зависимый от действия, кроме CAN_DO (это
+        # связь «кто способен», а не участник): «нарушила доверие» -> OBJECT_OF,
+        # «напала на канарейку» -> LOCATED_IN (предлог «на»), «перешёл в
+        # агрессию» -> LOCATED_IN. Ждать только OBJECT_OF — значит терять цель
+        # события из-за предлога.
+        for f in res.facts:
+            if f.head == action and f.relation != "CAN_DO":
+                obj = f.tail
+                break
+        res.events.append(EventRecord(
+            subject=subject, action=action, obj=obj, tense=tense,
+            order=order, evidence=res.sentence,
+            negated=neg))
+        # Факты этого предложения — ДИНАМИКА, а не онтология.
+        for f in res.facts:
+            f.predicate = "event"
 
     @staticmethod
     def _dedup(facts: List[Fact]) -> List[Fact]:

@@ -96,7 +96,8 @@ class SocialSimulator(Simulator):
     вывод «почему агент так поступил».
     """
 
-    def __init__(self, world: Dict):
+    def __init__(self, world: Dict, closeness: float = None,
+                 script: List[Dict] = None):
         super().__init__(world)
         self.agents: Dict[str, EmotionSystem] = {}
         self.expectations: List[Expectation] = []
@@ -106,6 +107,60 @@ class SocialSimulator(Simulator):
         # судить о состоянии НА МОМЕНТ действия, а не на момент вопроса: к
         # моменту вопроса эмоция уже могла затухнуть, и это было бы враньём.
         self.snapshots: List[Dict[str, Dict[str, int]]] = []
+        # Сценарий рассказа — ИЗ ДАННЫХ (файл рассказа, секция "script").
+        # Порядок директив и есть порядок во времени; в Python остаётся только
+        # ИНТЕРПРЕТАТОР. Ручная сборка рассказа в build_*_simulator была
+        # разрывом A (см. experiments/EVENTS_TASK.md).
+        self.load_script(script or [], closeness=closeness)
+
+    # ── ИНТЕРПРЕТАТОР СЦЕНАРИЯ ─────────────────────────────
+    def load_script(self, raw: List[Dict],
+                    closeness: float = None) -> int:
+        """
+        Выполнить директивы сценария из секции "script" мира.
+
+        Директивы ("do"):
+          agent  — {name, attack?, decay?} завести агента с эмоциями;
+          please — {name, amount, closeness?} обрадовать («хорошая» шкала);
+          ticks  — {n} пустые тики времени;
+          event  — {subject, action, obj?, closeness?, text?} событие рассказа;
+          expect — {holder, target, action, negated?, source?} ожидание.
+        Возвращает число выполненных директив; неизвестная директива —
+        громкий пропуск (не молчание).
+        """
+        if closeness is None:
+            closeness = CLOSENESS_LIVING_TOGETHER
+        done = 0
+        for d in raw or []:
+            if not isinstance(d, dict):
+                continue
+            kind = str(d.get("do", "")).strip()
+            if kind == "agent":
+                self.agent(str(d.get("name", "")),
+                           attack=int(d.get("attack", 40)),
+                           decay=int(d.get("decay", 8)))
+            elif kind == "please":
+                self.agent(str(d.get("name", ""))).please(
+                    int(d.get("amount", 0)),
+                    closeness=float(d.get("closeness", closeness)))
+            elif kind == "ticks":
+                self.ticks(int(d.get("n", 0)))
+            elif kind == "event":
+                self.act(str(d.get("subject", "")), str(d.get("action", "")),
+                         obj=str(d.get("obj", "")),
+                         text=str(d.get("text", "")),
+                         closeness=float(d.get("closeness", closeness)))
+            elif kind == "expect":
+                self.expect(str(d.get("holder", "")), str(d.get("target", "")),
+                            str(d.get("action", "")),
+                            negated=bool(d.get("negated", True)),
+                            source=str(d.get("source", "")))
+            else:
+                print(f"[social_sim] ⚠️ неизвестная директива сценария: «{kind}»",
+                      file=sys.stderr, flush=True)
+                continue
+            done += 1
+        return done
 
     # ── агенты и время ─────────────────────────────────────
     def agent(self, name: str, attack: int = 40, decay: int = 8) -> EmotionSystem:
@@ -270,46 +325,24 @@ RIPEN_TICKS = 8
 def build_cat_canary_simulator(closeness: float = CLOSENESS_LIVING_TOGETHER,
                                between_ticks: int = RIPEN_TICKS) -> SocialSimulator:
     """
-    Собирает рассказ вручную (симулятор пока не читает текст):
-       1. кошка и канарейка жили вместе
-        2. кошка любила канарейку
-        3. кошка попросила канарейку не рассказывать тайну
-        4. канарейка рассказала тайну
-        5. (пустые тики: обида нарастает и доходит до агрессии)
-        6. кошка съела канарейку
+    Собирает симулятор из учебной базы cat_canary_world.json.
+
+    Рассказ (агенты, просьба, ожидание, тики, события) лежит в данных
+    (секция "script") и исполняется интерпретатором. Здесь — только
+    параметры, которые тесты хотят варьировать: between_ticks подставляется
+    ВМЕСТО плейсхолдера "$between_ticks", a closeness уходит в конструктор.
     """
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    db = os.path.join(root, "experiments", "cat_canary_world.json")
-    with open(db, encoding="utf-8") as fh:
+    exp = os.path.join(root, "experiments")
+    with open(os.path.join(exp, "cat_canary_world.json"), encoding="utf-8") as fh:
         world = json.load(fh)
-
-    sim = SocialSimulator(world)
-    sim.agent("кошка")
-    sim.agent("канарейка")
-
-    # 1-2) жили вместе, кошка любила канарейку -> высокая близость, «хорошее».
-    sim.agent("кошка").please(120, closeness=closeness)
-    sim.ticks(2)
-    sim.act("кошка", "любить", obj="канарейка",
-            text="Кошка любила канарейку.")
-
-    # 3) просьба -> ОЖИДАНИЕ: канарейка НЕ расскажет тайну.
-    sim.act("кошка", "просить", obj="канарейка",
-            text="Кошка попросила канарейку никому не рассказывать тайну.")
-    sim.expect("кошка", "канарейка", "рассказывать", negated=True,
-               source="просьба кошки")
-
-    # 4) НАРУШЕНИЕ: канарейка рассказала тайну -> заряд в «плохую» шкалу кошки.
-    sim.ticks(between_ticks)
-    sim.act("канарейка", "рассказывать", obj="тайна", closeness=closeness,
-            text="Канарейка рассказала тайну.")
-
-    # 5) пустые тики: обида нарастает и доходит до агрессии.
-    sim.ticks(between_ticks)
-
-    # 6) ДЕЙСТВИЕ: кошка съела канарейку.
-    sim.act("кошка", "съесть", obj="канарейка",
-            text="Кошка съела канарейку.")
+    with open(os.path.join(exp, "cat_canary_story.json"), encoding="utf-8") as fh:
+        script = json.load(fh).get("script") or []
+    # Подстановка параметров в сценарий (данные остаются источником порядка).
+    for d in script:
+        if d.get("n") == "$between_ticks":
+            d["n"] = int(between_ticks)
+    sim = SocialSimulator(world, closeness=closeness, script=script)
     return sim
 
 
