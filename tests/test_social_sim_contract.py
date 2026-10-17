@@ -138,8 +138,10 @@ class TestDerivesTheAnswer(unittest.TestCase):
             self.assertIn(link, joined, f"в цепи нет звена «{link}»")
 
     def test_chain_shows_numbers(self):
+        # Порог теперь в СХЕМЕ (данные), и интерпретатор называет шкалу и числа.
         joined = " | ".join(self.res.chain)
-        self.assertIn("порог агрессии", joined)
+        self.assertIn("порог", joined)
+        self.assertIn("230", joined)
 
     def test_action_connected_to_behavior_by_is_a(self):
         joined = " | ".join(self.res.chain)

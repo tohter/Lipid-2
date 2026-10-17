@@ -26,8 +26,18 @@ brain/simulator.py — ЧЕРНОВИК симулятора Lipid-2.
 """
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+
+# Корень проекта в sys.path — чтобы запускать как `python brain/simulator.py`
+# (тот же приём, что в core/cortex.py и brain/social_sim.py).
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from core.schemes import SchemeInterpreter, load_schemes
 
 
 # ─────────────────────────────────────────────────────────────
@@ -163,10 +173,15 @@ class Simulator:
 
     Пока не читает текст: события добавляются руками через add_event().
     Знания берёт ТОЛЬКО из статической базы (StaticKnowledge) и туда не пишет.
+
+    ПУТЬ ВЫВОДА — В СХЕМЕ (core/schemes.py + секция "schemes" мира), не здесь.
+    Этот класс умеет только: хранить события, находить событие-прекращение и
+    выбирать событие перед ним. Дальше ход делает интерпретатор схемы.
     """
 
     def __init__(self, world: Dict):
         self.knowledge = StaticKnowledge(world)
+        self.schemes = load_schemes(world)
         self.events: List[Event] = []
 
     # ── наполнение рассказа (пока вручную) ─────────────────
@@ -210,24 +225,26 @@ class Simulator:
                     frontier.append(parent)
         return chain
 
-    # ── совпадение цели закона с тем, что прекращается ────
-    def _matches(self, rule_target: str, targets: List[str]) -> bool:
+    # ── ГЛАВНЫЙ ВЫВОД: СХЕМА ИЗ ДАННЫХ, НЕ КОД ────────────
+    def why_stopped(self, subject: str,
+                    scheme_name: str = "process_stopped") -> SimulationResult:
         """
-        Совпадает ли цель закона с тем, что прекратилось... с учётом IS_A.
-        «пламя» IS_A «огонь», поэтому закон «гасить огонь» применим и к пламени.
-        Только чтение; без этого законы пришлось бы дублировать под каждый синоним.
-        """
-        for t in targets:
-            if rule_target == t:
-                return True
-            if rule_target in self._agents_of(t):   # «пламя» -> [пламя, огонь]
-                return True
-        return False
+        Вывести «почему прекратился subject», пройдя СХЕМУ ИЗ ДАННЫХ
+        (секция "schemes" мира), а не зашитый в Python путь.
 
-    # ── ГЛАВНЫЙ ВЫВОД ──────────────────────────────────────
-    def why_stopped(self, subject: str) -> SimulationResult:
+        Симулятор здесь лишь: находит событие-прекращение, берёт событие
+        перед ним — и отдаёт роли интерпретатору. Какой именно путь пройти,
+        решает схема; симулятор её не знает.
+        """
         q = f"Почему прекратился {subject}?"
         res = SimulationResult(q)
+
+        scheme = self.schemes.get(scheme_name)
+        if scheme is None:
+            res.missing.append(f"в мире нет схемы «{scheme_name}» — "
+                               f"выводить нечем")
+            return res
+
         stop = self._stop_event(subject)
         if stop is None:
             res.missing.append(f"в рассказе нет события «{subject} прекратился»")
@@ -239,61 +256,19 @@ class Simulator:
                                "причину брать неоткуда")
             return res
 
-        # 1) Кандидат-причина: событие непосредственно перед прекращением.
-        cause_subject = before.subject
         res.chain.append(f"перед прекращением: «{before.describe()}»")
 
-        # 2) Чего КОСНУЛОСЬ прекращение: часть/суть прекращаемого.
-        #    «пожар» --HAS_PART--> «огонь». Если частей нет — берём сам subject.
-        targets = self.knowledge.parts(subject) or [subject]
-        res.chain.append(f"у «{subject}» прекращается: {', '.join(targets)}")
+        interp = SchemeInterpreter(self.knowledge)
+        walk = interp.run(scheme, {"subject": subject.lower().strip(),
+                                   "cause_subject": before.subject})
+        res.chain.extend(walk.chain)
+        if not walk.ok:
+            res.missing.extend(walk.missing)
+            return res
 
-        # 3) Кем/чем могло быть вызвано: сводим дождь к воде по IS_A.
-        agents = self._agents_of(cause_subject)
-        if len(agents) > 1:
-            res.chain.append(f"«{cause_subject}» есть " +
-                             " -> ".join(agents[1:]) + " (по IS_A)")
-
-        # 4) Ищем закон: агент умеет действие, направленное на цель.
-        for agent in agents:
-            for action in self.knowledge.can_do(agent):
-                for target in self.knowledge.object_of(action):
-                    if self._matches(target, targets):
-                        res.answer = (f"потому что {agent} {self._verb(action)} "
-                                      f"{target}")
-                        res.chain.append(
-                            f"закон: {agent} CAN_DO {action}, "
-                            f"{action} OBJECT_OF {target}")
-                        res.ok = True
-                        return res
-
-        # 5) Закона не нашлось — сказать ЧЕГО именно нет (не молчать).
-        res.missing.append(
-            f"нет закона: ни один из {agents} не умеет действие, направленное на "
-            f"{targets}")
+        res.answer = interp.render(scheme.answer, walk.bindings)
+        res.ok = True
         return res
-
-    @staticmethod
-    def _verb(action: str) -> str:
-        """
-        Привести инфинитив к форме 3-го лица ед.ч.: «гасить» -> «гасит».
-        Это НЕ морфология ради красоты: ответ «вода гасить огонь» звучит как
-        сломанный, и пользователь решит, что сломан движок. Правило простое и
-        покрывает глаголы нашего рассказа; неизвестный глагол вернётся как есть
-        (лучше честный инфинитив, чем выдуманная форма).
-        """
-        a = (action or "").strip()
-        if a.endswith("ить"):
-            return a[:-3] + "ит"
-        if a.endswith("ать"):
-            return a[:-3] + "ает"
-        if a.endswith("еть"):
-            return a[:-3] + "еет"
-        if a.endswith("ыть"):
-            return a[:-3] + "оет"
-        if a.endswith("ть"):
-            return a[:-2] + "ет"
-        return a
 
 
 # ─────────────────────────────────────────────────────────────

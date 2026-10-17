@@ -86,5 +86,21 @@
     }
   },
   "unknown_words": {},
-  "transitions": {}
+  "transitions": {},
+  "schemes": {
+    "process_stopped": {
+      "question": "почему прекратился",
+      "steps": [
+        {"kind": "edge", "role": "parts", "from": "$subject",
+         "relation": "HAS_PART", "fallback": "self"},
+        {"kind": "edge", "role": "agents", "from": "$cause_subject",
+         "relation": "IS_A", "mode": "transitive"},
+        {"kind": "edge", "role": "verbs", "from": "$agents",
+         "relation": "CAN_DO"},
+        {"kind": "edge", "role": "targets", "from": "$verbs",
+         "relation": "OBJECT_OF", "match": "$parts"}
+      ],
+      "answer": "потому что {agents} {verbs:fin} {targets}"
+    }
+  }
 }

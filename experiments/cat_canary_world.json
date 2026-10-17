@@ -192,5 +192,21 @@
     }
   },
   "unknown_words": {},
-  "transitions": {}
+  "transitions": {},
+  "schemes": {
+    "social_betrayal": {
+      "question": "почему агент так поступил",
+      "steps": [
+        {"kind": "edge", "role": "breach", "from": "нарушение_доверия",
+         "relation": "IS_A", "mode": "transitive"},
+        {"kind": "edge", "role": "feelings", "from": "$breach",
+         "relation": "CAUSES", "mode": "transitive"},
+        {"kind": "edge", "role": "act_kind", "from": "$action",
+         "relation": "IS_A", "mode": "transitive", "optional": true},
+        {"kind": "threshold", "role": "bad_now", "from": "$agent",
+         "scale": "bad", "op": ">=", "value": 230}
+      ],
+      "answer": "потому что {target} нарушил(а) доверие: {agent} разозлил(а)сь, гнев перешёл в агрессию"
+    }
+  }
 }

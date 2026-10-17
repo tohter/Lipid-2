@@ -38,6 +38,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+from core.schemes import SchemeInterpreter
 from brain.emotions import EmotionSystem
 from brain.simulator import Event, SimulationResult, Simulator, StaticKnowledge
 
@@ -176,20 +177,27 @@ class SocialSimulator(Simulator):
             return self.snapshots[idx]
         return {}
 
-    # ── ГЛАВНЫЙ ВЫВОД: почему агент так поступил ───────────
-    def why_acted(self, agent: str, action: str) -> SimulationResult:
+    # ── ГЛАВНЫЙ ВЫВОД: СХЕМА ИЗ ДАННЫХ ────────────────────
+    def why_acted(self, agent: str, action: str,
+                  scheme_name: str = "social_betrayal") -> SimulationResult:
         """
-        Вывести, ПОЧЕМУ агент совершил действие, опираясь на:
-          * нарушенное ожидание (динамика),
-          * цепочку CAUSES в статике (предательство -> обида -> гнев -> агрессия),
-          * ПЕРЕХОД ПОРОГА эмоции ДО действия (числа, не слова).
+        Вывести, ПОЧЕМУ агент совершил действие.
 
-        Если чего-то не хватает — сказать какого звена, не выдумывать.
+        Динамику (какое ожидание нарушено и каким событием) доставляет
+        симулятор — это живёт во времени и в статике не лежит. СТАТИЧЕСКУЮ
+        ЦЕПОЧКУ («нарушение доверия -> предательство -> обида -> гнев ->
+        агрессия») и ПОРОГ проходит интерпретатор схемы из данных.
         """
         agent = agent.lower().strip()
         action = action.lower().strip()
         q = f"Почему {agent} {action}?"
         res = SimulationResult(q)
+
+        scheme = self.schemes.get(scheme_name)
+        if scheme is None:
+            res.missing.append(f"в мире нет схемы «{scheme_name}» — "
+                               f"выводить нечем")
+            return res
 
         # 1) Само действие в рассказе.
         act_ev = None
@@ -217,9 +225,6 @@ class SocialSimulator(Simulator):
                                f"объяснить нечем")
             return res
 
-        # 4) Числа: перешла ли «плохая» шкала порог К МОМЕНТУ действия?
-        snap = self._snapshot_at(act_ev)
-        bad_now = int(snap.get(agent, {}).get("bad", self.agents[agent].bad.value))
         viol_ev = viol.event
         res.chain.append(
             f"ожидание: {viol.expectation.holder} ждал(а), что "
@@ -228,56 +233,24 @@ class SocialSimulator(Simulator):
         res.chain.append(
             f"заряд обиды: {viol.charge:.0f} x близость {viol.closeness:.1f} "
             f"= {viol.applied:.0f}")
-        res.chain.append(
-            f"к моменту действия «плохое» = {bad_now} "
-            f"(порог агрессии {AGGRESSION_THRESHOLD})")
 
-        # 5) Цепочка следствий в СТАТИКЕ: предательство -> ... -> поведение.
-        chain = self._causes_chain("нарушение_доверия")
-        if chain:
-            res.chain.append("законы рассуждения: " + " -> ".join(chain))
-        kinds = self._agents_of(action)      # съесть -> [съесть, нападение]
-        if len(kinds) > 1:
-            res.chain.append(f"«{action}» есть " + " -> ".join(kinds[1:]) +
-                             " (по IS_A)")
-
-        # 6) ПОРОГ: без него действия быть не должно — это не декор, а проверка.
-        if bad_now < AGGRESSION_THRESHOLD:
-            res.missing.append(
-                f"«плохое» к моменту действия = {bad_now}, а порог агрессии "
-                f"{AGGRESSION_THRESHOLD}: чисел НЕ хватает, чтобы объяснить "
-                f"действие — вывод был бы натяжкой")
+        # 4) Статика + порог — ИНТЕРПРЕТАТОРУ. Числа берём СО СНИМКА НА
+        #    МОМЕНТ действия, а не на момент вопроса.
+        scales = {agent: dict(self._snapshot_at(act_ev).get(agent)
+                              or self.agents[agent].state())}
+        interp = SchemeInterpreter(self.knowledge, scales=scales)
+        walk = interp.run(scheme, {"agent": agent,
+                                   "target": viol.expectation.target,
+                                   "action": action})
+        res.chain.extend(walk.chain)
+        if not walk.ok:
+            res.missing.extend(walk.missing)
             return res
 
-        res.answer = (f"потому что {viol.expectation.target} нарушил(а) доверие: "
-                      f"{agent} разозлил(а)сь, гнев перешёл в агрессию")
+        res.answer = interp.render(scheme.answer, walk.bindings)
         res.ok = True
         return res
 
-    def _causes_chain(self, start: str, limit: int = 8) -> List[str]:
-        """
-        Пройти по CAUSES от start, предваряя первым IS_A-родителем:
-        «нарушение_доверия» -> (IS_A) «предательство» -> CAUSES «обида» -> ...
-        Только чтение. Ограничение длины — чтобы цикл в базе не повесил вывод.
-        """
-        cur = start.lower().strip()
-        parents = self.knowledge.is_a(cur)
-        chain: List[str] = []
-        if parents:
-            cur = parents[0]
-            chain.append(cur)
-        seen = {cur}
-        while len(chain) < limit:
-            nxt = self.knowledge.causes(cur)
-            if not nxt:
-                break
-            nxt = nxt[0]
-            if nxt in seen:
-                break
-            chain.append(nxt)
-            seen.add(nxt)
-            cur = nxt
-        return chain
 
 
 # ─────────────────────────────────────────────────────────────
