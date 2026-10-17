@@ -1,0 +1,196 @@
+{
+  "_comment": "Эксперимент «кошка и канарейка». СТАТИЧЕСКАЯ база знаний (вне времени). События рассказа и эмоции живут в симуляторе. Формат = lipid_world.json: entities / observations / relations / unknown_words / transitions. Источник 'experiment:cat_canary' помечает учебный мир, а не живую память.",
+  "entities": {
+    "кошка": {
+      "concept": "кошка",
+      "definition": "домашнее хищное животное семейства кошачьих",
+      "hierarchy": ["животное"],
+      "properties": ["домашняя", "хищная"],
+      "actions": ["любить", "просить", "съесть"],
+      "provenance": [{"source": "experiment:cat_canary", "evidence": "учебный мир", "at": null}]
+    },
+    "канарейка": {
+      "concept": "канарейка",
+      "definition": "небольшая певчая птица",
+      "hierarchy": ["птица"],
+      "properties": ["певчая", "маленькая"],
+      "actions": ["рассказывать", "петь"],
+      "provenance": [{"source": "experiment:cat_canary", "evidence": "учебный мир", "at": null}]
+    },
+    "птица": {
+      "concept": "птица",
+      "definition": "животное с перьями, крыльями и клювом",
+      "hierarchy": ["животное"],
+      "properties": [],
+      "actions": [],
+      "provenance": [{"source": "experiment:cat_canary", "evidence": "учебный мир", "at": null}]
+    },
+    "животное": {
+      "concept": "животное",
+      "definition": "живой организм, способный двигаться и чувствовать",
+      "hierarchy": ["существо"],
+      "properties": ["живое"],
+      "actions": [],
+      "provenance": [{"source": "experiment:cat_canary", "evidence": "учебный мир", "at": null}]
+    },
+    "существо": {
+      "concept": "существо",
+      "definition": "одушевлённое, чувствующее нечто",
+      "hierarchy": [],
+      "properties": ["одушевлённое"],
+      "actions": [],
+      "provenance": [{"source": "experiment:cat_canary", "evidence": "учебный мир", "at": null}]
+    },
+    "тайна": {
+      "concept": "тайна",
+      "definition": "сведение, которое скрывают от других",
+      "hierarchy": ["сведение"],
+      "properties": ["скрытое"],
+      "actions": [],
+      "provenance": [{"source": "experiment:cat_canary", "evidence": "учебный мир", "at": null}]
+    },
+    "доверие": {
+      "concept": "доверие",
+      "definition": "уверенность, что другой не причинит вреда и сдержит слово",
+      "hierarchy": ["отношение"],
+      "properties": [],
+      "actions": [],
+      "provenance": [{"source": "experiment:cat_canary", "evidence": "учебный мир", "at": null}]
+    },
+    "предательство": {
+      "concept": "предательство",
+      "definition": "нарушение доверия того, кто на тебя полагался",
+      "hierarchy": ["нарушение"],
+      "properties": ["плохое"],
+      "actions": [],
+      "provenance": [{"source": "experiment:cat_canary", "evidence": "учебный мир", "at": null}]
+    },
+    "обида": {
+      "concept": "обида",
+      "definition": "чувство, вызванное несправедливостью или предательством",
+      "hierarchy": ["чувство"],
+      "properties": ["плохое"],
+      "actions": [],
+      "provenance": [{"source": "experiment:cat_canary", "evidence": "учебный мир", "at": null}]
+    },
+    "гнев": {
+      "concept": "гнев",
+      "definition": "сильное чувство недовольства и враждебности",
+      "hierarchy": ["чувство"],
+      "properties": ["плохое", "сильное"],
+      "actions": [],
+      "provenance": [{"source": "experiment:cat_canary", "evidence": "учебный мир", "at": null}]
+    },
+    "агрессия": {
+      "concept": "агрессия",
+      "definition": "готовность напасть, причинить вред",
+      "hierarchy": ["поведение"],
+      "properties": ["плохое"],
+      "actions": [],
+      "provenance": [{"source": "experiment:cat_canary", "evidence": "учебный мир", "at": null}]
+    },
+    "нападение": {
+      "concept": "нападение",
+      "definition": "действие, направленное на причинение вреда другому",
+      "hierarchy": ["действие"],
+      "properties": [],
+      "actions": [],
+      "provenance": [{"source": "experiment:cat_canary", "evidence": "учебный мир", "at": null}]
+    }
+  },
+  "relations": [],
+  "observations": {
+    "кошка|IS_A|животное": {
+      "head": "кошка", "relation": "IS_A", "tail": "животное",
+      "confidence": 0.99, "negated": false,
+      "evidence": "кошка — животное", "source": "experiment:cat_canary",
+      "support": 1
+    },
+    "канарейка|IS_A|птица": {
+      "head": "канарейка", "relation": "IS_A", "tail": "птица",
+      "confidence": 0.99, "negated": false,
+      "evidence": "канарейка — птица", "source": "experiment:cat_canary",
+      "support": 1
+    },
+    "птица|IS_A|животное": {
+      "head": "птица", "relation": "IS_A", "tail": "животное",
+      "confidence": 0.98, "negated": false,
+      "evidence": "птица — животное", "source": "experiment:cat_canary",
+      "support": 1
+    },
+    "кошка|CAN_DO|съесть": {
+      "head": "кошка", "relation": "CAN_DO", "tail": "съесть",
+      "confidence": 0.95, "negated": false,
+      "evidence": "кошка может съесть добычу", "source": "experiment:cat_canary",
+      "support": 1
+    },
+    "съесть|OBJECT_OF|птица": {
+      "head": "съесть", "relation": "OBJECT_OF", "tail": "птица",
+      "confidence": 0.9, "negated": false,
+      "evidence": "кошки едят птиц", "source": "experiment:cat_canary",
+      "support": 1
+    },
+    "съесть|IS_A|нападение": {
+      "head": "съесть", "relation": "IS_A", "tail": "нападение",
+      "confidence": 0.85, "negated": false,
+      "evidence": "съесть добычу — форма нападения хищника", "source": "experiment:cat_canary",
+      "support": 1
+    },
+    "кошка|CAN_DO|просить": {
+      "head": "кошка", "relation": "CAN_DO", "tail": "просить",
+      "confidence": 0.9, "negated": false,
+      "evidence": "кошка может о чём-то попросить", "source": "experiment:cat_canary",
+      "support": 1
+    },
+    "кошка|CAN_DO|любить": {
+      "head": "кошка", "relation": "CAN_DO", "tail": "любить",
+      "confidence": 0.9, "negated": false,
+      "evidence": "кошка любила канарейку", "source": "experiment:cat_canary",
+      "support": 1
+    },
+    "канарейка|CAN_DO|рассказывать": {
+      "head": "канарейка", "relation": "CAN_DO", "tail": "рассказывать",
+      "confidence": 0.9, "negated": false,
+      "evidence": "канарейка умеет говорить", "source": "experiment:cat_canary",
+      "support": 1
+    },
+    "рассказывать|OBJECT_OF|тайна": {
+      "head": "рассказывать", "relation": "OBJECT_OF", "tail": "тайна",
+      "confidence": 0.95, "negated": false,
+      "evidence": "рассказывают именно тайну", "source": "experiment:cat_canary",
+      "support": 1
+    },
+    "нарушение_доверия|IS_A|предательство": {
+      "head": "нарушение_доверия", "relation": "IS_A", "tail": "предательство",
+      "confidence": 0.95, "negated": false,
+      "evidence": "нарушить доверие — значит предать", "source": "experiment:cat_canary",
+      "support": 1
+    },
+    "предательство|CAUSES|обида": {
+      "head": "предательство", "relation": "CAUSES", "tail": "обида",
+      "confidence": 0.9, "negated": false,
+      "evidence": "предательство ранит, вызывает обиду", "source": "experiment:cat_canary",
+      "support": 1
+    },
+    "обида|CAUSES|гнев": {
+      "head": "обида", "relation": "CAUSES", "tail": "гнев",
+      "confidence": 0.85, "negated": false,
+      "evidence": "затаённая обида переходит в гнев", "source": "experiment:cat_canary",
+      "support": 1
+    },
+    "гнев|CAUSES|агрессия": {
+      "head": "гнев", "relation": "CAUSES", "tail": "агрессия",
+      "confidence": 0.85, "negated": false,
+      "evidence": "гнев переходит в агрессию", "source": "experiment:cat_canary",
+      "support": 1
+    },
+    "агрессия|CAUSES|нападение": {
+      "head": "агрессия", "relation": "CAUSES", "tail": "нападение",
+      "confidence": 0.85, "negated": false,
+      "evidence": "агрессия выливается в нападение", "source": "experiment:cat_canary",
+      "support": 1
+    }
+  },
+  "unknown_words": {},
+  "transitions": {}
+}
