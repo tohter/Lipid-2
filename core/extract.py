@@ -96,6 +96,12 @@ ALL_PREPS = set(PREP_CASES)
 # «кошка есть животное» — это IS_A, а не действие «есть».
 COPULAS = {"быть", "являться", "представлять", "казаться", "стать", "становиться",
            "называться", "считаться", "иметь", "иметься", "статься", "нравиться"}
+# Нулевая связка: «Кит не рыба» — сказуемого нет, именованная часть держится
+# без него. Относится к связкам ТЕХНИЧЕСКИ (именное предложение, не действие),
+# а не по смыслу: это способ сказать «сказуемого нет», не вводя в граф узел
+# «быть». Символ в тексте встречается нулю раз (замер по корпусу experiments),
+# поэтому не смешивается с настоящим словом.
+ZERO_COPULA = "\u2205"
 
 NEGATIONS = {"не", "ни"}
 VERB_POS = ("VERB", "INFN", "PRTF", "GRND")
@@ -180,6 +186,153 @@ FORBID_VERBS = {"запретить", "запрещать"}
 # «или»; это грамматика, а не догадка о словах.
 APPOSITION_CONJ = "или"
 # Слово, названное ВТОРЫМ, и есть вариант имени первого.
+
+# Противопоставительные союзы: они ОБРЫВАЮТ область действия «не».
+ADVERSATIVE_CONJ = ("а", "но")
+
+
+class NegationScope:
+    """
+    Что ИМЕННО отрицает частица «не».
+
+    ЗАМЕР ДО ПРАВКИ (experiments/NEGATION_TASK.md): «Кит — это не рыба,
+    а млекопитающее» записывало ДВА факта, и ОБА с negated=True:
+
+        кит --IS_ROLE /НЕ/--> рыба
+        кит --IS_ROLE /НЕ/--> млекопитающее     <-- «кит не млекопитающее»: ЛОЖЬ
+
+    Причина в одной строке: отрицание считалось по всему предложению
+    (`any(t["word"] in NEGATIONS)`) и предъявлялось каждой связи одинаково.
+    Одно «не» умело отрицать всё сказанное сразу.
+
+    ДВЕ ОБЛАСТИ, выбор — фактом наличия противопоставительного союза:
+
+      а) СОЮЗА НЕТ («кошка не ест рыбу») — область = всё предложение, как
+         раньше. Это не консерватизм, а замер: «не» при сказуемом отрицает и
+         действие, и его объект; разделения здесь нет.
+
+      б) СОЮЗ ЕСТЬ («не A, а B»; «X, а не Y, ...») — противопоставление
+         ПОТЕРМИНАЛЬНОЕ, каждая частица держит только свой член. Область
+         каждой «не» = слова ОТ неё до границы (см. в). Почему с привязкой к
+         самой частице, а не к «части между союзами»: ЗАМЕРЕНО на «Столица
+         Франции — не Париж, а Лион», что отсечь только по союзу — оставить
+         «не» властью над всем прологом, и PART_OF(столица, Франция) тоже
+         стал бы отрицанием, которого в предложении нет.
+
+      в) ГРАНИЦА области — не запятая (морфология пунктуации в токенах НЕ
+         отдаёт, замер), а два грамматических признака:
+         · частица СРАЗУ ПОСЛЕ «а»/«но» («кошка, а не собака, ловит мышь»):
+           это ВСТАВНОЙ противопоставительный член, он кончается БЛИЖАЙШИМ
+           личным глаголом — дальше идёт основная часть предложения. Без это-
+           го правила CAN_DO(кошка, ловить) стало бы отрицанием, то есть
+           «кошка не ловит мышь» — ровно наоборот сказанного.
+         · иначе («не кошка поймала мышь, а собака») частица стоит в своей
+           части и держит всё до ближайшего противопоставительного союза:
+           событие «кошка поймала мышь» здесь ОТРИЦАЕТСЯ ЦЕЛИКОМ — иначе в
+           граф попало бы «кошка поймала мышь», чего в тексте нет.
+
+    ПЕРЕНОС отрицания на зависимых. В «кошка не ест рыбу, а собака ест»
+    частица стоит при глаголе, а объект стоит за ним: OBJECT_OF(есть, рыба)
+    обязана остаться отрицанной, иначе в граф попадёт «кошка ест рыбу».
+    Поэтому связь отрицается и когда в области стоит ЕЁ ГЛАГОЛ (head), а не
+    только хвост. Держать это в одном месте важно: два места проверки
+    разносятся неизбежно.
+
+    Это позиция частицы, союза и финитности глагола — не список слов и не
+    догадка о смысле.
+    """
+
+    def __init__(self, toks: List[dict]):
+        self.toks = toks
+        # есть ли отрицание в предложении вообще (для отчётов и мер)
+        self.any = any(t.get("word") in NEGATIONS for t in toks)
+        adversative = [i for i, t in enumerate(toks)
+                       if t.get("pos") == "CONJ"
+                       and str(t.get("lemma") or "").lower() in ADVERSATIVE_CONJ]
+        # узкая область имеет смысл ТОЛЬКО при противопоставлении
+        self.narrow = bool(self.any and adversative)
+        self._at = {id(t): i for i, t in enumerate(toks)}
+        # индексы слов, попадающих под каждую частицу
+        self.scopes: List[List[int]] = []
+        if self.narrow:
+            for i, t in enumerate(toks):
+                if t.get("word") not in NEGATIONS:
+                    continue
+                prev_adv = [a for a in adversative if a < i]
+                inserted = bool(prev_adv) and (max(prev_adv) == i - 1)
+                stop = len(toks)
+                for j in range(i + 1, len(toks)):
+                    if j in adversative:
+                        stop = j
+                        break
+                    # вставной член «а не X» закрыт: дальше основная часть
+                    if inserted and self._is_finite(toks[j]):
+                        stop = j
+                        break
+                self.scopes.append([j for j in range(i + 1, stop)
+                                    if toks[j].get("content")])
+        self._scope_idx = set().union(*[set(s) for s in self.scopes]) \
+            if self.scopes else set()
+        self._scope_lemmas = {str(toks[j].get("lemma") or "").lower()
+                             for j in self._scope_idx}
+        # что именно отрицается — для ГРОМКОЙ заметки в разборе
+        self.denied: List[str] = [str(toks[j].get("lemma") or toks[j].get("word")).lower()
+                                  for j in sorted(self._scope_idx)]
+        # сколько содержательных слов СПАСЛОСЬ от отрицания благодаря границе.
+        # Нужно, чтобы правка была видна числом, а не «должно стать лучше».
+        total = sum(1 for t in toks if t.get("content"))
+        self.rescued = (total - len(self._scope_idx)
+                        if self.narrow and total > len(self._scope_idx) else 0)
+
+    @staticmethod
+    def _is_finite(tok: dict) -> bool:
+        """Личный глагол (есть время ИЛИ лицо) — граница основной части."""
+        if not tok.get("content") or tok.get("role") != "action":
+            return False
+        return any(v.get("tense") or v.get("person")
+                   for v in tok.get("variants", [])
+                   if v.get("pos") in ("VERB", "PRTF"))
+
+    def _in_scope(self, tok: Optional[dict]) -> bool:
+        if not self.narrow or tok is None:
+            return False
+        i = self._at.get(id(tok))
+        return i is not None and i in self._scope_idx
+
+    def negates(self, tok: Optional[dict]) -> bool:
+        """Отрицается ли этот токен.
+
+        Вне узкой области (союза нет) — да, если «не» в предложении есть:
+        это ровно прежняя область «всё предложение», замеренная на
+        «кошка не ест рыбу». Токена нет (синтетическая запись) — не выдумываем.
+        """
+        if not self.any:
+            return False
+        if not self.narrow:
+            return True
+        if tok is None:
+            return False
+        return self._in_scope(tok)
+
+    def negates_pair(self, head_lemma: str, tail_tok: Optional[dict]) -> bool:
+        """Отрицается ли связь head -> tail.
+
+        Отрицание глагола отрицает и его зависимых: иначе из «кошка не ест
+        рыбу, а собака ест» в граф попало бы «кошка ест рыбу».
+        """
+        if self.negates(tail_tok):
+            return True
+        if not self.any or not self.narrow:
+            return bool(self.any)
+        return str(head_lemma or "").lower() in self._scope_lemmas
+
+    def note(self) -> str:
+        """Заметка об уточнённой области — только если она что-то изменила."""
+        if not self.rescued:
+            return ""
+        return ("отрицание «не» относится только к «%s»; ещё %d значимых слов "
+                "в предложении УТВЕРЖДАЮТСЯ (противопоставление «а»/«но»)"
+                % ("», «".join(self.denied) or "?", self.rescued))
 
 
 def apposition_aliases(tokens: List[dict], sentence: str = "") -> List[tuple]:
@@ -429,7 +582,10 @@ class SimpleExtractor:
             res.notes.append("нет значимых слов")
             return res
 
-        neg = any(t["word"] in NEGATIONS for t in toks)
+        # ОТРИЦАНИЕ СЧИТАЕТСЯ ПО ОБЛАСТИ ДЕЙСТВИЯ, а не по предложению целиком:
+        # «не A, а B» отрицает только A (см. NegationScope и NEGATION_TASK.md).
+        negs = NegationScope(toks)
+        neg = negs.any            # «в предложении есть отрицание» — для отчётов
         # Ценовая конструкция: глагол «стоить» + деньги. Отличать надо от
         # действия, иначе «шкаф» получит умение «стоить».
         money_sentence = self._is_price(content)
@@ -460,6 +616,53 @@ class SimpleExtractor:
             # подлежащего нет, а сказуемое — личный глагол: актор неизвестен,
             # приписывать действие первому существительному нельзя
             pred = None
+
+        # НУЛЕВАЯ СВЯЗКА (замер, изменивший отношение). Русское определение
+        # обходится без глагола: «Кит не рыба, а млекопитающее» — связки нет
+        # вовсе. ЗАМЕРЕНО: без сказуемого вершиной становилось подлежащее, и
+        # именная часть уезжала как OBJECT_OF:
+        #     кит --OBJECT_OF--> млекопитающее   («кит — объект действия»)
+        # хотя с тире та же связь выходила IS_ROLE. Отношение выбирал ТИРЕ,
+        # а не разбор. Где признаков именного предложения два (нет ни глагола,
+        # ни модальности/меры + ИМ.п. после подлежащего, отделённого частицей
+        # «не» или связочным словом) — ставится НУЛЕВАЯ СВЯЗКА быть/nom, и
+        # именная часть идёт общей ветвью связки (IS_ROLE), как в «Вася — это
+        # инженер». Придумано не слово, а отсутствие сказуемого: узла «быть»
+        # в графе не появляется, потому что имя нулевой связки не используется
+        # как head ни одной связи.
+        if (pred is None and subj is not None
+                and not any(t["role"] == "action" for t in content)
+                and not money_sentence and not value_sentence):
+            zero_named = copula_marker or negs.denied
+            if zero_named and any(
+                    t is not subj and t["role"] == "subject"
+                    # БЕЗ ПРЕДЛОГА. ЗАМЕРЕНО на «У кошки есть хвост»: «есть» —
+                    # связочное слово, предлог «у» морфологией к слову не
+                    # приклеен, и «кошки» (разобрано ИМ.п.) стало именной
+                    # частью: хвост --IS_ROLE--> кошка рядом с верным
+                    # HAS_PART. Предложное слово — косвенный член, именной
+                    # частью оно быть не может.
+                    and not t.get("prep")
+                    and self._has_case(t, ("NOUN", "ADJF"), "nom")
+                    and self._agrees_number(t, self._predicate_number(subj))
+                    for t in content):
+                pred = {
+                    "word": ZERO_COPULA, "lemma": ZERO_COPULA, "pos": "COP0",
+                    "content": True,
+                    "case": "nom", "number": subj.get("number", ""),
+                    "role": "property", "score": 1.0, "variants": [
+                        {"word": ZERO_COPULA, "lemma": ZERO_COPULA, "pos": "VERB",
+                         "case": "nom",
+                         "number": subj.get("number", ""), "gender": "",
+                         "tense": "pres", "person": "3", "score": 1.0,
+                         "grammemes": frozenset()}],
+                }
+                # «не» при нулевой связке отрицает ИМЕННУЮ ЧАСТЬ, а не субъ-
+                # ект: в «Кит не рыба» частица стоит перед сказуемым, а не
+                # перед «кит». Отдельная строка вместо мутации отрицания
+                # внутри самого предложения — так её видно в отчёте.
+                if negs.denied and subj.get("word") in negs.denied:
+                    negs.denied.remove(subj["word"].lower())
 
         if subj is None and pred is None:
             res.notes.append("нет ни подлежащего (ИМ.п.), ни сказуемого")
@@ -492,27 +695,35 @@ class SimpleExtractor:
                 # весить» + «весить OBJECT_OF килограмм»).
                 res.notes.append("цена/мера, а не действие")
             elif kind == "action" and subj is not None:
-                res.facts.append(self._fact(subj, pred, "CAN_DO", res.sentence, neg))
+                res.facts.append(self._fact(subj, pred, "CAN_DO", res.sentence, negs))
                 if pred.get("prep"):
                     res.facts.append(Fact(subj["lemma"], "ABOUT",
                                           pred.get("prep") + " " + pred["lemma"],
-                                          evidence=res.sentence, negated=neg,
+                                          evidence=res.sentence,
+                                          negated=negs.negates_pair(
+                                              subj["lemma"], pred),
                                           confidence=0.4))
-            elif kind == "property" and subj is not None:
-                res.facts.append(self._fact(subj, pred, "HAS_PROPERTY", res.sentence, neg))
-            # именная часть при связке («Вася — это инженер»)
-            if pred is not None and self._is_copula_form(pred):
+            elif kind == "property" and subj is not None \
+                    and not self._is_zero_copula(pred):
+                # Нулевая связка — НЕ свойство: её лемма служебный символ, а
+                # не слово языка. Именную часть собирает ветвь связки ниже.
+                res.facts.append(self._fact(subj, pred, "HAS_PROPERTY",
+                                            res.sentence, negs))
+            # именная часть при связке («Вася — это инженер», «кит не рыба»)
+            if pred is not None and (self._is_copula_form(pred)
+                                     or self._is_zero_copula(pred)):
                 # «Вася является инженером»: Тв.п. после СВЯЗКИ — именная часть,
                 # а не орудие. Тот же Тв.п. после смыслового глагола («открыла
                 # мышью») остаётся инструментом, поэтому проверять надо здесь.
-                rest = [t for t in content if id(t) not in (subj_taken, id(pred))]
+                rest = [t for t in content if id(t) not in (subj_taken, id(pred))
+                        and not t.get("prep")]
                 for t in rest:
                     v = self._pick(t, ("NOUN", "ADJF"), case="ins") or \
                         self._pick(t, ("NOUN", "ADJF"), case="nom")
                     if v is not None:
                         rel = "IS_ROLE" if v["pos"] == "NOUN" else "HAS_PROPERTY"
                         res.facts.append(self._fact(subj or pred, t, rel,
-                                                    res.sentence, neg, variant=v))
+                                                    res.sentence, negs, variant=v))
                         break
 
         # Владение («у кошки есть хвост») разбирается ДО всего: оно меняет и
@@ -522,9 +733,9 @@ class SimpleExtractor:
             ov = self._pick(owner, ("NOUN",), case="gen") or owner["variants"][0]
             tv = self._pick(thing, ("NOUN",), case="nom") or thing["variants"][0]
             res.facts.append(self._fact_from_variant(
-                ov["lemma"], thing, "HAS_PART", res.sentence, neg, tv))
+                ov["lemma"], thing, "HAS_PART", res.sentence, negs, tv))
             used = {id(owner), id(thing), id(pred)}
-            self._attach_adjectives(res, content, used, neg)
+            self._attach_adjectives(res, content, used, negs)
             res.facts = self._dedup(res.facts)
             return res
 
@@ -557,10 +768,10 @@ class SimpleExtractor:
                 }
                 res.facts.append(self._fact_from_variant(
                     subj["lemma"], pred, "HAS_PROPERTY",
-                    res.sentence, neg, mod_variant))
+                    res.sentence, negs, mod_variant))
                 # Добавляем CAN_DO(субъект, инфинитив)
                 res.facts.append(self._fact(subj, inf, "CAN_DO",
-                                            res.sentence, neg, variant=inf))
+                                            res.sentence, negs, variant=inf))
                 used.add(id(inf))
 
         governed = [t for t in content if id(t) not in used and t["role"] != "property"]
@@ -622,7 +833,8 @@ class SimpleExtractor:
                 if anchor:
                     res.facts.append(Fact(
                         head=anchor, relation="VALUE", tail=amount["phrase"],
-                        evidence=res.sentence, negated=neg,
+                        evidence=res.sentence,
+                        negated=negs.negates_pair(anchor, pred),
                         confidence=0.7))
                     res.notes.append("цена/мера записана как VALUE: %s"
                                      % amount["phrase"])
@@ -636,10 +848,12 @@ class SimpleExtractor:
             return res
 
         for t, rel, variant in resolved:
-            # «кошка это животное»: именная часть стоит в ИМ./Вин.п., но НИКАКОГО
-            # действия в предложении нет — называть её OBJECT_OF значит
-            # изобрести действие, которого не было.
-            if (copula_marker and pred is None and not verbs_present
+            # «кошка это животное» и «кит не рыба»: именная часть стоит в
+            # ИМ./Вин.п., но НИКАКОГО действия в предложении нет — называть её
+            # OBJECT_OF значит изобрести действие, которого не было.
+            naming = ((pred is not None and self._is_zero_copula(pred))
+                      or (pred is None and copula_marker))
+            if (naming and not verbs_present
                     and variant.get("case") in ("nom", "acc")
                     and rel in ("OBJECT_OF", "IS_ROLE")):
                 rel = "IS_ROLE"
@@ -651,7 +865,7 @@ class SimpleExtractor:
                     rel, t = "PART_OF", owner
             res.facts.append(self._fact_from_variant(
                 verb_head(content.index(t)) or head or subj_lemma,
-                t, rel, res.sentence, neg, variant))
+                t, rel, res.sentence, negs, variant))
 
         # Инфинитив после личного глагола = ЦЕЛЬ, а не второе умение:
         # «кошка пришла поспать» — одна связь PURPOSE, а не «пришла» + «умеет
@@ -665,16 +879,17 @@ class SimpleExtractor:
                 inf = self._pick(t, ("INFN",))
                 if inf is not None:
                     res.facts.append(self._fact_from_variant(
-                        pred["lemma"], t, "PURPOSE", res.sentence, neg, inf))
+                        pred["lemma"], t, "PURPOSE", res.sentence, negs, inf))
                     used.add(id(t))
 
         # 3) прилагательные без явного сказуемого-прилагательного
-        self._attach_adjectives(res, content, used, neg)
+        self._attach_adjectives(res, content, used, negs)
 
         # «Вася — это инженер»: инженер тоже в ИМ.п. и согласуется в числе, но
         # это именная часть, а не второй кандидат в подлежащие. Считать его
         # конфликтом — значит кормить граф ложными предупреждениями.
-        if not self._is_copula_form(pred) and not copula_marker:
+        if not self._is_copula_form(pred) and not self._is_zero_copula(pred) \
+                and not copula_marker:
             # Считаем спорными только ИМ.п., которые НЕ заняты другой ролью:
             # в «Витя дал кошке корм» «корм» формально может быть и ИМ.п., но он
             # уже разобран винительным объектом. Предупреждать о конфликте там,
@@ -692,9 +907,13 @@ class SimpleExtractor:
         # СТАТИКА vs ДИНАМИКА: пометить и вынести СОБЫТИЯ рассказа.
         # Делается ПОСЛЕ сборки фактов и ДО dedup — метка predicate входит в
         # вывод, но dedup ключуется по (head,relation,tail) и её сохранит.
-        self._collect_events(res, subj, pred, order, neg)
+        self._collect_events(res, subj, pred, order, negs)
         # ОЖИДАНИЕ из конструкции «X попросил Y <инфинитив>» — тоже динамика.
-        self._collect_expectations(res, content, subj, pred, order, neg)
+        self._collect_expectations(res, content, subj, pred, order, negs)
+        # ГДЕ КОНЧИЛОСЬ «НЕ» — громко, если правка что-то изменила: без строки
+        # в отчёте нельзя отличить «отрицания не было» от «область не определили».
+        if negs.note():
+            res.notes.append(negs.note())
         # Синоним по аппозиции. Роль становится известна ДО связывания имён,
         # поэтому возвращается отдельно (см. SentenceFacts.aliases).
         res.aliases = apposition_aliases(res.tokens, res.sentence)
@@ -726,7 +945,7 @@ class SimpleExtractor:
         return ""
 
     def _collect_events(self, res: SentenceFacts, subj: Optional[dict],
-                        pred: Optional[dict], order: int, neg: bool) -> None:
+                        pred: Optional[dict], order: int, neg) -> None:
         """
         Если предложение описывает ПРОИСШЕСТВИЕ — создать EventRecord и
         пометить его факты как события.
@@ -772,14 +991,15 @@ class SimpleExtractor:
         res.events.append(EventRecord(
             subject=subject, action=action, obj=obj, tense=tense,
             order=order, evidence=res.sentence,
-            negated=neg))
+            negated=(neg.negates(pred) if isinstance(neg, NegationScope)
+                     else bool(neg))))
         # Факты этого предложения — ДИНАМИКА, а не онтология.
         for f in res.facts:
             f.predicate = "event"
 
     def _collect_expectations(self, res: SentenceFacts, content: List[dict],
                               subj: Optional[dict], pred: Optional[dict],
-                              order: int, neg: bool) -> None:
+                              order: int, neg) -> None:
         """
         Вывести ОЖИДАНИЕ из конструкции просьбы/запрета.
 
@@ -840,7 +1060,12 @@ class SimpleExtractor:
         res.expectations.append(ExpectationRecord(
             holder=subj["lemma"], target=target_tok["lemma"],
             action=inf_tok["lemma"], obj=inf_obj,
-            negated=bool(neg) or pred["lemma"] in FORBID_VERBS,
+            # Отрицание ожидания смотрим У ИНФИНИТИВА, а не у глагола просьбы:
+            # «попросила не рассказывать» отрицает действие, а в «не A, а B»
+            # частица может стоять в другой части предложения.
+            negated=(bool(neg.negates(inf_tok))
+                     if isinstance(neg, NegationScope) else bool(neg))
+            or pred["lemma"] in FORBID_VERBS,
             order=order, evidence=res.sentence,
             source=f"просьба ({pred['lemma']})"))
 
@@ -929,6 +1154,11 @@ class SimpleExtractor:
     @staticmethod
     def _is_copula_form(tok: Optional[dict]) -> bool:
         return bool(tok) and tok["lemma"] in COPULAS
+
+    @staticmethod
+    def _is_zero_copula(tok: Optional[dict]) -> bool:
+        """Сказуемое НЕ ВЫРАЖЕНО словом (наша нулевая связка)."""
+        return bool(tok) and tok.get("lemma") == ZERO_COPULA
 
     def _clause_pred_role(self, tok: dict) -> str:
         """
@@ -1276,7 +1506,7 @@ class SimpleExtractor:
     # ── прилагательные ─────────────────────────────────────
 
     def _attach_adjectives(self, res: SentenceFacts, content: List[dict],
-                           used_ids: set, neg: bool) -> None:
+                           used_ids: set, neg) -> None:
         """
         Свойство цепляется к существительному, с которым СОГЛАСОВАНО в числе и
         падеже; из согласованных — к ближайшему. В «большой дом и высокая
@@ -1317,9 +1547,14 @@ class SimpleExtractor:
     # ── конструкторы фактов ────────────────────────────────
 
     def _fact(self, head_tok: dict, tail_tok: dict, rel: str,
-              evidence: str, neg: bool, variant: Optional[dict] = None) -> Fact:
+              evidence: str, neg, variant: Optional[dict] = None) -> Fact:
         """Факт из двух токенов. variant задаётся, когда роль уже известна
-        (именная часть связки), иначе её вычисляет _case_role."""
+        (именная часть связки), иначе её вычисляет _case_role.
+
+        neg — либо NegationScope (тогда отрицание берётся ПО ОБЛАСТИ ДЕЙСТВИЯ
+        частицы, по хвостовому токену), либо старый булев флаг "в предложении
+        есть «не»". Оба законны: вызывающий может точно знать, что связь
+        отрицается целиком (объект при отрицанном действии)."""
         if variant is None:
             _rel, variant = self._case_role(tail_tok)
             if variant is None:
@@ -1328,12 +1563,14 @@ class SimpleExtractor:
                                        evidence, neg, variant)
 
     def _fact_from_variant(self, head_lemma: str, tail_tok: dict, rel: str,
-                           evidence: str, neg: bool, variant: dict) -> Fact:
+                           evidence: str, neg, variant: dict) -> Fact:
         n_ok = self._n_variants(tail_tok, ("NOUN", "ADJF", "VERB"))
         ambiguous = n_ok > 1
         return Fact(
             head=head_lemma, relation=rel, tail=variant["lemma"],
-            evidence=evidence, negated=neg,
+            evidence=evidence,
+            negated=(neg.negates_pair(head_lemma, tail_tok)
+                     if isinstance(neg, NegationScope) else bool(neg)),
             confidence=self._conf(variant, ambiguous),
             ambiguous=ambiguous,
         )
