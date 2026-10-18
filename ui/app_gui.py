@@ -40,6 +40,7 @@ Tkinter НЕ потокобезопасен. Каждый виджет здес�
 import os
 import queue
 import sys
+import threading
 import time
 import tkinter as tk
 from tkinter import scrolledtext, ttk
@@ -50,6 +51,8 @@ if ROOT not in sys.path:
 
 from core.logchannel import ask_handler, status, subscribe, unsubscribe
 from core.sdr import encoder_info
+from brain.question import answer as ask_story
+from brain import storyload
 from ui.presenter import (AnswerBridge, JobController, Journal, KIND_ANSWER,
                            answer_row, format_report,
                           summarize_report)
@@ -256,6 +259,11 @@ class Lipid2GUI:
         self.last_channel_calls = {}       # {"llm": n, "wiki": n, "user": n}
         self.last_channel_found = {}
         self.teacher_enabled = True
+        # ВЫБРАННЫЙ РАССКАЗ. Живёт отдельно от brain: рассказ отвечает сам
+        # из своего файла, ядро (SDR, Учитель) ему не нужно.
+        self.stories = []               # [brain.storyload.StorySource]
+        self.story_loaded = None        # {ключ: <Simulator>} | None
+        self.story_loaded_index = None  # индекс загруженного в self.stories
         self.ask_enabled = False
         self.experience_enabled = True
 
@@ -320,6 +328,7 @@ class Lipid2GUI:
         self.panels = {}
         self._build_learn_tab(body)
         self._build_sim_tab(body)
+        self._build_story_tab(body)
         self._build_bottom()
         self._show_tab("learn")
 
@@ -359,7 +368,8 @@ class Lipid2GUI:
         bar = tk.Frame(self.root, bg=BG)
         bar.pack(fill="x", padx=8, pady=(6, 0))
         self.tab_btns = {}
-        for key, title in (("learn", " Обучение "), ("sim", " Симуляция ")):
+        for key, title in (("learn", " Обучение "), ("sim", " Симуляция "),
+                           ("story", " Симулятор рассказа ")):
             b = tk.Button(bar, text=title, relief="flat", bd=0, bg=BG_TAB_OFF,
                           fg=FG, cursor="hand2", activebackground=BG_TAB_ON,
                           activeforeground="#ffffff",
@@ -389,8 +399,11 @@ class Lipid2GUI:
                        fg="#ffffff" if k == key else FG)
         for child in self.entry_host.winfo_children():
             child.pack_forget()
-        entry, button = ((self.sim_entry, self.sim_btn) if key == "sim"
-                         else (self.learn_entry, self.learn_btn))
+        # Поле ОБЯЗАНО соответствовать вкладке: лишний виджет в entry_host
+        # означал бы Enter, который отправляет вопрос в скрытую вкладку.
+        entry, button = {"sim": (self.sim_entry, self.sim_btn),
+                         "story": (self.story_entry, self.story_btn)}.get(
+            key, (self.learn_entry, self.learn_btn))
         button.pack(side="right", padx=(6, 0))
         entry.pack(side="left", fill="x", expand=True)
         entry.focus_set()
@@ -504,6 +517,187 @@ class Lipid2GUI:
             self.journal.add(f"⚠ переключатели каналов не дошли до мозга: "
                              f"{type(exc).__name__}: {exc}", "warn")
 
+    # ── вкладка «Симулятор рассказа» ────────────────────────
+    def _build_story_tab(self, parent):
+        """
+        Вкладка, где берут рассказ с диска и спрашивают ПРИЧИНУ.
+
+        Она появилась потому, что вкладка «Симуляция» симулятора не знала:
+        она ходила в ядро («что такое кошка»), а «почему кошка набросилась»
+        спросить было нечерез что — весь механизм brain/question.py оставался
+        за окном.
+
+        Рассказы берутся списком с диска (brain.storyload.discover), а не
+        списком имён в коде. Новый рассказ = новый файл в experiments/ или в
+        каталоге из переменной окружения LIPID2_STORY_DIRS.
+        """
+        panel = tk.Frame(parent, bg=BG)
+        self.panels["story"] = panel
+
+        bar = tk.Frame(panel, bg=BG)
+        bar.pack(fill="x", pady=(6, 2))
+        tk.Label(bar, text="рассказ:", bg=BG, fg=FG_DIM,
+                 font=("DejaVu Sans", 9)).pack(side="left")
+        self.story_combo = ttk.Combobox(bar, state="readonly", width=52)
+        self.story_combo.pack(side="left", padx=6)
+        self.story_combo.bind("<<ComboboxSelected>>",
+                              lambda e: self._story_selected())
+        tk.Button(bar, text="Обновить список", command=self._refresh_stories,
+                  bg=BG_PANEL, fg=FG, relief="flat", bd=0, cursor="hand2",
+                  font=("DejaVu Sans", 9), padx=10, pady=3).pack(side="left")
+        self.story_load_btn = tk.Button(bar, text="Загрузить рассказ",
+                                        command=self.do_load_story,
+                                        bg=BG_TAB_ON, fg="#ffffff",
+                                        relief="flat", bd=0, cursor="hand2",
+                                        font=("DejaVu Sans", 9, "bold"),
+                                        padx=12, pady=3)
+        self.story_load_btn.pack(side="left", padx=(6, 0))
+
+        self.story_state = tk.Label(panel, text="рассказ не загружен", bg=BG,
+                                    fg=KIND_COLORS["warn"], anchor="w", justify="left",
+                                    wraplength=940, font=("DejaVu Sans", 9))
+        self.story_state.pack(fill="x", padx=2, pady=(2, 4))
+
+        self.story_chat = scrolledtext.ScrolledText(
+            panel, wrap="word", bg=BG_INPUT, fg=KIND_COLORS["status"],
+            font=("DejaVu Sans Mono", 9), insertbackground=FG,
+            selectbackground=ACCENT, selectforeground="#ffffff",
+            relief="flat", padx=8, pady=6)
+        make_readonly(self.story_chat)
+        self.story_chat.pack(fill="both", expand=True)
+        self._style_text(self.story_chat)
+        self._refresh_stories()
+
+    def _refresh_stories(self):
+        """Перечитать каталоги. Пустой список обязан быть объяснён словами:
+        пустой combobox неотличим от сломанной кнопки."""
+        try:
+            self.stories = storyload.discover()
+        except Exception as exc:
+            self.stories = []
+            self._story_say("рассказы не читаются: %s: %s"
+                            % (type(exc).__name__, exc), error=True)
+            return
+        labels = [s.label() for s in self.stories]
+        try:
+            self.story_combo.config(values=labels)
+        except tk.TclError:
+            return
+        if not labels:
+            self.story_loaded = None
+            self.story_loaded_index = None
+            self._story_say("ни одного мира не найдено. Мир — это JSON с "
+                            "секциями entities и schemes в experiments/ или в "
+                            "каталоге из LIPID2_STORY_DIRS", error=True)
+            return
+        keep = (self.story_loaded_index
+                if self.story_loaded_index in range(len(labels)) else 0)
+        self.story_combo.current(keep)
+        self._story_selected()
+
+    def _story_selected(self):
+        idx = self.story_combo.current()
+        if not (0 <= idx < len(self.stories)):
+            return
+        src = self.stories[idx]
+        parts = ["схем: %d" % len(src.scheme_names),
+                 "сущностей: %d" % src.entities]
+        if src.story_path:
+            parts.append("события: " + os.path.basename(src.story_path))
+        else:
+            parts.append("файл событий не найден")
+        if self.story_loaded_index == idx:
+            parts.append("ЗАГРУЖЕН")
+        self._story_say("%s — %s" % (src.title, ", ".join(parts)),
+                        error=bool(src.warning), extra=src.warning)
+
+    def _story_say(self, text, error=False, extra=""):
+        try:
+            self.story_state.config(text=text + ("  " + extra if extra else ""),
+                                     fg=KIND_COLORS["warn"] if error else FG_DIM)
+        except tk.TclError:
+            pass
+
+    def do_load_story(self):
+        """Собрать симулятор выбранного рассказа. Ядро для этого НЕ нужно:
+        рассказу не нужны ни SDR-кодировщик, ни Учитель, поэтому кнопка
+        сознательно не зависит от готовности brain."""
+        idx = self.story_combo.current()
+        if not (0 <= idx < len(self.stories)):
+            self._story_say("выбери рассказ в списке", error=True)
+            return
+        src = self.stories[idx]
+        self._set_story_busy(True)
+        self._story_say("собираю: " + src.title)
+
+        def work():
+            try:
+                sim, err = storyload.build_simulator(src)
+            except Exception as exc:
+                self._ui_q.put(("story", (idx, None,
+                                          "%s: %s" % (type(exc).__name__, exc))))
+                return
+            self._ui_q.put(("story", (idx, sim, err)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _after_story_load(self, idx, sim, err):
+        self._set_story_busy(False)
+        if sim is None:
+            self.story_loaded = None
+            self.story_loaded_index = None
+            self._story_say("рассказ не загружен: " + str(err), error=True)
+            self.journal.add("рассказ не загружен: " + str(err), "error")
+            return
+        src = self.stories[idx]
+        if err:
+            self._story_say("загружено неполно: " + err, error=True)
+        self.story_loaded = {src.key: sim}
+        self.story_loaded_index = idx
+        kinds = "/".join(sorted({type(s).__name__
+                                 for s in self.story_loaded.values()}))
+        self._story_say("готово: %s, симулятор %s. Спрашивай внизу: «почему…» "
+                        "или «что будет, если…»" % (src.title, kinds))
+        self.journal.add("симулятор рассказа: %s (%s)" % (src.title, kinds),
+                         "status")
+
+    def _set_story_busy(self, busy):
+        try:
+            self.story_load_btn.config(
+                state="disabled" if busy else "normal",
+                text="собираю" if busy else "Загрузить рассказ")
+        except tk.TclError:
+            pass
+
+    def do_ask_story(self):
+        """Вопрос ЗАГРУЖЕННОМУ симулятору. Схему выбирает сам мир по своим
+        данным, поэтому окно не знает ни названий рассказов, ни числа
+        аргументов обработчика."""
+        text = self._entry_text(self.story_entry)
+        if not text:
+            self._story_say("пусто: задай вопрос", error=True)
+            return
+        if not self.story_loaded:
+            self._append(self.story_chat, time.time(), "error",
+                         "рассказ не загружен — нажми «Загрузить рассказ»")
+            self._story_say("сначала загрузи рассказ", error=True)
+            return
+        self.story_entry.delete("1.0", "end")
+        self._append(self.story_chat, time.time(), "user", "ты: " + text)
+        loaded = self.story_loaded
+
+        def work():
+            try:
+                res = ask_story(text, loaded)
+            except Exception as exc:
+                self._ui_q.put(("story_chat",
+                                "вопрос не обработан: %s: %s"
+                                % (type(exc).__name__, exc)))
+                return
+            self._ui_q.put(("story_chat", res.as_text()))
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _build_bottom(self):
         self.ask_bar = tk.Frame(self.root, bg="#3a2b12")
         self.ask_lbl = tk.Label(self.ask_bar, text="", bg="#3a2b12", fg="#ffd479",
@@ -553,7 +747,22 @@ class Lipid2GUI:
                                  font=("DejaVu Sans", 10, "bold"),
                                  padx=18, pady=6, state="disabled")
 
+        self.story_entry = self._make_input(
+            "вопрос о ПРИЧИНЕ в загруженном рассказе: «почему пожар погас» · "
+            "«что будет, если лить воду» · «кто остановил пожар»")
+        self.story_btn = tk.Button(self.entry_host, text="Спросить",
+                                   command=self.do_ask_story, bg=BG_TAB_ON,
+                                   fg=FG, relief="flat", bd=0, cursor="hand2",
+                                   font=("DejaVu Sans", 10, "bold"),
+                                   padx=18, pady=6)
+        # Поле рассказа НЕ ждёт готовности ядра. _make_input создаёт поле
+        # state="disabled", а включают его в _attach_brain — только learn и sim.
+        # Рассказ отвечает из своего файла без SDR и без Учителя, поэтому
+        # «поле серое, а ядро грузится 40 с» было бы враньём про зависимости.
+        self.story_entry.config(state="normal")
+
         self.statusbar = tk.Label(self.root, text="стартую", anchor="w",
+
                                  bg=BG_TAB_ON, fg="#dcdcaa",
                                  font=("DejaVu Sans", 9), padx=8, pady=4)
         self.statusbar.pack(fill="x", side="bottom")
@@ -579,8 +788,12 @@ class Lipid2GUI:
         self.hint_lbl.config(text="")
 
     def _entry_return(self, event):
+        # Развилка по АКТИВНОЙ вкладке, а не по «sim иначе learn»: с третьей
+        # вкладкой прежнее if/else угоняло Enter рассказа в обучение.
         if self.tab == "sim":
             self.do_ask()
+        elif self.tab == "story":
+            self.do_ask_story()
         else:
             self.do_learn()
         return "break"
@@ -714,13 +927,20 @@ class Lipid2GUI:
                 self._append(self.chat, time.time(), style, f"{who}: {text}")
             elif kind == "question":
                 self._show_question(payload)
+            elif kind == "story":
+                self._after_story_load(*payload)
+            elif kind == "story_chat":
+                self._append(self.story_chat, time.time(), KIND_ANSWER,
+                             payload)
 
     def _set_buttons(self, busy: bool):
         """
         Кнопки обязаны менять подпись: серая кнопка с надписью «Учить» неотличима
         от сломанной, а «…работает» объясняет, почему нажатие ничего не дало.
         """
-        for btn, label in ((self.learn_btn, "Учить"), (self.sim_btn, "Спросить")):
+        for btn, label in ((self.learn_btn, "Учить"),
+                           (self.sim_btn, "Спросить"),
+                           (self.story_btn, "Спросить")):
             try:
                 btn.config(state="disabled" if busy else "normal",
                            text="…работает" if busy else label)

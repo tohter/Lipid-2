@@ -106,6 +106,62 @@ def run_checks(_unused=None) -> list:
     app._show_tab("learn")
     pump(3)
 
+    # ── вкладка «Симулятор рассказа»: выбор, загрузка, вопрос ──
+    app._show_tab("story")
+    pump(3)
+    check(app.story_entry.winfo_manager() == "pack"
+          and app.learn_entry.winfo_manager() == "",
+          "вкладка рассказа не поменяла панель ввода")
+    check(app.story_entry is not app.sim_entry,
+          "поле рассказа то же, что у вкладки «Симуляция»")
+
+    # список берётся с диска, а не из списка имён в коде
+    n_stories = len(app.stories)
+    check(n_stories > 0,
+          "на диске не найдено ни одного рассказа "
+          "(experiments/*_world.json) — вкладка будет бесполезна")
+    if n_stories:
+        check(app.story_combo["values"],
+              "combobox рассказа пуст при найденных рассказах")
+        # Демонстрационный мир обязан собраться: это проверка, что подбор
+        # класса симулятора идёт из данных мира, а не из имени файла.
+        app.story_combo.current(0)
+        app.do_load_story()
+        for _ in range(80):
+            pump(2)
+            if app.story_loaded:
+                break
+        check(app.story_loaded is not None,
+              "рассказ не загрузился: " + app.story_state.cget("text"))
+        if app.story_loaded:
+            check(app.story_loaded_index == 0,
+                  "индекс загруженного рассказа не совпал с выбранным")
+            src = app.stories[0]
+            q = ("Почему кошка съела канарейку?"
+                 if "social" in " ".join(src.scheme_names)
+                 else "Почему пожар погас?")
+            app.story_entry.insert("1.0", q)
+            app.do_ask_story()
+            for _ in range(80):
+                pump(2)
+                if "ты: " in app.story_chat.get("1.0", "end") and \
+                        len(app.story_chat.get("1.0", "end").splitlines()) > 2:
+                    break
+            chat = app.story_chat.get("1.0", "end")
+            check(("ты: " + q) in chat, "вопрос рассказа не виден в чате")
+            check("потому что" in chat,
+                  "симулятор не ответил через окно: " + chat[-300:])
+
+    # отказ без загруженного рассказа обязан быть СЛОВАМИ, а не тишиной
+    app.story_loaded = None
+    app.story_entry.insert("1.0", "почему пожар погас?")
+    app.do_ask_story()
+    pump(3)
+    check("не загружен" in app.story_chat.get("1.0", "end"),
+          "вопрос без загруженного рассказа не получил отказа (молчание = баг)")
+    app._show_tab("learn")
+    pump(3)
+
     # ── ПКМ: состав меню и доступность пунктов ──────────────
     labels = []
     for i in range(app.clip.menu.index("end") + 1):
