@@ -151,6 +151,20 @@ MODAL_VERBS = {
     "должен", "надо", "нужно", "следует",
 }
 
+# Глаголы ПРОСЬБЫ/ЗАПРЕТА. Конструкция «X попросил Y <инфинитив>» задаёт
+# ОЖИДАНИЕ: X ждёт, что Y сделает (или не сделает) инфинитивное действие.
+# Это не догадка о смысле — это устойчивый синтаксис, проверяемый падежом:
+# субъект в ИМ.п., адресат в ВИН.п., зависимый инфинитив.
+REQUEST_VERBS = {
+    "просить", "попросить", "умолять", "велеть", "приказать",
+    "запретить", "запрещать", "требовать", "потребовать",
+    "уговаривать", "уговорить",
+}
+
+# Глаголы ЗАПРЕТА: ожидание уже СОДЕРЖИТ отрицание («запретил разговаривать»
+# = ждёт, что НЕ будет разговаривать) без частицы «не» в предложении.
+FORBID_VERBS = {"запретить", "запрещать"}
+
 @dataclass
 class Fact:
     head: str
@@ -206,6 +220,35 @@ class EventRecord:
         return f"{self.subject} {self.action}{tail}"
 
 
+@dataclass
+class ExpectationRecord:
+    """
+    ОЖИДАНИЕ, выведенное ИЗ ТЕКСТА (не заданное директивой).
+
+    Фраза «Кошка попросила канарейку не рассказывать тайну» сообщает
+    ожидание: holder=кошка, target=канарейка, action=рассказывать,
+    negated=True. Все четыре части уже есть в разборе предложения:
+    субъект просьбы, её объект, зависимый инфинитив и частица «не».
+
+    ЗАЧЕМ отдельная запись, а не директива expect в рассказе: рассказ — это
+    ТЕКСТ, и ожидание должно читаться из него, иначе модель «знает» то,
+    чего в тексте не было, а человек видит выдумку.
+    """
+    holder: str
+    target: str
+    action: str
+    obj: str = ""
+    negated: bool = True
+    order: int = 0
+    evidence: str = ""
+    source: str = ""
+
+    def describe(self) -> str:
+        neg = "не " if self.negated else ""
+        tail = f" {self.obj}" if self.obj else ""
+        return f"{self.holder} ждёт, что {self.target} {neg}{self.action}{tail}"
+
+
 # Часть речи, означающая ДЕЙСТВИЕ. ИНФИНИТИВ — отдельная часть речи (INFN),
 # и именно им записана ЛЕММА любого глагола: «гасит» -> лемма «гасить».
 # Проверять только startswith("VERB") значит потерять инфинитивы: на
@@ -225,6 +268,7 @@ class SentenceFacts:
     sentence: str
     facts: List[Fact] = field(default_factory=list)
     events: List[EventRecord] = field(default_factory=list)
+    expectations: List[ExpectationRecord] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
     tokens: List[dict] = field(default_factory=list)
 
@@ -323,7 +367,7 @@ class SimpleExtractor:
         # однозначно. Отсюда: грубое сказуемое -> подлежащее -> сказуемое с учётом
         # подлежащего. Если второй шаг не нашёл сказуемого, подлежащее не
         # согласовалось с ним — оставляем пустым, а не цепляем первый попавшийся
-        # ИМ.п.: ложная связьSubject стоит дороже отсутствующей.
+        # ИМ.п.: ложная связь стоит дороже отсутствующей.
         pred = self._predicate(content, None)
         subj = self._subject(content, pred)
         pred = self._predicate(content, subj) or pred
@@ -564,6 +608,8 @@ class SimpleExtractor:
         # Делается ПОСЛЕ сборки фактов и ДО dedup — метка predicate входит в
         # вывод, но dedup ключуется по (head,relation,tail) и её сохранит.
         self._collect_events(res, subj, pred, order, neg)
+        # ОЖИДАНИЕ из конструкции «X попросил Y <инфинитив>» — тоже динамика.
+        self._collect_expectations(res, content, subj, pred, order, neg)
 
         # Одно и то же отношение может родиться из разных ветвей (например,
         # «кошка пушистая» — и из сказуемого, и из привязки прилагательного).
@@ -642,6 +688,73 @@ class SimpleExtractor:
         # Факты этого предложения — ДИНАМИКА, а не онтология.
         for f in res.facts:
             f.predicate = "event"
+
+    def _collect_expectations(self, res: SentenceFacts, content: List[dict],
+                              subj: Optional[dict], pred: Optional[dict],
+                              order: int, neg: bool) -> None:
+        """
+        Вывести ОЖИДАНИЕ из конструкции просьбы/запрета.
+
+        «Кошка попросила канарейку не рассказывать тайну»:
+          holder = подлежащее просьбы (кошка),
+          target = винительный объект просьбы (канарейка),
+          action = зависимый инфинитив (рассказывать),
+          negated = частица «не» в предложении.
+
+        ЗАМЕР: все четыре части уже даёт разбор (см. EXPECT_TASK.md). Не
+        хватало только склейки. Без зависимого инфинитива ожидание НЕ
+        выводится: «кошка попросила канарейку» без действия — неизвестно,
+        чего именно ждёт кошка, и выдумывать это запрещено.
+        """
+        if pred is None or pred["lemma"] not in REQUEST_VERBS:
+            return
+        if subj is None:
+            res.notes.append("просьба без подлежащего: ожидание не выведено")
+            return
+        # Адресат — объект просьбы. Падеж ЗАВИСИТ от глагола: «попросил
+        # канарейку» — ВИН.п., «велел сыну» — ДАТ.п. Требовать только ВИН.п.
+        # значит терять просьбы к людям («велел сыну вернуться»), а это самый
+        # частый вид просьбы. ЗАМЕР: на «Мать велела сыну вернуться домой»
+        # фильтр только-ВИН давал «просьба без адресата».
+        target_tok = None
+        for t in content:
+            if t is subj or t is pred:
+                continue
+            if t["role"] == "action":
+                continue
+            if (self._has_case(t, ("NOUN",), "acc")
+                    or self._has_case(t, ("NOUN",), "dat")):
+                target_tok = t
+                break
+        if target_tok is None:
+            res.notes.append("просьба без адресата (ВИН./ДАТ.п.): ожидание не выведено")
+            return
+        # Действие ожидания — зависимый ИНФИНИТИВ (не подлежащее, не сказуемое).
+        inf_tok = None
+        for t in content:
+            if t is pred or t is subj or t is target_tok:
+                continue
+            if t["role"] == "action" and self._pick(t, ("INFN",)):
+                inf_tok = t
+                break
+        if inf_tok is None:
+            res.notes.append("просьба без инфинитива: ожидание не выведено")
+            return
+        # Объект ИНФИНИТИВА — то, чего ожидание касается («тайну»). Нужен,
+        # чтобы нарушение находилось БЕЗ сопоставления видов глагола: в
+        # «не рассказывать ТАЙНУ» и «рассказала ТАЙНУ» объект — одна лемма.
+        # Факт уже собран: рассказывать --OBJECT_OF--> тайна.
+        inf_obj = ""
+        for f in res.facts:
+            if f.head == inf_tok["lemma"] and f.relation != "CAN_DO":
+                inf_obj = f.tail
+                break
+        res.expectations.append(ExpectationRecord(
+            holder=subj["lemma"], target=target_tok["lemma"],
+            action=inf_tok["lemma"], obj=inf_obj,
+            negated=bool(neg) or pred["lemma"] in FORBID_VERBS,
+            order=order, evidence=res.sentence,
+            source=f"просьба ({pred['lemma']})"))
 
     @staticmethod
     def _dedup(facts: List[Fact]) -> List[Fact]:

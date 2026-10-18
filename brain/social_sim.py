@@ -39,8 +39,25 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from core.schemes import SchemeInterpreter
+from core.extract import SimpleExtractor
 from brain.emotions import EmotionSystem
 from brain.simulator import Event, SimulationResult, Simulator, StaticKnowledge
+
+
+_EXTRACTOR: SimpleExtractor = None
+
+
+def _extractor() -> SimpleExtractor:
+    """
+    Общий экстрактор для разбора фраз рассказа.
+
+    Один на процесс: он держит кэш морфологии, а новый экземпляр на каждое
+    предложение означал бы перечитывать словарь pymorphy3.
+    """
+    global _EXTRACTOR
+    if _EXTRACTOR is None:
+        _EXTRACTOR = SimpleExtractor()
+    return _EXTRACTOR
 
 # Порог «плохой» шкалы, при котором агент ПЕРЕХОДИТ К ДЕЙСТВИЮ.
 # DRAFT (догадка): согласуется с уровнем «агрессия» в emotions.py.
@@ -49,6 +66,42 @@ AGGRESSION_THRESHOLD = 230
 
 # ─────────────────────────────────────────────────────────────
 # ОЖИДАНИЕ — то, чего в статике нет. Оно рождается из события-просьбы.
+
+# Минимальная длина ОБЩЕЙ ОСНОВЫ глаголов, по которой два разных слова
+# считаются одним действием (задача 34).
+# ЗАМЕР (общий префикс лемм видовых пар):
+#   рассказывать/рассказать -> «рассказ» (7)   принять
+#   повторять/повторить     -> «повтор» (6)    принять
+#   открывать/открыть       -> «откры» (5)     принять
+#   нападать/напасть        -> «напа» (4)      отвергнуть
+#   убивать/убить           -> «уби» (3)       отвергнуть
+#   есть/съесть             -> «"  (0)         отвергнуть
+# Разделение проходит МЕЖДУ 4 и 5, поэтому 5 — нижняя граница принятых,
+# а не круглое число «по теории». Отвергнутая пара НЕ становится ложным
+# нарушением: она уходит в ГРОМКОЕ предупреждение (см. act()).
+VERB_STEM_MIN = 5
+
+
+def verbs_related(a: str, b: str) -> bool:
+    """
+    Одно ли это действие, записанное разными видами/приставками?
+
+    Только общий префикс лемм. Он НИКОГДА не выдумывает связь там, где основы
+    не похожи (есть/съесть — отвергнуты), то есть ошибка возможна
+    только в безопасную сторону: недополученное нарушение видно из-за
+    предупреждения, а ложное — нет.
+    """
+    a, b = (a or "").strip(), (b or "").strip()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    common = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        common += 1
+    return common >= VERB_STEM_MIN
 
 @dataclass
 class Expectation:
@@ -63,17 +116,35 @@ class Expectation:
     holder: str
     target: str
     action: str
+    obj: str = ""
     negated: bool = True
     born_tick: int = 0
     source: str = ""
 
     def violated_by(self, ev: Event) -> bool:
-        """Нарушает ли событие ev это ожидание?"""
-        if ev.subject != self.target or ev.action != self.action:
+        """
+        Нарушает ли событие ev это ожидание?
+
+        Совпадение решается ДВУМЯ путями, и второй существует из-за замера
+        задачи 34:
+          1) лемма действия совпала;
+          2) лемма действия РАЗОШЛАСЬ по виду («не рассказывать» несоверш.
+             вида, «рассказала» -> лемма «рассказать» соверш.), но СОВПАЛ
+             ОБЪЕКТ: «не рассказывать ТАЙНУ» / «рассказала ТАЙНУ».
+        Объект — тот же корень в обеих формах, он вида не боится, и требует
+        знания из текста, а не эвристики над глаголом.
+
+        Ждали, что НЕ сделает (negated=True), а он сделал -> нарушение.
+        Ждали, что сделает, а он не сделал -> это НЕ событие, а его отсутствие,
+        здесь не проверяется (нужен отдельный механизм «не сделал»).
+        """
+        if ev.subject != self.target:
             return False
-        # Ждали, что НЕ сделает (negated=True), а он сделал -> нарушение.
-        # Ждали, что сделает, а он не сделал -> это НЕ событие, а его отсутствие,
-        # здесь не проверяется (нужен отдельный механизм «не сделал»).
+        act_ok = (ev.action == self.action) or (
+            bool(self.obj) and bool(ev.obj) and ev.obj == self.obj
+            and verbs_related(ev.action, self.action))
+        if not act_ok:
+            return False
         return self.negated
 
 
@@ -107,10 +178,18 @@ class SocialSimulator(Simulator):
         # судить о состоянии НА МОМЕНТ действия, а не на момент вопроса: к
         # моменту вопроса эмоция уже могла затухнуть, и это было бы враньём.
         self.snapshots: List[Dict[str, Dict[str, int]]] = []
-        # Сценарий рассказа — ИЗ ДАННЫХ (файл рассказа, секция "script").
-        # Порядок директив и есть порядок во времени; в Python остаётся только
-        # ИНТЕРПРЕТАТОР. Ручная сборка рассказа в build_*_simulator была
-        # разрывом A (см. experiments/EVENTS_TASK.md).
+        # ОЖИДАНИЯ, ВЫВЕДЕННЫЕ ИЗ ТЕКСТА: если Learner записал их в мир
+        # (секция "expectations"), симулятор подхватывает их САМ — без
+        # директивы expect. Это и есть штрих A: ожидание живёт в тексте, а не
+        # в сценарии. Директивы expect из script остаются как явный override.
+        #
+        # ПОРЯДОК ВАЖЕН: ожидания грузятся ДО сценария. ЗАМЕР: при загрузке
+        # ПОСЛЕ сценария born_tick оказывался равен тику в его конце (10), а
+        # событие-нарушение имеет order 0 — проверка born_tick <= ev.order
+        # давала ложь, и нарушение молча НЕ засчитывалось. Просьба в рассказе
+        # ЗВУЧИТ раньше, чем её нарушение, поэтому и рождаться ожидание должно
+        # раньше всех событий сценария.
+        self.load_expectations(world)
         self.load_script(script or [], closeness=closeness)
 
     # ── ИНТЕРПРЕТАТОР СЦЕНАРИЯ ─────────────────────────────
@@ -131,6 +210,9 @@ class SocialSimulator(Simulator):
         if closeness is None:
             closeness = CLOSENESS_LIVING_TOGETHER
         done = 0
+        # Уже заведенные ожидания — чтобы одно и то же не выросло дважды из
+        # мира (секция expectations) и из фразы события.
+        _seen = {(e.holder, e.target, e.action) for e in self.expectations}
         for d in raw or []:
             if not isinstance(d, dict):
                 continue
@@ -150,11 +232,29 @@ class SocialSimulator(Simulator):
                          obj=str(d.get("obj", "")),
                          text=str(d.get("text", "")),
                          closeness=float(d.get("closeness", closeness)))
+                # ОЖИДАНИЕ ИЗ ТЕКСТА (штрих A): если событие — просьба, то
+                # её фраза сама сообщает ожидание. Директива expect больше не
+                # нужна: на «Кошка попросила канарейку не рассказывать тайну»
+                # экстрактор выводит holder/target/action/obj/negated сам.
+                # Разбирается ИМЕННО исходная фраза, а не выученные роли: так
+                # ожидание остаётся следом текста, а не догадкой по схеме.
+                phrase = str(d.get("text", "")).strip()
+                if phrase:
+                    sf = _extractor().extract(phrase,
+                                              order=int(d.get("order", 0)))
+                    for ex in sf.expectations:
+                        if (ex.holder, ex.target, ex.action) in _seen:
+                            continue
+                        _seen.add((ex.holder, ex.target, ex.action))
+                        self.expect(ex.holder, ex.target, ex.action,
+                                    negated=ex.negated, obj=ex.obj,
+                                    source=ex.source)
             elif kind == "expect":
                 self.expect(str(d.get("holder", "")), str(d.get("target", "")),
                             str(d.get("action", "")),
                             negated=bool(d.get("negated", True)),
-                            source=str(d.get("source", "")))
+                            source=str(d.get("source", "")),
+                            obj=str(d.get("obj", "")))
             else:
                 print(f"[social_sim] ⚠️ неизвестная директива сценария: «{kind}»",
                       file=sys.stderr, flush=True)
@@ -181,11 +281,43 @@ class SocialSimulator(Simulator):
             self.tick()
 
     # ── ожидания ───────────────────────────────────────────
+    def load_expectations(self, records) -> int:
+        """
+        Загрузить ОЖИДАНИЯ (выведенные из текста Learner'ом или из секции "expectations" мира).
+
+        Принимает список dict либо мир (dict с секцией "expectations").
+        Дедуплицирует по (holder, target, action).
+        Возвращает число добавленных ожиданий.
+        """
+        if isinstance(records, dict):
+            records = records.get("expectations") or []
+        added = 0
+        existing = {(e.holder, e.target, e.action) for e in self.expectations}
+        for r in records or []:
+            if not isinstance(r, dict):
+                continue
+            holder = str(r.get("holder", "")).lower().strip()
+            target = str(r.get("target", "")).lower().strip()
+            action = str(r.get("action", "")).lower().strip()
+            if not holder or not target or not action:
+                continue
+            if (holder, target, action) in existing:
+                continue
+            existing.add((holder, target, action))
+            self.expect(holder, target, action,
+                        negated=bool(r.get("negated", True)),
+                        source=str(r.get("source", "выведено из текста")),
+                        obj=str(r.get("obj", "")))
+            added += 1
+        return added
+
     def expect(self, holder: str, target: str, action: str,
-               negated: bool = True, source: str = "") -> Expectation:
+               negated: bool = True, source: str = "",
+               obj: str = "") -> Expectation:
         exp = Expectation(holder=holder.lower().strip(),
                           target=target.lower().strip(),
                           action=action.lower().strip(),
+                          obj=obj.lower().strip(),
                           negated=negated, born_tick=self.tick_index,
                           source=source)
         self.expectations.append(exp)
@@ -209,6 +341,26 @@ class SocialSimulator(Simulator):
         """
         ev = self.add_event(subject, action, obj, text)
         hit: List[Violation] = []
+        # ГРОМКИЙ ЗАМЕР ВИДОВОГО РАЗРЫВА (задача 34).
+        # Ожидание из текста берётся из ИНФИНИТИВА просьбы («не рассказывать»,
+        # несоверш. вид), а событие — из сказуемого прошедшего времени
+        # («рассказала» -> лемма «рассказать», соверш. вид). pymorphy3 даёт
+        # граммему вида (perf/impf), но НЕ даёт пару вида, а эвристика по общей
+        # основе ЗАМЕРЕНО ломается: у «повторять» основа «втор», у «нападать»
+        # основа «пад». Сопоставлять виды НЕЧЕМ.
+        # Поэтому действие ожидания несёт ОБЪЕКТ («тайну»): «не рассказывать
+        # ТАЙНУ» и «рассказала ТАЙНУ» — одна лемма, вида не боится (см.
+        # Expectation.obj). Если же совпало все, кроме глагола, а объекта нет —
+        # молчать нельзя: это тихая деградация. Кричим и говорим, что чинить.
+        for exp in self.expectations:
+            if (exp.negated and exp.target == subject
+                    and not exp.violated_by(ev)
+                    and not any(v.expectation is exp for v in self.violations)):
+                print(f"[social_sim] ⚠️ ожидание «{exp.holder}: {exp.target} не "
+                      f"{exp.action}» НЕ сопоставлено с событием «{subject} "
+                      f"{action}{(' ' + obj) if obj else ''}»: глаголы разных "
+                      f"видов, общего объекта нет. Нарушение НЕ засчитано.",
+                      file=sys.stderr, flush=True)
         for exp in self.expectations:
             if exp.violated_by(ev) and exp.born_tick <= ev.order:
                 emo = self.agent(exp.holder)

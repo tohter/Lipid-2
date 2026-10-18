@@ -145,6 +145,7 @@ class LearningReport:
     observations_new: int = 0
     observations_seen: int = 0
     events_new: int = 0
+    expectations_new: int = 0
     skipped: int = 0
     low_confidence: int = 0
     new_concepts: List[str] = field(default_factory=list)
@@ -193,6 +194,7 @@ class LearningReport:
             f"  фактов извлечено: {self.facts}   новых наблюдений: {self.observations_new}"
             f"   подтверждено существующих: {self.observations_seen}"
             f"   событий рассказа: {self.events_new}",
+            f"   ожиданий из текста: {self.expectations_new}",
             f"  сущностей создано: {self.entities_created}   дополнено: {self.entities_updated}",
             f"  обращений к Учителю: {self.teacher_calls}"
             f"   успешно: {self.teacher_success}   пропущено фактов: {self.skipped}"
@@ -544,6 +546,28 @@ class Learner:
                 })
                 rep.events_new += 1
 
+        # ОЖИДАНИЯ, выведенные ИЗ ТЕКСТА (конструкция просьбы/запрета).
+        # Живут рядом с событиями, в динамике мира: ожидание — не знание о
+        # мире, а след рассказа. Дедуп по (holder,target,action,order).
+        exps = world.setdefault("expectations", [])
+        seen_ex = {(e.get("holder"), e.get("target"), e.get("action"),
+                    e.get("order")) for e in exps if isinstance(e, dict)}
+        for sf in sentences:
+            for ex in sf.expectations:
+                key = (ex.holder, ex.target, ex.action, ex.order)
+                if key in seen_ex:
+                    continue
+                seen_ex.add(key)
+                exps.append({
+                    "holder": ex.holder, "target": ex.target,
+                    "action": ex.action, "obj": ex.obj,
+                    "negated": bool(ex.negated),
+                    "order": ex.order,
+                    "evidence": (ex.evidence or sf.sentence)[:220],
+                    "source": ex.source or source,
+                })
+                rep.expectations_new += 1
+
     def replay_observations(self, world: dict) -> int:
         """
         Наблюдения -> граф. Вызывается при старте мозга: граф собирается из
@@ -619,6 +643,20 @@ class Learner:
             if key not in seen_ev:
                 seen_ev.add(key)
                 fev.append(e)
+        # ОЖИДАНИЯ — тоже аддитивно, по (holder,target,action,order).
+        fex = fresh.setdefault("expectations", [])
+        if not isinstance(fex, list):
+            fex = fresh["expectations"] = []
+        seen_ex = {(e.get("holder"), e.get("target"), e.get("action"),
+                    e.get("order")) for e in fex if isinstance(e, dict)}
+        for ex in (world.get("expectations") or []):
+            if not isinstance(ex, dict):
+                continue
+            key = (ex.get("holder"), ex.get("target"), ex.get("action"),
+                   ex.get("order"))
+            if key not in seen_ex:
+                seen_ex.add(key)
+                fex.append(ex)
         fu = fresh.setdefault("unknown_words", {})
         for key, u in (world.get("unknown_words") or {}).items():
             cur = fu.get(key)
