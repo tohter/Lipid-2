@@ -40,10 +40,7 @@ UNKNOWN = "unknown"
 WHY_MARKERS = ("почему", "отчего", "зачем", "из-за", "по какой причине")
 WHAT_MARKERS = ("что такое", "кто такой", "кто такая", "что значит")
 
-# Глаголы, означающие «процесс прекратился»: вопрос «почему прекратился X»
-# адресуется fire-симулятору (он ищет событие-прекращение).
-STOP_QUESTION_VERBS = ("прекратиться", "остановиться", "закончиться",
-                       "потухнуть", "погаснуть", "прекратить", "остановить")
+
 
 
 @dataclass
@@ -144,37 +141,94 @@ def parse_question(text: str) -> Question:
     return q
 
 
-def answer(text: str, sims: Dict[str, Any]) -> Any:
+def candidate_schemes(sims, roles):
     """
-    Ответить на вопрос, направив его НУЖНОМУ симулятору.
+    Все схемы всех симуляторов, подходящие под роли вопроса.
 
-    sims — словарь доступных симуляторов:
-        {"fire": <Simulator>, "soc": <SocialSimulator>}
-    Диспетчер выбирает по РАЗОБРАННЫМ ролям:
-        * действие = глагол прекращения -> fire.why_stopped(subject);
-        * иначе (WHY с агентом)         -> soc.why_acted(subject, action).
-    Возвращает SimulationResult. Если разбор не удался или симулятора нет —
-    результат с missing (громкий отказ).
+    Отсев делает САМА СХЕМА (Scheme.matches по requires/forbids/stop_actions),
+    поэтому в этом модуле нет ни одного имени мира и ни одного списка глаголов:
+    какие вопросы объясняет данная схема — решение ДАННЫХ этого мира.
+
+    Порядок — по priority, затем по ключу мира и имени схемы, чтобы перебор не
+    зависел от порядка, в котором вызывающий положил симуляторы в словарь.
+    """
+    out = []
+    for key, sim in (sims or {}).items():
+        for name, scheme in (getattr(sim, "schemes", None) or {}).items():
+            if scheme.matches(roles):
+                out.append((scheme.priority, str(key), name, sim, scheme))
+    out.sort(key=lambda c: (c[0], c[1], c[2]))
+    return out
+
+
+def answer(text, sims):
+    """
+    Ответить на вопрос, выбрав СХЕМУ ИЗ ДАННЫХ, а не по имени симулятора.
+
+    sims — словарь доступных симуляторов {ключ: <Simulator>}. Ключ нужен только
+    вызывающему (GUI), маршрутизация его не читает: класть можно сколько угодно
+    миров, хоть один.
+
+    Порядок: разобрали вопрос -> candidate_schemes отобрала подходящие схемы ->
+    каждая ПРОБУЕТСЯ, первая успешная и есть ответ. Схема, прошедшая отсев но не
+    прошедшая путь, НЕ замолкается: причина провала каждой из них попадает в
+    missing, иначе «не ответил» неотличимо от «не смог».
     """
     from brain.simulator import SimulationResult
+
     q = parse_question(text)
     res = SimulationResult(q.text or text)
     if not q.ok:
         res.missing.extend(q.missing)
         return res
 
-    if q.action in STOP_QUESTION_VERBS:
-        sim = sims.get("fire")
-        if sim is None:
-            res.missing.append("нет fire-симулятора: вопрос о прекращении процесса")
-            return res
-        return sim.why_stopped(q.subject)
+    roles = {"subject": q.subject, "action": q.action, "obj": q.obj,
+             "qtype": q.qtype}
+    cands = candidate_schemes(sims, roles)
+    if not cands:
+        have = sorted(k for k, v in roles.items() if v)
+        known = []
+        for key, sim in (sims or {}).items():
+            for name, scheme in (getattr(sim, "schemes", None) or {}).items():
+                need = list(scheme.requires) + list(scheme.stop_actions)
+                known.append(f"«{name}» (мир «{key}») ждёт {need}")
+        res.missing.append(
+            f"ни одна схема не подошла; роли вопроса: {have}")
+        res.missing.append("доступные схемы: " + ("; ".join(known)
+                                                 if known else "НИ ОДНОЙ"))
+        return res
 
-    sim = sims.get("soc")
-    if sim is None:
-        res.missing.append("нет soc-симулятора: вопрос о поступке агента")
-        return res
-    if not q.action:
-        res.missing.append("не названо действие агента")
-        return res
-    return sim.why_acted(q.subject, q.action)
+    for _prio, key, name, sim, scheme in cands:
+        if not scheme.handler:
+            res.missing.append(f"схема «{name}» (мир «{key}») не объявила "
+                               "handler — непонятно, каким методом её звать")
+            continue
+        handler = getattr(sim, scheme.handler, None)
+        if handler is None:
+            res.missing.append(f"у симулятора мира «{key}» нет метода "
+                               f"«{scheme.handler}», который требует схема "
+                               f"«{name}»")
+            continue
+        if not scheme.args:
+            res.missing.append(f"схема «{name}» не объявила args — непонятно, "
+                               "с чем её вызывать")
+            continue
+        vals, missing_role = [], None
+        for role in scheme.args:
+            val = roles.get(role)
+            if not val:
+                missing_role = role
+                break
+            vals.append(val)
+        if missing_role:
+            res.missing.append(f"схеме «{name}» не хватает роли «{missing_role}»")
+            continue
+        r = handler(*vals)
+        if getattr(r, "ok", False):
+            return r
+        reasons = getattr(r, "missing", None) or ["не ответила без причины"]
+        res.missing.extend(f"схема «{name}» (мир «{key}»): {m}" for m in reasons)
+
+    if not res.missing:
+        res.missing.append("подошедшие схемы смолчали без причины — это баг")
+    return res

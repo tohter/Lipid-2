@@ -80,9 +80,30 @@ class TestDispatch(unittest.TestCase):
         self.assertTrue(res.missing)
 
     def test_missing_simulator_loud(self):
+        # Новый контракт (задача 35): имя мира больше не маршрут — схема
+        # выбирается из данных. Отказ обязан называть, какие схемы есть и
+        # чего не хватило, а не «нет soc-симулятора».
         res = answer("Почему кошка съела канарейку?", {"fire": self.sims["fire"]})
         self.assertFalse(res.ok)
-        self.assertIn("soc", " ".join(res.missing))
+        text = " ".join(res.missing)
+        self.assertIn("ни одна схема", text)
+        self.assertIn("process_stopped", text)   # что пробовать было можно
+
+    def test_dispatch_ignores_world_names(self):
+        # Ключи словаря — только для вызывающего: маршрутизация обязана
+        # работать с ЛЮБЫМИ именами миров и с одним миром в словаре.
+        one = {"любой": self.sims["soc"]}
+        res = answer("Почему кошка съела канарейку?", one)
+        self.assertTrue(res.ok, res.as_text())
+        self.assertIn("доверие", res.answer)
+
+    def test_failed_scheme_reports_reason(self):
+        # Схема прошла отсев, но путь не прошла — провал НЕ замолкается.
+        res = answer("Почему канарейка съела кошку?", self.sims)
+        self.assertFalse(res.ok)
+        text = " ".join(res.missing)
+        self.assertIn("social_betrayal", text)
+        self.assertTrue(res.missing)
 
 
 if __name__ == "__main__":

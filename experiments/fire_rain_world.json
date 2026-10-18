@@ -212,7 +212,25 @@
           "match": "$parts"
         }
       ],
-      "answer": "потому что {agents} {verbs:fin} {targets}"
+      "answer": "потому что {agents} {verbs:fin} {targets}",
+      "requires": [
+        "subject",
+        "action"
+      ],
+      "stop_actions": [
+        "остановиться",
+        "остановить",
+        "прекратиться",
+        "прекратить",
+        "закончиться",
+        "потухнуть",
+        "погаснуть"
+      ],
+      "handler": "why_stopped",
+      "args": [
+        "subject"
+      ],
+      "priority": 10
     }
   }
 }

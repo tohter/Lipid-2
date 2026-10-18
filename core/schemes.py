@@ -69,6 +69,50 @@ class Scheme:
     question: str = ""
     steps: List[Step] = field(default_factory=list)
     answer: str = ""
+    # КОМУ АДРЕСОВАНА СХЕМА. Раньше выбор делал вызывающий по ИМЕНИ мира
+    # (sims.get("fire")), то есть имена рассказов жили в Python. Теперь схема
+    # сама говорит, какие роли она требует на входе (requires) и при какой
+    # роли её точно НЕ надо пробовать (forbids). Отсев по ДАННЫМ мира.
+    requires: List[str] = field(default_factory=list)
+    forbids: List[str] = field(default_factory=list)
+    # КАК СХЕМУ ВЫЗВАТЬ. Имя метода симулятора и ПОРЯДОК его аргументов —
+    # тоже данные. Благодаря этому brain/question.py не знает ни имён миров
+    # ("fire", "soc"), ни того, что у одной схемы один аргумент, а у другой два.
+    handler: str = ""
+    args: List[str] = field(default_factory=list)
+    # Глаголы «процесс прекратился» (ЛЕММЫ). Живут В МИРЕ, а не в Python:
+    # один список питает и маршрутизацию вопроса, и поиск события- конца
+    # в рассказе (Simulator._stop_event). Пусто = схема не про прекращение.
+    stop_actions: List[str] = field(default_factory=list)
+    # Порядок перебора схем обязан быть определён однозначно: dict сохраняет
+    # порядок вставки, но порядок симуляторов задаёт вызывающий. Меньше —
+    # раньше.
+    priority: int = 100
+
+    def matches(self, roles: Dict[str, object]) -> bool:
+        """
+        Подходит ли схема под НАБОР РОЛЕЙ разобранного вопроса.
+
+        Только дешёвый отсев по наличию ролей — он НЕ решает, получится ли
+        вывод. Пройдёт ли путь по статике, решает интерпретатор: у схемы,
+        которая прошла отсев но не прошла путь, причина провала ОБЯЗАНА
+        попасть в ответ (см. brain.question.answer).
+        """
+        have = {k for k, v in (roles or {}).items() if v}
+        if not all(r in have for r in self.requires):
+            return False
+        if any(r in have for r in self.forbids):
+            return False
+        # Схема про прекращение процесса обязана видеть прекращение в действии
+        # вопроса, иначе она подхватит любой «почему X ...». Обратная проверка
+        # НЕ нужна: схема «поступок агента» не содержит этих глаголов, а
+        # отсев по stop_actions у неё пустой, поэтому вопрос о прекращении
+        # отсеивается на стороне fire-схемы, а не здесь.
+        if self.stop_actions:
+            act = str((roles or {}).get("action") or "").lower().strip()
+            if act not in self.stop_actions:
+                return False
+        return True
 
 
 def load_schemes(world: Dict) -> Dict[str, Scheme]:
@@ -100,6 +144,16 @@ def load_schemes(world: Dict) -> Dict[str, Scheme]:
             question=str(spec.get("question", "")).strip(),
             steps=steps,
             answer=str(spec.get("answer", "")).strip(),
+            requires=[str(r).strip() for r in (spec.get("requires") or [])
+                      if str(r).strip()],
+            forbids=[str(r).strip() for r in (spec.get("forbids") or [])
+                     if str(r).strip()],
+            handler=str(spec.get("handler", "")).strip(),
+            stop_actions=[str(a).strip().lower() for a in (spec.get("stop_actions") or [])
+                          if str(a).strip()],
+            args=[str(a).strip() for a in (spec.get("args") or [])
+                  if str(a).strip()],
+            priority=int(spec.get("priority", 100)),
         )
     return out
 

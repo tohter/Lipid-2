@@ -378,6 +378,17 @@
   "schemes": {
     "social_betrayal": {
       "question": "почему агент так поступил",
+      "requires": [
+        "subject",
+        "action"
+      ],
+      "stop_actions": [],
+      "handler": "why_acted",
+      "args": [
+        "subject",
+        "action"
+      ],
+      "priority": 20,
       "steps": [
         {
           "kind": "edge",
