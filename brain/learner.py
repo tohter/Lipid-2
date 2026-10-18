@@ -146,6 +146,19 @@ class LearningReport:
     observations_seen: int = 0
     events_new: int = 0
     expectations_new: int = 0
+    # Варианты имён, выведенные из текста («бегемот, или гиппопотам»).
+    # Отдельно от entities_created: здесь НОВАЯ сущность как раз НЕ
+    # появляется, а появляется второе имя у уже существующей.
+    aliases_new: int = 0
+    # Сколько раз вариант имени реально дописан в поле "aliases"
+    # существующей сущности. Отдельно от aliases_new: пара могла быть
+    # выведена, но сущности под неё в этом уроке ещё нет.
+    aliases_written: int = 0
+    # Сколько записей участников действий переписано с варианта имени на
+    # канон. Без этой ссылки «гиппопотам» остался бы в списке участников
+    # действия, которого во Вселенной нет (сущность называется «бегемот»),
+    # и это выглядит как заполненное поле, а не как битая ссылка.
+    aliases_canonicalized: int = 0
     skipped: int = 0
     low_confidence: int = 0
     new_concepts: List[str] = field(default_factory=list)
@@ -195,6 +208,7 @@ class LearningReport:
             f"   подтверждено существующих: {self.observations_seen}"
             f"   событий рассказа: {self.events_new}",
             f"   ожиданий из текста: {self.expectations_new}",
+            f"   вариантов имён из текста: {self.aliases_new}",
             f"  сущностей создано: {self.entities_created}   дополнено: {self.entities_updated}",
             f"  обращений к Учителю: {self.teacher_calls}"
             f"   успешно: {self.teacher_success}   пропущено фактов: {self.skipped}"
@@ -298,12 +312,24 @@ class Learner:
         # 0.33 стоять, но если ядро знает «стоять», выбор однозначен.
         self.extractor.set_known(set(entities.keys()))
 
-        # Слово -> каноническое имя сущности. Строится ОДИН раз на сеанс:
-        # поиск по форме — самая дорогая операция (эмбеддинги).
-        resolve = self._make_resolver(entities)
-
         sentences = self.extractor.extract_text(text)
         rep.sentences = len(sentences)
+
+        # ВАРИАНТЫ ИМЁН применяются ДО резолвера, а не после. Порядок здесь
+        # важнее содержания: вариант имени («гиппопотам») встречается в тексте
+        # раньше, чем мы успеем его осмыслить. Резолвер, построенный без
+        # алиасов, отдаёт «неизвестное слово» -> Учитель -> ВТОРАЯ сущность с
+        # отдельным набором связей. Разлепить их потом можно только руками,
+        # поэтому карта вариант->канон строится первой.
+        alias_map = self._record_aliases(sentences, entities, observations,
+                                         source, rep)
+        if rep.aliases_new:
+            _status(f"вариантов имён добавлено: {rep.aliases_new} "
+                    f"(всего известно {len(alias_map)})")
+
+        # Слово -> каноническое имя сущности. Строится ОДИН раз на сеанс:
+        # поиск по форме — самая дорогая операция (эмбеддинги).
+        resolve = self._make_resolver(entities, alias_map)
         _status(f"разобрал текст: {rep.sentences} предложений, "
                 f"{sum(len(sf.facts) for sf in sentences)} возможных фактов")
 
@@ -497,6 +523,12 @@ class Learner:
         # старую запись и файл снова враньё про одно и то же слово.
         # Сюда же попадают действия и СНЯТЫЕ диагнозы: удаление из unknown
         # ничем не отличается от удаления выученного существительного.
+        # Поле "aliases" дозаполняется ПОСЛЕ создания сущностей, а не
+        # в _record_aliases: текст сначала называет пару имён, и только
+        # в этом же уроке резолвер заводит сущность.
+        self._apply_aliases_to_entities(entities, alias_map, rep)
+        self._canonicalize_participants(entities, alias_map, rep)
+
         self._commit(world, resolved=list(rep.learned_concepts)
                      + list(rep.learned_actions) + list(rep.retracted_unknown))
         rep.facts = sum(len(sf.facts) for sf in sentences)
@@ -677,16 +709,178 @@ class Learner:
 
     # ── ВНУТРЕННЕЕ ─────────────────────────────────────────
 
-    def _make_resolver(self, entities: dict) -> Callable[[str], Optional[str]]:
+    # ── ВАРИАНТЫ ИМЁН (синонимия) ──────────────────────────
+
+    def _world_aliases(self, entities: dict, observations: dict) -> Dict[str, str]:
+        """
+        Известная карта: вариант имени -> канон.
+
+        Два источника, оба — то, что УЖЕ лежит во Вселенной:
+          1) поле "aliases" сущности (одно имя, два написания);
+          2) наблюдения SYNONYM_OF (вариант -> канон), пережившие перезапись.
+        """
+        out: Dict[str, str] = {}
+        for name, ent in (entities or {}).items():
+            canon = str(name).lower().strip()
+            if not canon:
+                continue
+            for al in ((ent or {}).get("aliases") or []):
+                al = str(al).lower().strip()
+                if al and al != canon:
+                    out[al] = canon
+        for obs in (observations or {}).values():
+            if not isinstance(obs, dict) or obs.get("negated"):
+                continue
+            if str(obs.get("relation", "")).upper() != "SYNONYM_OF":
+                continue
+            variant = str(obs.get("head", "")).lower().strip()
+            canon = str(obs.get("tail", "")).lower().strip()
+            if variant and canon and variant != canon:
+                out[variant] = canon
+        return out
+
+    def _record_aliases(self, sentences, entities: dict, observations: dict,
+                        source: str, rep: LearningReport) -> Dict[str, str]:
+        """
+        Записать варианты имён, ВЫВЕДЕННЫЕ ИЗ ТЕКСТА («бегемот, или
+        гиппопотам»), и вернуть карту вариант -> канон для резолвера.
+
+        ЗАЧЕМ ДО РЕЗОЛВЕРА: имена в тексте встречаются в произвольном
+        порядке. Если сначала строить словарь слов, а алиасы применять
+        потом, второе имя успеет попасть в «неизвестные», у Учителя
+        спросят про него, и во Вселенной встанут ДВЕ сущности со своими
+        связями у каждой. Слияние постфактум обратимо только руками,
+        поэтому пара применяется ДО первого разрешения слова.
+
+        Пишется ДВА места: поле "aliases" сущности (читается человеком) и
+        наблюдение SYNONYM_OF (унифицировано с остальными фактами и
+        переживает слияние _commit).
+        """
+        alias_map = self._world_aliases(entities, observations)
+        for sf in sentences:
+            for pair in (getattr(sf, "aliases", None) or []):
+                try:
+                    canon, variant = pair
+                except (TypeError, ValueError):
+                    continue
+                canon = str(canon).lower().strip()
+                variant = str(variant).lower().strip()
+                if not canon or not variant or canon == variant:
+                    continue
+                if alias_map.get(variant) not in (None, canon):
+                    # ОДНО ИМЯ УЖЕ привязано к ДРУГОМУ канону. Молча
+                    # переприсваивать нельзя: «гиппопотам» из одного текста
+                    # мог оказаться вариантом «бегемота», а из другого —
+                    # «носорога». Это конфликт данных, он обязан быть виден.
+                    rep.notes.append(
+                        f"имя «{variant}» уже известно как вариант "
+                        f"«{alias_map[variant]}» — вариант «{canon}» НЕ принят")
+                    continue
+                alias_map[variant] = canon
+                rep.aliases_new += 1
+                key = f"{variant}|SYNONYM_OF|{canon}"
+                obs = observations.get(key)
+                if obs is None:
+                    observations[key] = {
+                        "head": variant, "relation": "SYNONYM_OF",
+                        "tail": canon, "confidence": 0.9, "negated": False,
+                        "evidence": sf.sentence[:220], "source": source,
+                        "support": 1, "first_seen": int(time.time()),
+                    }
+                    rep.observations_new += 1
+                else:
+                    obs["support"] = int(obs.get("support", 1)) + 1
+                if canon in entities:
+                    ent = entities[canon]
+                    have = list(ent.get("aliases") or [])
+                    if variant not in have:
+                        have.append(variant)
+                        ent["aliases"] = have
+                else:
+                    rep.notes.append(
+                        f"«{variant}» записан вариантом «{canon}», но сущность "
+                        f"«{canon}» ещё не создана — связи появятся, когда она "
+                        f"будет выучена")
+        return alias_map
+
+    def _apply_aliases_to_entities(self, entities: dict,
+                                   alias_map: Dict[str, str],
+                                   rep: LearningReport) -> None:
+        """
+        Дописать варианты имён в ТЕ сущности, которые появились ПОЗЖЕ самой
+        пары (текст сначала говорит «бегемот, или гиппопотам», и лишь в этом
+        же уроке резолвер заводит сущность).
+
+        _record_aliases такую пару честно заметил и ГРОМКО сказал, что сущности
+        ещё нет, — но обещание «связи появятся, когда она будет выучена» надо
+        было выполнить, иначе заметка врёт: поле "aliases" осталось бы пустым
+        навсегда, а SYNONYM_OF жил бы в наблюдениях один. Держать два места про
+        одно и то же и не синхронизировать их — тот же баг в двух местах.
+        """
+        for variant, canon in (alias_map or {}).items():
+            ent = entities.get(canon)
+            if not isinstance(ent, dict):
+                continue          # сущность так и не выучена: замечено ранее
+            have = list(ent.get("aliases") or [])
+            if variant in have:
+                continue
+            have.append(variant)
+            ent["aliases"] = have
+            rep.aliases_written += 1
+
+    def _canonicalize_participants(self, entities: dict,
+                                   alias_map: Dict[str, str],
+                                   rep: LearningReport) -> None:
+        """
+        Заменить варианты имён на канон в списках участников действий.
+
+        ЗАЧЕМ. «Бегемот, или гиппопотам, живёт в реке. Гиппопотам ест
+        водоросли.» без этого шага даёт действие «есть» с участником
+        «гиппопотам», которого во Вселенной НЕТ: сущность называется
+        «бегемот». Такая ссылка ни к чему не ведёт — ни при вопросе, ни при
+        проходе схемы, — и молчит: она выглядит как заполненное поле.
+        Модель хозяина требует обратного: имён может быть два, ссылка одна.
+
+        Шаг идёт ПОСЛЕ создания сущностей (там же, где _apply_aliases), потому
+        что до них канон ещё не знает, каким именем его заведут.
+        """
+        if not alias_map:
+            return
+        for ent in (entities or {}).values():
+            parts = ent.get("participants") if isinstance(ent, dict) else None
+            if not isinstance(parts, dict):
+                continue
+            for role in ("agent", "object"):
+                raw = parts.get(role)
+                if not isinstance(raw, list):
+                    continue
+                fixed, changed = [], False
+                for name in raw:
+                    canon = alias_map.get(str(name).lower().strip())
+                    if canon and canon not in fixed:
+                        fixed.append(canon)
+                        changed = True
+                    elif name not in fixed:
+                        fixed.append(name)
+                if changed:
+                    parts[role] = fixed
+                    rep.aliases_canonicalized += 1
+
+    def _make_resolver(self, entities: dict,
+                       aliases: Optional[Dict[str, str]] = None
+                       ) -> Callable[[str], Optional[str]]:
         """
         Лемма/форма -> имя сущности во Вселенной. Порядок:
           1) точное совпадение леммы;
-          2) форма слова сущности (падеж/число) через переданный резолвер;
-          3) лемма, найденная по форме среди самих имён сущностей.
+          2) ВАРИАНТ ИМЕНИ из карты алиасов — дешёвый и детерминированный
+             шаг, поэтому идёт ДО дорогого поиска по форме;
+          3) форма слова сущности (падеж/число) через переданный резолвер;
+          4) лемма, найденная по форме среди самих имён сущностей.
         """
         names = list(entities.keys())
         cache: Dict[str, Optional[str]] = {}
         exact = {n.lower(): n for n in names}
+        alias = {str(k).lower(): str(v) for k, v in (aliases or {}).items()}
 
         def resolve(word: str) -> Optional[str]:
             w = (word or "").lower().strip()
@@ -695,6 +889,11 @@ class Learner:
             if w in cache:
                 return cache[w]
             out = exact.get(w)
+            if out is None:
+                # Вариант имени канонизируется, даже если канон ещё НЕ выучен:
+                # сущность будет заведена под каноническим именем, а не под
+                # тем из написаний, которое оказалось в тексте первым.
+                out = alias.get(w)
             if out is None and self.known_forms is not None:
                 try:
                     hit = self.known_forms(w)

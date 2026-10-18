@@ -417,7 +417,12 @@ def merge_entity(prev: Optional[dict], new: dict) -> dict:
     if not isinstance(new, dict):
         return prev if isinstance(prev, dict) else {}
     merged = dict(prev) if isinstance(prev, dict) else {}
-    LISTS = ("hierarchy", "properties", "actions", "delta_properties")
+    # "aliases" обязан быть здесь: без этого второе имя сущности терялось при
+    # первом же слиянии (правило «не перезаписывать непустое» оставило бы в
+    # файле то написание, которое попало раньше, а вновь выученное исчезло бы
+    # молча).
+    LISTS = ("hierarchy", "properties", "actions", "delta_properties",
+             "aliases")
     for k in LISTS:
         have = list(merged.get(k) or [])
         add = new.get(k) or []
