@@ -199,6 +199,19 @@ class TransitionTable:
         """
         return self._adjust(head, tail, -delta)
 
+    def set_strength(self, head: str, tail: str, strength: int) -> int:
+        """
+        Выставить силу ПРЯМО (единственная операция кроме +/-, которую умеет
+        таблица). Возвращает установленное значение.
+
+        ЗАЧЕМ ПУБЛИЧНЫЙ МЕТОД. Мозгу нужен ЗАСЫПАНИЕ — пересчёт силы по
+        формуле (s * 0.95), а не шаг «+1/-1». Держать это вне класса означало
+        бы лазить в _adjust (приватное) или писать в row.data (упаковщик
+        перестал бы быть деталью хранения). Потолок и пол применяются те же,
+        что у confirm/surprise: обойти их нельзя ни одним путём.
+        """
+        return self._adjust(head, tail, int(strength) - self.get(head, tail))
+
     def _adjust(self, head: str, tail: str, delta: int) -> int:
         if not head or not tail or not delta:
             return self.get(head, tail)

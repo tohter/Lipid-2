@@ -307,6 +307,11 @@ class Lipid2GUI:
         status("ядро готово — можно учить и спрашивать")
         for w in (self.learn_entry, self.sim_entry):
             w.config(state="normal")
+        # Галочка автосна, снятая ДО готовности ядра, обязана дожить до мозга:
+        # иначе окно покажет «включено», а мозг поработает по умолчанию.
+        if hasattr(self, "var_sleep_auto"):
+            self.brain.sleep_auto = bool(self.var_sleep_auto.get())
+        self._refresh_sleep_tab()
         self._set_buttons(busy=False)
         self._refresh_kb()
 
@@ -329,6 +334,7 @@ class Lipid2GUI:
         self._build_learn_tab(body)
         self._build_sim_tab(body)
         self._build_story_tab(body)
+        self._build_sleep_tab(body)
         self._build_bottom()
         self._show_tab("learn")
 
@@ -369,7 +375,8 @@ class Lipid2GUI:
         bar.pack(fill="x", padx=8, pady=(6, 0))
         self.tab_btns = {}
         for key, title in (("learn", " Обучение "), ("sim", " Симуляция "),
-                           ("story", " Симулятор рассказа ")):
+                           ("story", " Симулятор рассказа "),
+                           ("sleep", " Сон ")):
             b = tk.Button(bar, text=title, relief="flat", bd=0, bg=BG_TAB_OFF,
                           fg=FG, cursor="hand2", activebackground=BG_TAB_ON,
                           activeforeground="#ffffff",
@@ -401,6 +408,12 @@ class Lipid2GUI:
             child.pack_forget()
         # Поле ОБЯЗАНО соответствовать вкладке: лишний виджет в entry_host
         # означал бы Enter, который отправляет вопрос в скрытую вкладку.
+        if key == "sleep":
+            # У СНА НЕТ ПОЛЯ ВВОДА, и это не забытость, а смысл: спать нечем
+            # «набирать». Кнопки живут в самой вкладке, а общее нижнее поле
+            # остаётся пустым — иначе Enter отправил бы вопрос в скрытую
+            # вкладку (тот же баг, из-за которого поля уже разделены по вкладкам).
+            return
         entry, button = {"sim": (self.sim_entry, self.sim_btn),
                          "story": (self.story_entry, self.story_btn)}.get(
             key, (self.learn_entry, self.learn_btn))
@@ -698,6 +711,208 @@ class Lipid2GUI:
 
         threading.Thread(target=work, daemon=True).start()
 
+    # ═══════════════════════════════════════════════════
+    #  Вкладка «Сон» — витрина SLEEP CYCLE (очередь п.23-доработка)
+    # ═══════════════════════════════════════════════════
+    def _build_sleep_tab(self, parent):
+        """
+        Вкладка, где сон видно. Она нужна НЕ для красоты, а из-за замера:
+        brain/sleep.py существовал, работал и самопроверялся, но НИ ОДИН вызов
+        сна из кода не делался — значит «система консолидирует опыт во сне»
+        было утверждением, которое нельзя ни увидеть, ни опровергнуть. Витрина
+        делает это нажатием кнопки, а не чтением кода.
+
+        Три кнопки, и все три нужны:
+          «Посмотреть сон» — dry_run, ничего не пишет;
+          «Спать сейчас»   — один цикл, принудительно;
+          галочка           — спать автоматически по порогу тиков.
+        Кнопка «спать» НЕ привязана к готовности SDR-ядра столь же жёстко, как
+        обучение: сон читает файл памяти и таблицу переходов. Но мозг всё равно
+        нужен — транзакция, живая таблица и пересборка графа живут там.
+        """
+        panel = tk.Frame(parent, bg=BG)
+        self.panels["sleep"] = panel
+
+        bar = tk.Frame(panel, bg=BG)
+        bar.pack(fill="x", pady=(6, 2))
+        self.sleep_now_btn = tk.Button(bar, text="Спать сейчас", command=self.do_sleep,
+                                       bg=BG_TAB_ON, fg="#ffffff", relief="flat",
+                                       bd=0, cursor="hand2",
+                                       font=("DejaVu Sans", 9, "bold"),
+                                       padx=12, pady=3)
+        self.sleep_now_btn.pack(side="left")
+        tk.Button(bar, text="Посмотреть сон (не записывая)",
+                  command=self.do_sleep_dry, bg=BG_PANEL, fg=FG, relief="flat",
+                  bd=0, cursor="hand2", font=("DejaVu Sans", 9),
+                  padx=10, pady=3).pack(side="left", padx=(6, 0))
+        self.var_sleep_auto = tk.BooleanVar(value=True)
+        tk.Checkbutton(bar, text="спать автоматически по порогу тиков",
+                       variable=self.var_sleep_auto,
+                       command=self._toggle_sleep_auto, bg=BG, fg=FG,
+                       activebackground=BG, activeforeground="#ffffff",
+                       selectcolor=BG_PANEL, font=("DejaVu Sans", 9)).pack(
+            side="left", padx=(10, 0))
+        tk.Button(bar, text="Обновить сводку", command=self._refresh_sleep_tab,
+                  bg=BG_PANEL, fg=FG, relief="flat", bd=0, cursor="hand2",
+                  font=("DejaVu Sans", 9), padx=10, pady=3).pack(side="left",
+                                                                 padx=(6, 0))
+
+        self.sleep_state = tk.Label(panel, text="память о снах: —", bg=BG,
+                                    fg=FG_DIM, anchor="w", justify="left",
+                                    wraplength=940, font=("DejaVu Sans", 9))
+        self.sleep_state.pack(fill="x", padx=2, pady=(2, 4))
+
+        self.sleep_chat = scrolledtext.ScrolledText(
+            panel, wrap="word", bg=BG_INPUT, fg=KIND_COLORS["status"],
+            font=("DejaVu Sans Mono", 9), insertbackground=FG,
+            selectbackground=ACCENT, selectforeground="#ffffff",
+            relief="flat", padx=8, pady=6)
+        make_readonly(self.sleep_chat)
+        self.sleep_chat.pack(fill="both", expand=True)
+        self._style_text(self.sleep_chat)
+        self._refresh_sleep_tab()
+
+    def _sleep_brain_ready(self) -> bool:
+        """
+        Сон требует МОЗГ, но не требует SDR-кодировщика. Разница не косметика:
+        _require_brain() пишет в журнал «подожди окончания загрузки ядра», а
+        сон способен работать, пока кодировщик ещё поднимается, — он читает
+        JSON и таблицу переходов, а не векторы.
+        """
+        if self.brain is not None:
+            return True
+        self._sleep_say("ядро ещё не готово: сон правит файл памяти, а этим"
+                        "владеет мозг", error=True)
+        return False
+
+    def _sleep_say(self, text, error=False):
+        try:
+            self.sleep_state.config(text=text,
+                                    fg=KIND_COLORS["warn"] if error else FG_DIM)
+        except tk.TclError:
+            pass
+
+    def _refresh_sleep_tab(self):
+        """
+        Сводка о снах — из ФАЙЛА ПАМЯТИ, а не из памяти окна.
+
+        Иначе «спала ли система» зависело бы от того, открыто ли окно: окно
+        закрыли — счётчики обнулились, хотя знания-то остались. Числа берутся
+        из секции sleep, которую пишет brain.sleep.record_in_world.
+        """
+        if self.brain is None:
+            return
+        try:
+            world = self.brain._load_world()
+        except Exception as exc:
+            self._sleep_say(f"память не читается: {type(exc).__name__}: {exc}",
+                            error=True)
+            return
+        sec = world.get("sleep") or {}
+        from brain.sleep import SLEEP_TRIGGER_TICKS
+        ticks = getattr(self.brain, "ticks_since_sleep", 0)
+        if not sec:
+            self._sleep_say(
+                f"снов ещё не было. Накоплено {ticks} тиков цикла из "
+                f"{SLEEP_TRIGGER_TICKS} — при достижении порога мозг спит сам")
+            return
+        self._sleep_say(
+            "снов {cycles} (из них со знанием {meaningful_cycles}) · "
+            "создано {created} · поднято {raised} · понижено {lowered} · "
+            "затухло {decayed} · стёрто {compacted} · "
+            "опыта против отрицаний {skipped_negated} · замен чужого опыта "
+            "{file_conflict} · сейчас накоплено {t} тиков из {th}".format(
+                t=ticks, th=SLEEP_TRIGGER_TICKS, **{
+                    k: int(sec.get(k, 0)) for k in
+                    ("cycles", "meaningful_cycles", "created", "raised",
+                     "lowered", "decayed", "compacted", "skipped_negated",
+                     "file_conflict")}))
+
+    def _sleep_details(self, res) -> str:
+        """
+        Отчёт сном поимённо. Числа «создано 2» мало: «КАКИЕ именно связи и с
+        каким весом» — единственное, чем проверяется формула 80 + 8*сила.
+        """
+        rep = res.get("report")
+        lines = [res.get("text", "нет отчёта")]
+        if rep is None:
+            return "\n".join(lines)
+        for ch in rep.changes:
+            kind = ch.get("kind")
+            pair = f"{ch.get('head')} → {ch.get('tail')}"
+            if kind == "created":
+                lines.append(f"   создано {pair}: опыт {ch['strength']}/15, "
+                             f"вес {ch['new_weight']}")
+            elif kind in ("raised", "lowered"):
+                verb = "поднят" if kind == "raised" else "понижен"
+                lines.append(f"   {pair}: вес {ch['old_weight']} → "
+                             f"{ch['new_weight']} ({verb}, опыт "
+                             f"{ch['strength']}/15)")
+            elif kind == "decay":
+                lines.append(f"   затух {pair}: {ch['old_strength']} → "
+                             f"{ch['new_strength']}")
+            elif kind == "skipped_negated":
+                lines.append(f"   ⚠ опыт ждёт «{pair}», но текст сказал "
+                             f"«не делает» — ПРОТИВОРЕЧИЕ, оставлено на лицо")
+        for note in rep.notes:
+            lines.append("   " + note)
+        return "\n".join(lines)
+
+    def do_sleep(self):
+        if not self._sleep_brain_ready():
+            return
+        self._sleep_say("сплю…")
+        # НЕ сырой поток, а self.jobs. Сон пишет в тот же lipid_world.json, что
+        # и обучение, а JobController держит ОДИН фоновый поток именно поэтому
+        # (ui/presenter.py: «второй поток пошёл бы писать в тот же файл»).
+        # Заодно кнопка «Учить» гасится на время сна: замер этой сессии — сон
+        # вне jobs оставлял все кнопки активными, а кнопка вкладки не гасла
+        # никогда, потому что jobs.busy о нём не знал.
+        self.jobs.start(lambda: self._ui_q.put(
+            ("sleep_chat", self._sleep_details(self.brain.sleep_if_due(
+                force=True) or self.brain.sleep_now()))), label="сон")
+
+    def do_sleep_dry(self):
+        """
+        Пробный сон. Нужен отдельной кнопкой, потому что «что сделает сон» —
+        единственный вопрос, который задают ДО, а проверять его реальным сном
+        значит править память ради любопытства.
+        """
+        if not self._sleep_brain_ready():
+            return
+        # Транзакция dry_run тоже берёт _LOCK, поэтому в общий jobs, а не
+        # отдельным потоком: «не пишет» не значит «не мешает».
+        self.jobs.start(lambda: self._ui_q.put(
+            ("sleep_chat", "ПРОБНЫЙ (не записано)\n" + self._sleep_details(
+                self.brain.sleep_now(dry_run=True)))),
+            label="пробный сон")
+
+    def _toggle_sleep_auto(self):
+        if self.brain is None:
+            # Галочка снята ДО ядра — состояние обязано дожить до мозга,
+            # иначе оно молча потеряется и «auto» включится сам.
+            self._sleep_auto_pending = self.var_sleep_auto.get()
+            return
+        self.brain.sleep_auto = bool(self.var_sleep_auto.get())
+        self._sleep_say("автосон " + ("включён" if self.brain.sleep_auto
+                                      else "ВЫКЛЮЧЕН: спать будет только кнопка"))
+
+    def _set_sleep_busy(self, busy):
+        """
+        Кнопка вкладки. Её состояние выводится ИЗ jobs.busy, а не ставится
+        вручную: две ручки у одного переключателя — это всегда расхождение
+        (кнопка потухла, а работы нет, или наоборот).
+        """
+        try:
+            self.sleep_now_btn.config(
+                state="disabled" if busy else "normal",
+                text="спит" if busy else "Спать сейчас")
+        except (tk.TclError, AttributeError):
+            # AttributeError — не мягкость: _set_buttons вызывается из _pump и
+            # из _attach_brain, а вкладка сна строится в _build_ui. Окно без
+            # собранного интерфейса (тесты, headless) обязано жить.
+            pass
+
     def _build_bottom(self):
         self.ask_bar = tk.Frame(self.root, bg="#3a2b12")
         self.ask_lbl = tk.Label(self.ask_bar, text="", bg="#3a2b12", fg="#ffd479",
@@ -932,6 +1147,10 @@ class Lipid2GUI:
             elif kind == "story_chat":
                 self._append(self.story_chat, time.time(), KIND_ANSWER,
                              payload)
+            elif kind == "sleep_chat":
+                self._append(self.sleep_chat, time.time(), KIND_ANSWER, payload)
+                self._refresh_sleep_tab()
+                self._refresh_kb()
 
     def _set_buttons(self, busy: bool):
         """
@@ -946,6 +1165,10 @@ class Lipid2GUI:
                            text="…работает" if busy else label)
             except tk.TclError:
                 pass
+        # Кнопка сна гасится ТЕМ ЖЕ вызовом: сон идёт через jobs, и если бы
+        # его состояние держалось отдельно, окно показывало бы «можно учить»
+        # во время записи памяти.
+        self._set_sleep_busy(busy)
 
     def _append(self, widget, ts, kind, text):
         """

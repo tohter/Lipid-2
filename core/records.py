@@ -351,6 +351,99 @@ def unknown_status_rank(status) -> int:
     return UNKNOWN_STATUS_RANK.get(str(status), 0)
 
 
+# ── ВЕС ФАКТА (УВЕРЕННОСТЬ) ═ ФОРМУЛА ОДНА, ЖИВЁТ ЗДЕСЬ ──────────────────
+# Отношения, у которых верхняя половина шкалы (90..220), а не нижняя
+# (60..160). Смысл: «что может / каким бывает» наблюдает текст напрямую,
+# иерархию же приносят каналы знания, и шала на ней стоит дороже.
+CONFIDENT_RELATIONS = ("CAN_DO", "HAS_PROPERTY")
+# Прирост за повторное СВИДЕТЕЛЬСТВО (observations.support). Потолок 40:
+# десятикратное повторение одного и того же рассказа не должно превращать
+# догадку в неоспоримый факт — иначе один заученный текст перекрыл бы
+# онтологию, проверенную двумя источниками.
+SUPPORT_STEP = 10
+SUPPORT_CAP = 40
+# Делитель для отрицания. Отрицание — НЕ «знания нет», но и не уверенность:
+# «кошка не боится воды» свидетельствует о связи слабее, чем утверждение.
+NEGATION_DIVISOR = 3.0
+
+
+def fact_weight(confidence: float, negated: Optional[bool] = None,
+                relation: str = "", support: int = 1) -> int:
+    """
+    ЧИСЛО УВЕРЕННОСТИ в факте (0..255) — ЕДИНАЯ формула проекта.
+
+    ЗАЧЕМ ОНА ПЕРЕЕХАЛА СЮДА (замер этой сессии). Формула жила приватным
+    методом brain/learner.py::_weight. Из-за этого число «weight» не умел
+    посчитать НИКТО, кроме обучающего, и оно НИКОГДА не попадало в
+    observations — ЗАМЕРЕНО на живом мире: ключи записи head/relation/tail/
+    confidence/negated/evidence/source/support/first_seen, ключа `weight` НЕТ.
+    Следствие: brain/lipid2_brain.py::experience_conflicts() читает
+    `v.get("weight", 0)` из этих записей, всегда получает 0 и никогда не
+    выдаёт диагноз ontology_without_experience — канал, который выглядит
+    работающим (тесты на него есть), был МЁРТВ. Формула в одном месте и
+    доступная лёгким модулем — то, чего не хватало, чтобы её записали.
+
+    Формула ПЕРЕНЕСЕНА БЕЗ ИЗМЕНЕНИЯ ЧИСЕЛ (brain/learner.py::_weight):
+        CAN_DO / HAS_PROPERTY : 90 + 130*conf
+        прочие                : 60 + 100*conf
+        + min(40, 10*(support-1))
+        при negated           : /3
+       /clamp 8..255, int/
+    Любая правка числа обязана идти от ЗАМЕРА и меняться ТОЛЬКО здесь.
+
+    relation принимает ИМЯ отношения ("CAN_DO"), а не RelationType: лёгкий
+    канал (системный python3, без numpy/torch) обязан считать тот же вес, что
+    и ядро, иначе два писателя начнут расходятся числами.
+    """
+    try:
+        conf = float(confidence)
+    except (TypeError, ValueError):
+        conf = 0.0
+    conf = max(0.0, min(1.0, conf))
+    rel = str(relation or "").upper()
+    base = (90.0 + 130.0 * conf) if rel in CONFIDENT_RELATIONS \
+        else (60.0 + 100.0 * conf)
+    try:
+        sup = int(support)
+    except (TypeError, ValueError):
+        sup = 1
+    base += min(SUPPORT_CAP, SUPPORT_STEP * max(0, sup - 1))
+    if negated:
+        base /= NEGATION_DIVISOR
+    return int(max(8, min(255, base)))
+
+
+def observation_weight(obs: Optional[dict]) -> int:
+    """
+    УВЕРЕННОСТЬ в наблюдении (0..255) — В-store или ВЫВЕДЕННАЯ.
+
+    ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ, а не `obs.get("weight", 0)`. Ключ `weight` есть
+    только у записей, написанных после этой правки; живой lipid_world.json
+    старше него. Прямое .get(..., 0) на старых записях отдаёт НОЛЬ — и читатель
+    делает вывод «факт совсем неуверенный», хотя правдивый ответ другой:
+    «число не записано, но его надо вычислить». Это ровно тот класс лжи, что
+    убил канал experience_conflicts (он читал weight из observations,
+    вечно получал 0 и никогда не находил расхождение — ЗАМЕРЕНО).
+
+    Поэтому: есть записанное число — берём его; нет — выводим из
+    (confidence, negated, relation, support) ЕДИНОЙ формулой. Ноль возможен
+    только как настоящее 0, а не как «не спросили».
+    """
+    if not isinstance(obs, dict):
+        return 0
+    raw = obs.get("weight")
+    if isinstance(raw, bool):
+        raw = None                      # True/False — не вес, а поломка данных
+    if raw is not None:
+        try:
+            return max(0, min(255, int(raw)))
+        except (TypeError, ValueError):
+            pass                          # кривое число — выводим, а не нулим
+    return fact_weight(obs.get("confidence", 0.5), obs.get("negated"),
+                       str(obs.get("relation", "")),
+                       int(obs.get("support", 1) or 1))
+
+
 def merge_unknown_entry(prev: Optional[dict], new: Optional[dict]) -> dict:
     """
     СЛИЯНИЕ двух записей unknown_words ОДНОГО слова (очередь, п.15).

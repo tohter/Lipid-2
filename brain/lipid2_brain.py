@@ -13,12 +13,14 @@ from teachers.teacher_wiki import WikiTeacher      # Канал 2: интерн�
 from core.cortex import Hormones, PredictiveCortex
 from core.graph import GraphMemory
 from brain.learner import Learner, TeacherDisabled, TeacherUnavailable
-from core.transitions import merge_json, table_from_world
+from core.transitions import (TransitionTable, merge_json,
+                                  table_from_world)
 from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
 from core.records import (action_name, meaningful_categories, merge_entity,
-                          normalize_actions, same_word, strip_self_name)
+                          normalize_actions, observation_weight, same_word,
+                          strip_self_name)
 from core.worldfile import default_memory_dir, read_world, write_world, world_transaction
 from core.storage import NodeType, RelationType
 
@@ -125,6 +127,15 @@ class Lipid2Brain:
         self.cortex = PredictiveCortex(self.core,
                                       transitions=self.transitions,
                                       hormones=self.hormones)
+        # ── СЧЁТЧИК СНА (очередь п.23-доработка) ───────────────────────
+        # Считать надо ЗДЕСЬ, а не внутри sleep_now: вопрос «пора ли спать»
+        # задаёт вызывающий, а не сам сон.
+        # Считаются ТИКИ ЦИКЛА с прошлого сна, а не сила переходов — почему,
+        # разобрано в brain.sleep.sleep_due (порог по силе закрыл бы дверь:
+        # опыт доращивает предсказание, а сон этот опыт точит).
+        self.ticks_since_sleep = 0
+        self.sleep_enabled = True
+        self.sleep_auto = True
 
     def _resolve_known_form(self, word: str):
         """Форма слова -> имя известной сущности (ядро, затем Вселенная)."""
@@ -901,6 +912,16 @@ class Lipid2Brain:
         metrics = self.cortex.process_stream(text, verbose=False)
         if save and metrics.get("ticks"):
             self._save_transitions()
+        # СОН ПОСЛЕ УРОКА (очередь п.23-доработка). Право «править вес онтологии
+        # по опыту» есть только у brain/sleep.py, и вызывать его должен ВЛАДЕЛЕЦ
+        # опыта, иначе сон так и остался бы функцией, которую никто не будит
+        # (замер этой сессии: вызовов sleep из кода — 0).
+        # Цикл при этом остаётся НАБЛЮДАТЕЛЕМ: сон — отдельный шаг после
+        # записи опыта, а не действие внутри цикла (tests/
+        # test_cortex_experience_contract.py закрывает циклу доступ к графу).
+        self.ticks_since_sleep += int(metrics.get("ticks") or 0)
+        if save:
+            metrics["sleep"] = self.sleep_if_due()
         # СИЛА РАСХОДУЕТСЯ НЕ МОЛЧА (очередь п.25): расхождение онтологии и
         # опыта обязано быть видно сразу, а не обнаруживаться через неделю
         # по странным ответам. Мы НЕ правим вес здесь (у цикла нет прав
@@ -916,6 +937,29 @@ class Lipid2Brain:
             else:
                 metrics["conflicts"] = 0
         return metrics
+
+    def sleep_if_due(self, force: bool = False) -> Optional[Dict[str, Any]]:
+        """
+        Спать, ПОРА (или force). Возвращает результат sleep_now либо None.
+
+        Здесь нет «попробовать и промолчать»: сон либо отработал и назван в
+        отчёте, либо не наступил, и причина (накоплено X тиков из Y) видна
+        вызывающему. None возвращается в двух РАЗНЫХ случаях, и они
+        различимы для читающего код: сон выключен и сон ещё не созрел.
+        """
+        if not self.sleep_enabled or not (force or self.sleep_auto):
+            return None
+        from brain.sleep import sleep_due
+        if not force and not sleep_due(self.ticks_since_sleep):
+            return None
+        result = self.sleep_now()
+        # Счётчик ОБНУЛЯЕТСЯ только на успешном сне. Иначе ошибка записи
+        # («диск полон», битый файл) выглядела бы как «спали, ничего не
+        # нашли», и мозг зациклился бы на попытке, никогда не дожидаясь
+        # накопления нового опыта.
+        if result.get("saved"):
+            self.ticks_since_sleep = 0
+        return result
 
     def _save_transitions(self) -> None:
         """
@@ -1023,7 +1067,13 @@ class Lipid2Brain:
             tail = str(v.get("tail", "")).lower().strip()
             if not head or not tail:
                 continue
-            weight = int(v.get("weight", 0) or 0)
+            # ВЕС берётся через observation_weight, а НЕ obs.get("weight", 0).
+            # ЗАМЕР этой сессии: ключа weight в observations НЕ было вовсе, и
+            # условие `weight >= 150` не выполнялось НИКОГДА — диагноз
+            # ontology_without_experience был недостижим, хотя тесты на него
+            # имелись. Читатель, который вечно читает нули, выглядит ровно как
+            # работающий.
+            weight = observation_weight(v)
             strength = self.transitions.get(head, tail)
             if weight >= 150 and strength <= 3:
                 conflicts.append({"kind": "ontology_without_experience",
@@ -1052,6 +1102,89 @@ class Lipid2Brain:
                     and str(v.get("tail", "")).lower().strip() == tail:
                 return True
         return False
+
+    # ── SLEEP CYCLE (очередь memory.txt, п.23-доработка, P1) ───────────
+
+    def sleep_now(self, dry_run: bool = False,
+                  decay_rate: float = None) -> Dict[str, Any]:
+        """
+        ОТСПАТЬ один цикл: перевести накопленный опыт в вес онтологии.
+
+        ЕДИНСТВЕННОЕ место в мозге, где опыт получает право править weight
+        (memory.txt). Сами правила, числа и причины — в brain/sleep.py; здесь
+        только обвязка: права, транзакция и отчёт.
+
+        Почему мир берётся ВНУТРИ транзакции, а не из self._load_world().
+        _load_world возвращает ЗАКЭШИРОВАННЫЙ словарь, который мозг раздаёт
+        всем читателям (find_in_memory, ответы, инспекторы). Консолидация
+        мутирует мир (создаёт наблюдения, правит веса). Мутировать кэшированный
+        словарь — значит без спроса поправить всем читателям данные посреди их
+        работы; это та же гонка, ради которой существовал WorldTransaction.
+        Поэтому сон работает со СВЕЖИМ снимком из-под блокировки и пишет туда же.
+
+        dry_run=True ничего не пишет: «покажи, что сделает сон» обязано быть
+        возможным без побочных эффектов — иначе проверка контракта сама была бы
+        правкой памяти.
+        """
+        from brain.sleep import DECAY_RATE
+        from brain.sleep import consolidate as _consolidate
+        from brain.sleep import decay_transitions as _decay
+        from brain.sleep import record_in_world, reconcile_saved, table_of_section
+
+        _table_of = table_of_section
+        rate = DECAY_RATE if decay_rate is None else decay_rate
+        try:
+            # ОПЫТ БЕРЁТСЯ ОБЪЕДИНЕНИЕМ «живой таблицы процесса» и того, что
+            # лежит в файле. Причина — ЗАМЕР, а не осторожность: цикл накапливает
+            # силу в памяти процесса и сохраняет её только на _save_transitions,
+            # а сон, прочитавший ТОЛЬКО файл, лечил бы переходы, которых у
+            # процесса уже нет в таком виде (замер: файл показал силу 1 там, где
+            # живая таблица помнила 12). merge_json по максимуму — единственная
+            # операция, которая делает это объединение не зависящим от порядка.
+            live = self.transitions.to_json()
+            if dry_run:
+                # Отдельные снимки: пробный сон обязан НЕ трогать живую таблицу.
+                world = read_world(self.world_filepath)
+                table = _table_of(merge_json(live, world.get("transitions")))
+                rep = _consolidate(world, table, dry_run=True)
+                d = _decay(table, rate, dry_run=True)
+                rep.decayed, rep.compacted = d.decayed, d.compacted
+                return {"report": rep, "text": rep.as_text(), "saved": False}
+            with world_transaction(self.world_filepath) as world:
+                table = _table_of(merge_json(live, world.get("transitions")))
+                baseline = table.to_json()
+                rep = _consolidate(world, table)
+                d = _decay(table, rate)
+                rep.decayed, rep.compacted = d.decayed, d.compacted
+                # Секцию transitions правит ТА ЖЕ транзакция: выход из блока
+                # сохранит и observations, и transitions одним атомарным
+                # снимком. Иначе между двумя записями наблюдался бы мир, где
+                # знание уже выросло, а опыт ещё не затух.
+                section, lost = reconcile_saved(
+                    baseline, table.to_json(), world.get("transitions") or {})
+                world["transitions"] = section
+                rep.file_conflict = lost
+                # ИТОГ СНА — В ДАННЫЕ. Вопрос «спит ли система и что ей это
+                # дало» обязан решаться чтением файла памяти, а не догадкой по
+                # строке журнала, которая живёт до перезапуска окна. Сухой
+                # сон сюда не попадает: он ничего не сделал, а статистика
+                # логичного «не было» неотличима от статистики «не пытались».
+                record_in_world(world, rep)
+            # Живая таблица процесса обязана сравняться с файлом: иначе мозг
+            # продолжил бы предсказывать по силам, которых нет уже нигде.
+            self.transitions.from_json(section)
+            # Наблюдения поменялись — граф пересобирается из них, иначе новое
+            # знание останется в JSON и не станет связью до перезапуска.
+            if rep.created or rep.raised or rep.lowered:
+                self.learner.replay_observations(self._load_world())
+                self.core.sync_lemmas()
+                self._say("🌙 " + rep.as_text())
+            return {"report": rep, "text": rep.as_text(), "saved": True}
+        except Exception as exc:
+            self._say(f"⚠️ сон НЕ состоялся: {type(exc).__name__}: {exc}")
+            return {"report": None,
+                    "text": f"сон не состоялся: {exc}", "saved": False,
+                    "error": f"{type(exc).__name__}: {exc}"}
 
     # ── ГЛАВНАЯ ТОЧКА ВХОДА ────────────────────────────────
 

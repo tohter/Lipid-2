@@ -45,6 +45,32 @@ class FakeReport:
         return "📚 Отчёт\n  предложений: 1   слов: 6   фактов: 5"
 
 
+class FakeSleepReport:
+    """Отчёт сна той же формы, что у brain.sleep.SleepReport."""
+
+    def __init__(self, dry_run=False):
+        self.dry_run = dry_run
+        self.examined, self.created, self.raised = 5, 1, 2
+        self.lowered, self.decayed, self.compacted = 0, 5, 1
+        self.skipped_negated, self.file_conflict = 0, 0
+        self.notes = []
+        self.changes = [
+            {"kind": "created", "head": "кошка", "tail": "мышь",
+             "strength": 9, "new_weight": 152},
+            {"kind": "raised", "head": "пёс", "tail": "кошка",
+             "old_weight": 144, "new_weight": 164, "strength": 9},
+            {"kind": "decay", "head": "кошка", "tail": "мышь",
+             "old_strength": 9, "new_strength": 8},
+            {"kind": "skipped_negated", "head": "рыба",
+             "tail": "бегать", "strength": 12},
+        ]
+
+    def as_text(self):
+        return ("СОН: " + ("(пробный, не записано) " if self.dry_run else "")
+                + "просмотрено 5, создано 1, поднято 2, понижено 0, "
+                  "затухло 5, стерто 1")
+
+
 class FakeBrain:
     """Настоящий мозг поднимается ~10 с и требует torch — здесь он не нужен."""
 
@@ -65,9 +91,24 @@ class FakeBrain:
         self.calls.append(("ask", text))
         return "Флюгер — прибор для определения направления ветра."
 
+    # ── СОН ──────────────────────────────────────────────────────
+    def sleep_now(self, dry_run=False, decay_rate=None):
+        time.sleep(0.1)
+        self.calls.append(("sleep", bool(dry_run)))
+        rep = FakeSleepReport(dry_run)
+        return {"report": rep, "text": rep.as_text(), "saved": not dry_run}
+
+    def sleep_if_due(self, force=False):
+        self.calls.append(("sleep_due", bool(force)))
+        return self.sleep_now()
+
     def _load_world(self):
         return {"entities": {"флюгер": {}}, "observations": {"а": 1},
-                "unknown_words": {"б": 1}}
+                "unknown_words": {"б": 1},
+                "sleep": {"cycles": 2, "meaningful_cycles": 1, "created": 3,
+                          "raised": 1, "lowered": 0, "decayed": 9,
+                          "compacted": 2, "skipped_negated": 0,
+                          "file_conflict": 0}}
 
 
 def run_checks(_unused=None) -> list:
@@ -159,6 +200,99 @@ def run_checks(_unused=None) -> list:
     pump(3)
     check("не загружен" in app.story_chat.get("1.0", "end"),
           "вопрос без загруженного рассказа не получил отказа (молчание = баг)")
+    app._show_tab("learn")
+    pump(3)
+
+    # ── вкладка «Сон»: кнопки, dry_run, прозрачность состояния ──
+    app._show_tab("sleep")
+    pump(3)
+    check("sleep" in app.panels, "вкладки «Сон» нет вообще")
+    # Сводка обязана читаться ИЗ ФАЙЛА ПАМЯТИ, а не из памяти окна.
+    check("снов 2" in app.sleep_state.cget("text"),
+          "сводка о снах не показана: " + app.sleep_state.cget("text"))
+    check("накоплено" in app.sleep_state.cget("text"),
+          "не сказано, сколько тиков накоплено до следующего сна")
+    def wait_sleep_log(fragment, tries=40):
+        """
+        Ждать, ПОКА ПОДСТРОКА НЕ ПОЯВИТСЯ в логе вкладки.
+
+        Ждать надо ПО ЦЕЛИ, а не «пока jobs.busy станет False»: флаг снимает
+        рабочий поток СРАЗУ по окончании работы, а сообщение в Tk летит через
+        очередь, которую перекачивает after(120). Цикл «крутить update, пока
+        jobs.busy» выходил раньше, чем ответ долетал до виджета, и тест падал
+        на РАБОТАЮЩЕМ коде (замерено: тот же прогон с другим порядком
+        перекачок проходил). Гонка в тесте опаснееMissing теста: она ловит
+        случайные падения и случайные же зелёные прогоны.
+        """
+        for _ in range(tries):
+            pump(1)
+            if fragment in app.sleep_chat.get("1.0", "end"):
+                return True
+        return False
+
+    def wait_sleep_count(want, tries=40):
+        """Ждать, пока отчётов сна в логе станет не меньше want."""
+        for _ in range(tries):
+            pump(1)
+            if app.sleep_chat.get("1.0", "end").count("СОН:") >= want:
+                return True
+        return False
+
+    before_sleep_calls = [c for c in app.brain.calls if c[0] == "sleep"]
+    app.do_sleep_dry()
+    # Проверка БЕЗ выжидания: jobs.start ставит busy и label СИНХРОННО, а
+    # «поспать 100 мс и посмотреть» ловило бы и успешный случай, и гонку.
+    check(app.jobs.busy and app.jobs.label == "пробный сон",
+          "пробный сон пошёл мимо jobs — значит второй поток пишет в тот же "
+          f"lipid_world.json, что и обучение (label={app.jobs.label!r})")
+    ok_dry = wait_sleep_log("ПРОБНЫЙ")
+    chat_s = app.sleep_chat.get("1.0", "end")
+    check(ok_dry, "пробный сон не отозвался в лог вкладки")
+    check("кошка → мышь" in chat_s,
+          "сон не назван поимённо — «создано 1» ничего не проверяет: " + chat_s[-200:])
+    check("опыт 9/15, вес 152" in chat_s,
+          "в отчёте нет чисел формулы 80+8*сила — на чём тогда проверять контракт?")
+    check("ПРОТИВОРЕЧИЕ" in chat_s,
+          "опыт против отрицания проглочен молча")
+    dry_calls = [c for c in app.brain.calls if c[0] == "sleep"]
+    check(dry_calls and dry_calls[-1] == ("sleep", True),
+          f"кнопка «посмотреть» позвала НЕ dry_run: {dry_calls[-3:]}")
+    check(dry_calls != before_sleep_calls, "пробный сон не дошёл до мозга")
+
+    # Кнопки гасятся ОДНИМ вызовом. Проверяется состоянием, а не «успел ли
+    # погаснуть за 100 мс»: у одной кнопки две ручки (jobs и вкладка) — это
+    # и есть тот класс бага, который ловится не глазами, а порядком вызовов.
+    app._set_buttons(True)
+    check(app.sleep_now_btn["state"] == "disabled"
+          and app.learn_btn["state"] == "disabled",
+          "на время работы гасится не всякая кнопка: сон и обучение пишут "
+          "в один файл и не имеют права быть доступными одновременно")
+    app._set_buttons(False)
+    check(app.sleep_now_btn["state"] == "normal"
+          and app.sleep_now_btn.cget("text") == "Спать сейчас",
+          "кнопка не вернулась в рабочее состояние/подпись")
+
+    app.do_sleep()
+    check(wait_sleep_count(2),
+          "реальный сон не дошёл до вкладки: "
+          + app.sleep_chat.get("1.0", "end")[-200:])
+    chat_s = app.sleep_chat.get("1.0", "end")
+    real = [c for c in app.brain.calls if c[0] == "sleep_due"]
+    check(real and real[-1] == ("sleep_due", True),
+          "кнопка «спать сейчас» не зашла через sleep_if_due(force=True) — "
+          "значит порог и кнопка живут разными правилами")
+    check(app.sleep_now_btn["state"] == "normal",
+          "кнопка сна не вернулась в активное состояние")
+    # галочка автосна обязана ДЕЙСТВОВАТЬ, а не просто храниться
+    app.var_sleep_auto.set(False)
+    app._toggle_sleep_auto()
+    check(app.brain.sleep_auto is False,
+          "галочка автосна не доходит до мозга (окно врёт про режим)")
+    check("ВЫКЛЮЧЕН" in app.sleep_state.cget("text"),
+          "отключение автосна не названо словами")
+    app.var_sleep_auto.set(True)
+    app._toggle_sleep_auto()
+    check(app.brain.sleep_auto is True, "автосон не включается обратно")
     app._show_tab("learn")
     pump(3)
 

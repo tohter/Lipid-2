@@ -52,7 +52,8 @@ if __package__ in (None, ""):        # прямой запуск: python brain/l
 from core.extract import Fact, SimpleExtractor
 from core.logchannel import status as _status
 from core.morph import Morph
-from core.records import merge_entity, merge_unknown_entry
+from core.records import (fact_weight, merge_entity, merge_unknown_entry,
+                          observation_weight)
 from core.storage import NodeType, RelationType
 
 try:
@@ -624,9 +625,21 @@ class Learner:
                                              evidence=obs.get("evidence", "")[:200])
             tn = self.core.get_or_create_node(tail, self._node_type(obs, "tail"),
                                              source=src)
-            self._connect(hn, tn, rel, self._weight(float(obs.get("confidence", .5)),
-                                                    obs.get("negated"), rel,
-                                                    int(obs.get("support", 1))))
+            # ВЕС БЕРЁТСЯ ИЗ ЗАПИСИ (observation_weight), а НЕ пересчитывается
+            # на глаз от confidence. Разница ЗАМЕРЕНА и она не нулевая: сон
+            # понизил вес 220 -> 190 в данных, а replay пересчитывал по формуле
+            # и возвращал 210 — понижение опыта NEVER доходило до графа, оставая
+            # правкой JSON, которую никто не читает.
+            w = observation_weight(obs)
+            # Понижать граф replay имеет право ТОЛЬКО если наблюдение НЕСЁТ
+            # записанный weight (его положил авторитетный писатель: learner или
+            # сон). Записей без weight полно в живом мире — они старше поля, и
+            # обнулять из-за этого выученные связи значило бы потерять знание
+            # при перезапуске. Правило «повторный replay не делает память
+            # хуже» сохраняется: weight — производная conf/support/negated, а
+            # они при слиянии берутся по max, значит второй replay даёт то же
+            # число, а не меньшее.
+            self._connect(hn, tn, rel, w, allow_lower=("weight" in obs))
             n += 1
         return n
 
@@ -661,6 +674,19 @@ class Learner:
             cur["confidence"] = max(float(cur.get("confidence", 0)),
                                     float(obs.get("confidence", 0)))
             cur["negated"] = bool(cur.get("negated")) or bool(obs.get("negated"))
+            # weight ПЕРЕСЧИТЫВАЕТСЯ от слитых полей, а не хранится «максимумом
+            # двух весов». weight — ПРОИЗВОДНАЯ от (confidence, support,
+            # negated). При ОТРИЦАНИИ пересчёт обязывает число УПАСТЬ: если бы
+            # мы просто взяли max, высокий вес остался бы лежать рядом с
+            # negated=True — та самая тихая порча, из-за которой формулу и
+            # перенесли в данные. Без отрицания confidence и support слиты по
+            # max, значит пересчитанный вес и так не меньше каждого из двух;
+            # max() здесь — страховка для чужих записей, где confidence
+            # отсутствует (иначе вес соседа обнулился бы при слиянии).
+            merged_w = fact_weight(cur["confidence"], cur["negated"],
+                                   str(cur.get("relation", "")), cur["support"])
+            cur["weight"] = max(int(merged_w), int(cur.get("weight", 0) or 0)) \
+                if not cur.get("negated") else merged_w
         # СОБЫТИЯ — аддитивно, как наблюдения: чужой рассказ не должен теряться.
         fev = fresh.setdefault("events", [])
         if not isinstance(fev, list):
@@ -786,10 +812,14 @@ class Learner:
                         "tail": canon, "confidence": 0.9, "negated": False,
                         "evidence": sf.sentence[:220], "source": source,
                         "support": 1, "first_seen": int(time.time()),
+                        "weight": fact_weight(0.9, False, "SYNONYM_OF", 1),
                     }
                     rep.observations_new += 1
                 else:
                     obs["support"] = int(obs.get("support", 1)) + 1
+                    obs["weight"] = fact_weight(
+                        float(obs.get("confidence", 0.9)), obs.get("negated"),
+                        "SYNONYM_OF", obs["support"])
                 if canon in entities:
                     ent = entities[canon]
                     have = list(ent.get("aliases") or [])
@@ -949,6 +979,11 @@ class Learner:
                 "confidence": fact.confidence, "negated": bool(fact.negated),
                 "evidence": (fact.evidence or sf.sentence)[:220],
                 "source": source, "support": 1, "first_seen": int(time.time()),
+                # ВЕС ЗАПИСЫВАЕТСЯ В ДАННЫЕ. До этого он существовал только
+                # внутри процесса (синапсы графа) и пересчитывался при каждом
+                # replay, а experience_conflicts() читал его из observations и
+                # вечно получал 0 — см. core/records.py::fact_weight.
+                "weight": fact_weight(fact.confidence, fact.negated, rel_name, 1),
             }
             rep.observations_new += 1
         else:
@@ -959,6 +994,11 @@ class Learner:
                                     fact.confidence)
             if fact.negated:
                 obs["negated"] = True
+            # weight — ПРОИЗВОДНАЯ от (confidence, support, negated), значит
+            # пересчитывается целиком при каждом новом свидетельстве, а не
+            # «максимумом»: иначе support вырос, а число осталось старым.
+            obs["weight"] = fact_weight(obs["confidence"], obs.get("negated"),
+                                        rel_name, obs["support"])
             rep.observations_seen += 1
 
         if self.core is not None:
@@ -1070,26 +1110,41 @@ class Learner:
     # ── мелочь, но с решением ──────────────────────────────
 
     @staticmethod
-    def _connect(hn, tn, rel: RelationType, weight: int) -> None:
+    def _connect(hn, tn, rel: RelationType, weight: int,
+                 allow_lower: bool = False) -> None:
         """
-        Вес НИКОГДА не понижаем. Две фразы об одном факте не должны приводить
-        к худшей памяти, чем была: повторное свидетельство либо усиливает,
-        либо оставляет как было.
+        Вес ПО УМОЛЧАНИЮ НЕ понижаем. Две фразы об одном факте не должны
+        приводить к худшей памяти, чем была: повторное свидетельство либо
+        усиливает, либо оставляет как было.
+
+        allow_lower=True нужен ОДНОМУ месту — проекции наблюдений в граф
+        (replay_observations), где вес пришёл ИЗ ДАННЫХ, а не из разбора. На
+        графе нет своего мнения о уверенности: он её проецирует, и «только
+        повышать» превращало понижение опыта в тихий no-op (замер: сон записал
+        190 в JSON, граф после перезапуска — 210).
         """
         cur = hn.out_synapses_typed.get(tn.name) or {}
-        if int(cur.get("weight", 0)) >= weight and cur:
-            return
+        if cur:
+            have = int(cur.get("weight", 0))
+            if weight <= have and not allow_lower:
+                return
+            if weight == have:
+                return
         hn.connect_to(tn, rel_type=rel, weight=weight)
 
     @staticmethod
     def _weight(conf: float, negated: Optional[bool], rel: RelationType,
                 support: int = 1) -> int:
-        base = 90 + 130 * conf if rel in (RelationType.CAN_DO,
-                                          RelationType.HAS_PROPERTY) else 60 + 100 * conf
-        base += min(40, 10 * max(0, support - 1))
-        if negated:
-            base /= 3.0
-        return int(max(8, min(255, base)))
+        """
+        ЧИСЛО УВЕРЕННОСТИ — из core.records.fact_weight, ЕДИНОЙ формулы.
+
+        Раньше формула была телом этого метода, и потому «weight» нельзя было
+        посчитать ниоткуда, кроме обучающего: в observations она не попадала
+        (замер — в docstring fact_weight), и инспектор расхождений онтология
+        ⟷ опыт читал из записей нули. Числа НЕ менялись: перенос дословный.
+        """
+        name = getattr(rel, "name", rel)
+        return fact_weight(conf, negated, name, support)
 
     @staticmethod
     def _tail_type(fact: Fact) -> int:
