@@ -242,7 +242,8 @@ class Lipid2GUI:
         self._sub_id = subscribe(self._on_status)
 
         self.brain = None
-        self.var_teacher = tk.BooleanVar(value=True)
+        self.var_llm = tk.BooleanVar(value=True)
+        self.var_wiki = tk.BooleanVar(value=True)
         self.var_ask = tk.BooleanVar(value=False)
         self.var_experience = tk.BooleanVar(value=True)
         # РЕАЛЬНОЕ состояние каналов для рабочих потоков. Tk-переменную читать
@@ -258,7 +259,12 @@ class Lipid2GUI:
         self.last_report = None            # brain.learner.LearningReport | None
         self.last_channel_calls = {}       # {"llm": n, "wiki": n, "user": n}
         self.last_channel_found = {}
-        self.teacher_enabled = True
+        # Раздельные галочки каналов (п.19). Раньше одна «спрашивать Учителя
+        # (LLM / Вики)» гасила ДВА канала разом: снять её, чтобы не ждать
+        # Gemma 70 с, означало молча потерять и Википедию, которая отвечает за
+        # секунды и бесплатна.
+        self.llm_enabled = True
+        self.wiki_enabled = True
         # ВЫБРАННЫЙ РАССКАЗ. Живёт отдельно от brain: рассказ отвечает сам
         # из своего файла, ядро (SDR, Учитель) ему не нужно.
         self.stories = []               # [brain.storyload.StorySource]
@@ -428,8 +434,10 @@ class Lipid2GUI:
 
         top = tk.Frame(panel, bg=BG)
         top.pack(fill="x", pady=(6, 4))
-        for var, text, attr in ((self.var_teacher,
-                                 "спрашивать Учителя (LLM / Вики)", "teacher_enabled"),
+        for var, text, attr in ((self.var_llm,
+                                 "Учитель: локальная модель (LLM)", "llm_enabled"),
+                                (self.var_wiki,
+                                 "Учитель: Википедия (интернет)", "wiki_enabled"),
                                 (self.var_ask,
                                  "спрашивать меня (3-й канал)", "ask_enabled"),
                                 (self.var_experience,
@@ -517,13 +525,18 @@ class Lipid2GUI:
         ответ на незнакомое слово всё равно уходил в Gemma и висел ~70 с
         (потом «ответ без вызова инструмента»). Снятая галочка должна значить
         «канал не трогает НИЧЕГО» — иначе она не переключатель, а украшение.
+
+        П.19: галочек ЧЕТЫРЕ, LLM и Вики разделены. Мозг различал их и раньше
+        (use_llm_teacher / use_wiki_teacher), но окно давало ОДИН провод на оба:
+        «подождать Gemma 70 с» стоило молча потерянной Википедии, которая
+        отвечает за секунды.
         """
         brain = self.brain
         if brain is None:
             return
         try:
-            brain.use_llm_teacher = bool(self.teacher_enabled)
-            brain.use_wiki_teacher = bool(self.teacher_enabled)
+            brain.use_llm_teacher = bool(self.llm_enabled)
+            brain.use_wiki_teacher = bool(self.wiki_enabled)
             brain.ask_user_enabled = bool(self.ask_enabled)
             brain.learn_experience = bool(self.experience_enabled)
         except Exception as exc:
@@ -1019,6 +1032,18 @@ class Lipid2GUI:
     # ══════════════════════════════════════════════════════
     #  ДЕЙСТВИЯ
     # ══════════════════════════════════════════════════════
+    def _any_knowledge_channel(self) -> bool:
+        """
+        Искать знание вообще = ЛЮБОЙ из трёх каналов включён.
+
+        ЗАМЕРЕНО (п.19): раньше сюда шёл общий флаг Учителя, и снятие
+        «спрашивать Учителя» глушило и 3-й канал: при включённом
+        «спрашивать меня» вопрос пользователю не дошёл НИ РАЗУ
+        (вопросов 0, слов не спрошено 4). Конкретный КАНАЛ выбирает мозг по
+        своим флагам; окно решает только «идти ли в поиск знания».
+        """
+        return bool(self.llm_enabled or self.wiki_enabled or self.ask_enabled)
+
     def do_learn(self):
         text = self._entry_text(self.learn_entry)
         if not text:
@@ -1028,7 +1053,7 @@ class Lipid2GUI:
             return
         self.journal.add(f"обучаю: {text[:200]}", "user")
         self.learn_entry.delete("1.0", "end")
-        allow_teacher = self.teacher_enabled      # bool, НЕ tk-переменная
+        allow_teacher = self._any_knowledge_channel()
         # Кнопка гасится СРАЗУ, не в следующей перекачке событий (до 120 мс):
         # двойной клик за это время — реальный сценарий, а второй поток полез бы
         # писать в тот же lipid_world.json.
@@ -1047,8 +1072,9 @@ class Lipid2GUI:
             self._pending_status = summarize_report(rep)   # итог держится 8 с
             if not allow_teacher and rep.unknown:
                 self.journal.add(
-                    f"{len(rep.unknown)} незнакомых слов НЕ выяснялись: канал "
-                    f"Учителя выключен (их список — в unknown_words)", "warn")
+                    f"{len(rep.unknown)} незнакомых слов НЕ выяснялись: все "
+                    f"три канала знания выключены (список — в unknown_words)",
+                    "warn")
             if rep.learned_concepts:
                 self.journal.add("выучено: " + ", ".join(rep.learned_concepts[:12]),
                                  "ok")

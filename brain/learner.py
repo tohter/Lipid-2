@@ -187,6 +187,16 @@ class LearningReport:
     # когда слово записал пользователь.
     channel_calls: Dict[str, int] = field(default_factory=dict)
     channel_found: Dict[str, int] = field(default_factory=dict)
+    # БЮДЖЕТ обращений к Учителю на урок (п.21). Хранится СЧЁТЧИКОМ, а не
+    # только текстом причины: без него «осталось 8 неспрошенных» неотличимо от
+    # «на 8 слов не нашлось знания» — у этих двух исходов РАЗНОЕ лечение
+    # (новое предложение против «Ищи дальше в этих словах»). ЗАМЕРЕНО: при
+    # лимите 3 на уроке из 12 незнакомых слов отчёт говорил
+    # «обращений к Учителю: 3» и перечислял слова без единого числа о лимите.
+    teacher_budget: int = 0
+    # Сколько слов остались НЕспрошенными ИМЕННО из-за лимита (а не из-за
+    # выключенного канала). Отдельно от not_asked: там все причины вперемешку.
+    blocked_by_limit: int = 0
     # Метрики предиктивного цикла на том же тексте (core/cortex.py). ПУСТО,
     # если цикл выключен. Держится отдельно от узнавания: «узнал слово» и
     # «угадал следующее слово» — РАЗНЫЕ утверждения, и в одну цифру их сводить
@@ -212,7 +222,9 @@ class LearningReport:
             f"   вариантов имён из текста: {self.aliases_new}",
             f"  сущностей создано: {self.entities_created}   дополнено: {self.entities_updated}",
             f"  обращений к Учителю: {self.teacher_calls}"
-            f"   успешно: {self.teacher_success}   пропущено фактов: {self.skipped}"
+            + (f" из бюджета {self.teacher_budget}" if self.teacher_budget
+               else "")
+            + f"   успешно: {self.teacher_success}   пропущено фактов: {self.skipped}"
             f"   низкоуверенных: {self.low_confidence}",
         ]
         if self.channel_calls:
@@ -234,6 +246,19 @@ class LearningReport:
                          + ", ".join(self.new_concepts[:12]))
         if self.unknown:
             lines.append("  осталось неизвестным: " + ", ".join(self.unknown[:12]))
+        # П.21: слова, до которых не дошёл не ОЧЕРЕДЬ, а БЮДЖЕТ. Причина по
+        # каждому слову и раньше писалась в notes, но notes режутся [:6], а
+        # not_asked — [:8], и на уроке из 12 слов сводки не было ни в одной
+        # строке: «не спрашивали: 8 — джойстик, дыня, кактус, манго, полка,
+        # сейф, финик, флюгер» читается как «знания нет», а не как «вышел
+        # лимит 3, а слов было 8». Число обязано быть в самой строке итога.
+        if self.blocked_by_limit:
+            lines.append(
+                f"  ⤳ БЮДЖЕТ Учителя исчерпан: обращений "
+                f"{self.teacher_calls} из {self.teacher_budget}, без вопроса "
+                f"осталось {self.blocked_by_limit} слов(а)"
+                + (f": {', '.join(self.not_asked)}" if self.not_asked else "")
+                + " — это НЕ «не нашли»; слова вернутся в следующий урок")
         lines.append(f"  из них НЕ спрашивали: {self.not_asked_words}"
                      + (f" — {', '.join(self.not_asked[:8])}" if self.not_asked else ""))
         exp = self.experience or {}
@@ -296,6 +321,9 @@ class Learner:
         rep = LearningReport(text_len=len(text or ""),
                              quality={"morph": Morph.available,
                                       "teacher": self.teacher is not None})
+        # Бюджет пишется В ОТЧЁТ, а не остаётся внутри Learner: пользователь
+        # обязан видеть «3 из 3», а не вычитать лимит из текста причины (п.21).
+        rep.teacher_budget = self.max_teacher_calls
         if not text or not text.strip():
             rep.notes.append("пустой текст")
             return rep
@@ -484,6 +512,8 @@ class Learner:
                 # неизвестными навсегда, хотя Учитель был просто выключен.
                 rep.seen_unknown_words += 1
                 _mark_unknown(rep, lemma)
+                if outcome == "limit":
+                    rep.blocked_by_limit += 1
                 _status(f"«{lemma}» осталось неизвестным "
                         + ("(спросили — пусто)" if asked else
                            f"(НЕ спрашивали: {outcome})"))

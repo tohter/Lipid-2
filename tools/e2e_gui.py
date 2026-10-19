@@ -66,8 +66,10 @@ assert app.brain.world_filepath.startswith(MEM), \
     f"мозг игнорирует LIPID2_MEMORY_DIR: {app.brain.world_filepath}"
 
 app._show_tab("learn")
-app.var_teacher.set(False)                # см. докстрингу: LLM здесь не нужен
-app._sync_flags("teacher_enabled", app.var_teacher)
+app.var_llm.set(False)                   # см. докстрингу: LLM здесь не нужен
+app._sync_flags("llm_enabled", app.var_llm)
+app.var_wiki.set(False)                  # и сеть в этом прогоне не нужна
+app._sync_flags("wiki_enabled", app.var_wiki)
 app.learn_entry.insert("1.0", "Пчела опыляет цветок на лугу.")
 print("→ учу предложение")
 app.do_learn()
@@ -133,7 +135,34 @@ app.bridge.close()
 root.destroy()
 
 text = (answers[-1] if answers else "").lower()
-ok = ("пчел" in text or "пчёл" in text) and both == [] and not after
+# Проверка строилась на подстроке «пчел» — и ПРОХОДИЛА на отказе:
+# «О 'пчела' в памяти есть только само слово — знания нет» содержит это же
+# слово. ЗАМЕРЕНО: прогон печатал «выучил и вспомнил», хотя вопрос
+# пользователю не задавался НИ РАЗУ и в памяти осталась одна сущность
+# («опылять»), то есть не было выучено НИЧЕГО. Поэтому проверяем
+# ФАКТАМИ, а не лексикой ответа.
+refused = any(w in text for w in ("знания нет", "не знаю", "спроси ещё раз",
+                                  "источники знаний не дали"))
+ok = (bool(asked_of)                     # мозг СПРОСИЛ (иначе учился не он)
+      and not refused                    # и получил знание, а не отказ
+      and "пчел" in text
+      and not after)
+# И главное — знание обязано лежать в ФАЙЛЕ, а не только в тексте ответа.
+# Файл перечитывается: прежний `world` прочитан ДО вопроса и не может содержать
+# то, что мозг выучил во время вопроса.
+world_after = json.load(open(path, encoding="utf-8"))
+bee = (world_after.get("entities") or {}).get("пчела") or {}
+remembered = bool(bee.get("hierarchy") or bee.get("properties")
+                  or bee.get("definition"))
+print("сущность «пчела» в файле:", {
+    k: bee.get(k) for k in ("hierarchy", "properties", "definition")}
+    if bee else "НЕТ")
+print("вопросов пользователю задано:", len(asked_of))
+print("ответ это отказ:", refused)
+both_after = sorted(set(world_after.get("entities") or {})
+                    & set(world_after.get("unknown_words") or {}))
+print("противоречий «известно и неизвестно» после вопроса:", both_after or "нет")
+ok = ok and remembered and both_after == []
 untouched = ((os.path.getmtime(REAL) if os.path.exists(REAL) else None)
              == real_mtime)
 print("\nИТОГ:", "выучил и вспомнил" if ok else "НЕ СВЯЗАНО")

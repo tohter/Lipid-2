@@ -230,6 +230,40 @@ class TestReportFormatting(unittest.TestCase):
         self.assertNotIn("\n", line)
         self.assertIn("+5", line)
 
+    def test_teacher_budget_visible_without_opening_journal(self):
+        """
+        П.21: исчерпанный лимит обязан быть виден ЧИСЛОМ в строке статуса и в
+        отчёте — не только построчной причиной в notes.
+
+        ЗАМЕРЕНО до правки: при лимите 3 и 12 незнакомых словах статус-бар
+        говорил «учитель 3×», а список «не спрашивали: 8 — ...» читался как
+        «знания нет». Causes по словам были, сводки не было ни в одной строке:
+        notes режутся [:6], not_asked — [:8].
+        """
+        from brain.learner import LearningReport
+        rep = LearningReport(content_words=12, known_words=0, teacher_calls=3,
+                             teacher_budget=3, blocked_by_limit=8,
+                             not_asked=["джойстик", "дыня", "кактус"])
+        line = summarize_report(rep)
+        self.assertNotIn("\n", line)
+        self.assertIn("3/3", line, f"бюджет не виден в статус-баре: {line!r}")
+        self.assertIn("8", line, f"число заблокированных слов не в статус-баре: {line!r}")
+        text = format_report(rep)
+        self.assertIn("3 из 3", text,
+                      "в отчёте нет «N из M» — пользователь обязан видеть "
+                      "границу бюджета, а не вычитать её из текста причины")
+        self.assertIn("НЕ «не нашли»", text,
+                      "заблокированные лимитом слова названы ненайденными")
+
+    def test_no_fake_fraction_without_budget(self):
+        """Бюджет не задан — значит «учитель N», а не врущее «N/0»."""
+        from brain.learner import LearningReport
+        line = summarize_report(LearningReport(teacher_calls=2))
+        self.assertIn("учитель 2", line)
+        self.assertNotIn("учитель 2/0", line,
+                         "при незаданном бюджете статус обещает ноль обращений")
+        self.assertNotIn("учитель 2/3", line)
+
 
 class TestLogchannelIntegration(unittest.TestCase):
     """Презентер и канал статуса обязаны быть соединены, а не параллельны."""

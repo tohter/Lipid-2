@@ -80,6 +80,11 @@ class FakeBrain:
         self.dopamine = 200
         self.ask_user_callback = None
         self.calls = []
+        # Флаги каналов: окно обязано дописываться до них (проверяется в лоб).
+        self.use_llm_teacher = True
+        self.use_wiki_teacher = True
+        self.ask_user_enabled = True
+        self.learn_experience = True
 
     def learn_from_text(self, text, source="text", allow_teacher=True):
         time.sleep(0.2)
@@ -202,6 +207,46 @@ def run_checks(_unused=None) -> list:
           "вопрос без загруженного рассказа не получил отказа (молчание = баг)")
     app._show_tab("learn")
     pump(3)
+
+    # ── П.19: ЧЕТЫРЕ галочки каналов — четыре независимых провода ──
+    # Проверяется НАСТОЯЩИМ окном (не подставным объектом, как в юнит-тесте):
+    # именно так ловится «галочка есть, а провод от неё отрезан».
+    app.var_llm.set(False)
+    app._sync_flags("llm_enabled", app.var_llm)
+    check(app.brain.use_llm_teacher is False
+          and app.brain.use_wiki_teacher is True,
+          "галочка LLM не дошла до мозга или погасила Вики: "
+          f"llm={app.brain.use_llm_teacher} wiki={app.brain.use_wiki_teacher}")
+    app.var_wiki.set(False)
+    app._sync_flags("wiki_enabled", app.var_wiki)
+    check(app.brain.use_wiki_teacher is False
+          and app.brain.use_llm_teacher is False,
+          "галочка Вики не дошла до мозга")
+    app.var_llm.set(True)
+    app._sync_flags("llm_enabled", app.var_llm)
+    check(app.brain.use_llm_teacher is True
+          and app.brain.use_wiki_teacher is False,
+          "включение LLM обратно не дошло или включило Вики следом")
+    # При снятых обоих Учителях поиск знания обязан оставаться живым, если
+    # включён 3-й канал (иначе галочка Учителя глушит чужой канал).
+    app.var_ask.set(True)
+    app._sync_flags("ask_enabled", app.var_ask)
+    check(app._any_knowledge_channel() is True,
+          "снятые УЧИТЕЛЯ отменили поиск знания при включённом 3-м канале")
+    # Все три канала сняты — поиск обязан быть ОТМЕНЁН (иначе пустой вызов).
+    app.var_llm.set(False)
+    app._sync_flags("llm_enabled", app.var_llm)
+    app.var_ask.set(False)
+    app._sync_flags("ask_enabled", app.var_ask)
+    check(app._any_knowledge_channel() is False,
+          "все каналы сняты, а поиск знания всё ещё обещается")
+    for var, attr in ((app.var_llm, "llm_enabled"),
+                      (app.var_wiki, "wiki_enabled"),
+                      (app.var_ask, "ask_enabled")):
+        var.set(True)
+        app._sync_flags(attr, var)
+    check(app._any_knowledge_channel() is True,
+          "возвращённые каналы не вернули поиск знания")
 
     # ── вкладка «Сон»: кнопки, dry_run, прозрачность состояния ──
     app._show_tab("sleep")

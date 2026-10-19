@@ -251,6 +251,17 @@ def format_report(rep) -> str:
 
 def summarize_report(rep) -> str:
     """Одна строка-итог для статус-бара."""
-    return (f"фактов +{getattr(rep, 'observations_new', 0)}, "
+    calls = getattr(rep, "teacher_calls", 0)
+    budget = getattr(rep, "teacher_budget", 0)
+    # «N/0» было бы враньём при незаданном бюджете (старые отчёты, тесты):
+    # дробь показывается только когда бюджет реально существует.
+    teacher = f"учитель {calls}/{budget}" if budget else f"учитель {calls}"
+    line = (f"фактов +{getattr(rep, 'observations_new', 0)}, "
             f"слов {getattr(rep, 'known_words', 0)}/{getattr(rep, 'content_words', 0)}"
-            f" знакомо, учитель {getattr(rep, 'teacher_calls', 0)}×")
+            f" знакомо, {teacher}")
+    # П.21: лимит обязан быть виден БЕЗ раскрытия журнала. Ровно эта строка
+    # остаётся на экране, когда отчёт уехал в журнал и его никто не открыл.
+    blocked = getattr(rep, "blocked_by_limit", 0)
+    if blocked:
+        line += f", лимит: {blocked} слов(а) не спрошено"
+    return line

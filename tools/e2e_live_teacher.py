@@ -84,10 +84,12 @@ print("память прогона:", app.brain.world_filepath)
 check(app.brain.world_filepath.startswith(MEM),
       "мозг слушает LIPID2_MEMORY_DIR", app.brain.world_filepath)
 
-# ── A. КОНТРОЛЬ ВВЕРХ: со снятой галочкой канал обязан молчать ──
-print("\n=== A. контрольный урок при ВЫКЛЮЧЕННОМ канале ===")
-app.var_teacher.set(False)
-app._sync_flags("teacher_enabled", app.var_teacher)
+# ── A. КОНТРОЛЬ ВВЕРХ: со снятыми галочками каналы обязаны молчать ──
+print("\n=== A. контрольный урок при ВЫКЛЮЧЕННЫХ каналах ===")
+app.var_llm.set(False)
+app._sync_flags("llm_enabled", app.var_llm)
+app.var_wiki.set(False)
+app._sync_flags("wiki_enabled", app.var_wiki)
 app.var_ask.set(False)
 app._sync_flags("ask_enabled", app.var_ask)
 app._show_tab("learn")
@@ -110,9 +112,20 @@ if ctl is not None:
           "выключенные каналы не породили пожизненное «искали и не нашли»",
           str(ctl_statuses))
 
-# ── включаем канал 1, канал 3 остаётся снят ──
-app.var_teacher.set(True)
-app._sync_flags("teacher_enabled", app.var_teacher)
+# ── П.19: галочки LLM и Вики обязаны быть РАЗДЕЛЬНЫМИ ──
+# Живой прогон ловит это на числах канала: при включённом LLM и снятой Вики
+# вызовов wiki должно быть ровно 0, а LLM — больше нуля.
+app.var_llm.set(True)
+app._sync_flags("llm_enabled", app.var_llm)
+app.var_wiki.set(False)
+app._sync_flags("wiki_enabled", app.var_wiki)
+check(app.brain.use_llm_teacher is True and app.brain.use_wiki_teacher is False,
+      "П.19: галочка Вики НЕ гасит LLM-канал и наоборот",
+      f"llm={app.brain.use_llm_teacher} wiki={app.brain.use_wiki_teacher}")
+
+# ── включаем канал 1 (LLM); Вики и канал 3 остаются сняты ──
+app.var_llm.set(True)
+app._sync_flags("llm_enabled", app.var_llm)
 health = ""
 try:
     import urllib.request

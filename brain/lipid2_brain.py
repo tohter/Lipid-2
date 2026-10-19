@@ -1270,13 +1270,34 @@ class Lipid2Brain:
 
     def _handle_definition(self, concept: str) -> str:
         data = self.find_in_memory(concept)
-        if not data:
-            data = self._trigger_curiosity_and_learn(concept)
-            if not data:
-                return f"[Lipid-2]: Я искал значение '{concept}', но все источники знаний не дали ответа."
+        answer = self._definition_answer(concept, data) if data else None
+        if answer is None:
+            # Отвечать нечем: данных нет вовсе, ИЛИ узел есть, но он ПУСТОЙ
+            # (рождён наблюдением: слово и его действия помнятся из текста,
+            # определения/категорий/свойств — нет). Для вопроса «что такое X»
+            # это НЕ знание. ЗАМЕРЕНО в GUI-прогоне: «пчела CAN_DO опылять»
+            # хватало, чтобы find_in_memory вернул «найдено», любопытство не
+            # запускалось НИ РАЗУ (вопросов пользователю: 0), а ответ
+            # «в памяти есть только само слово» маскировал отсутствие поиска.
+            learned = self._trigger_curiosity_and_learn(concept)
+            if learned:
+                answer = self._definition_answer(
+                    learned.get("matched_concept", concept), learned)
+            if answer is None:
+                return self._definition_hollow(concept, data)
+        return answer
 
+    def _definition_answer(self, concept: str, data: dict):
+        """
+        Ответ на «что такое X» из имеющихся данных, или None, если данных
+        для ответа НЕТ (ветка пустого отказа — заcaller'у).
+
+        Возвращать None вместо дежурной фразы принципиально: вызывающий по
+        этому различает «знать нечего» и «знать есть чего», и в первом случае
+        ОБЯЗАН попытаться добыть знание, а не читерить отказом.
+        """
         # Дальше работаем с КАНОННИКОМ, а не с формой из запроса.
-        concept = data.get("matched_concept", concept)
+        concept = data.get("matched_concept", concept) or concept
         base_ent = data.get("base_entity", {})
         derived_ent = data.get("derived_entity", {})
 
@@ -1328,13 +1349,34 @@ class Lipid2Brain:
             if props:
                 return (f"[Lipid-2]: Определения у '{concept}' нет, но известно "
                         f"о свойствах: {', '.join(props)}.")
+            return None        # данных для ответа нет — пусть работает любопытство
 
-            # Ни определения, ни категорий, ни свойств. Это НЕ «данных мало»,
-            # это «данных нет»: раньше сюда попадали редко, потому что
-            # тавтологическая иерархия делала пустоту неотличимой от знания.
-            return (f"[Lipid-2]: О '{concept}' в памяти есть только само слово — "
-                    f"знания нет. Спроси ещё раз с включённым Учителем "
-                    f"или подскажи сам.")
+        return None            # иерархии/определения под этим именем нет
+
+    def _definition_hollow(self, concept: str, data) -> str:
+        """
+        Честный отказ, когда определения, категорий и свойств нет.
+
+        Отказ обязан называть ВСЁ, что известно, иначе он вранье в обе
+        стороны: «знания нет» при известном действии — то же преступление,
+        что и «знание есть» при пустоте. Узлы из наблюдений («пчела CAN_DO
+        опылять») дают действия без определения — их надо НАЗВАТЬ.
+        """
+        acts = []
+        if data:
+            ent = data.get("base_entity") or data.get("subject") or {}
+            acts = [a for a in (ent.get("actions") or []) if a and a != concept]
+        if acts:
+            return (f"[Lipid-2]: Что такое '{concept}' — не знаю: определения, "
+                    f"категорий и свойств нет. Из опыта помню только, что оно "
+                    f"выполняет: {', '.join(acts)}. Включи Учителя или подскажи "
+                    f"сам — тогда запомню, ЧТО это.")
+        if not data:
+            return (f"[Lipid-2]: Я искал значение '{concept}', но все источники "
+                    f"знаний не дали ответа.")
+        return (f"[Lipid-2]: О '{concept}' в памяти есть только само слово — "
+                f"знания нет. Спроси ещё раз с включённым Учителем "
+                f"или подскажи сам.")
 
     def _handle_properties(self, concept: str) -> str:
         data = self.find_in_memory(concept)

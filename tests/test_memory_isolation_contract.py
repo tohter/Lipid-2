@@ -290,28 +290,60 @@ class TestGuiSwitchesReachBrainFlags(unittest.TestCase):
         app = App()
         app.brain = type("Brain", (), {})()
         app.journal = _Journal()
-        app.teacher_enabled = True
+        app.llm_enabled = True
+        app.wiki_enabled = True
         app.ask_enabled = True
         app.experience_enabled = True
         app._push = Lipid2GUI._push_channel_flags.__get__(app, type(app))
         return app
 
-    def test_teacher_switch_reaches_both_teacher_flags(self):
+    def test_llm_switch_reaches_llm_flag_only(self):
+        """П.19: галочка LLM обязана доходить до мозга и НЕ трогать Вики."""
         app = self._app()
-        app.teacher_enabled = False
+        app.llm_enabled = False
         app._push()
         self.assertFalse(app.brain.use_llm_teacher,
-                         "галочка «Учитель» НЕ дошла до LLM-канала: "
-                         "переключатель стал украшением")
-        self.assertFalse(app.brain.use_wiki_teacher,
-                         "галочка «Учитель» НЕ дошла до Вики-канала")
+                         "галочка LLM НЕ дошла до LLM-канала: переключатель "
+                         "стал украшением")
+        self.assertTrue(app.brain.use_wiki_teacher,
+                        "снятие LLM погасило Википедию — каналы склеены")
 
-    def test_teacher_switch_on_also_reaches(self):
+    def test_wiki_switch_reaches_wiki_flag_only(self):
+        """П.19: вторая половина разделения — Вики гасится одна."""
         app = self._app()
-        app.teacher_enabled = True
+        app.wiki_enabled = False
         app._push()
-        self.assertTrue(app.brain.use_llm_teacher)
-        self.assertTrue(app.brain.use_wiki_teacher)
+        self.assertFalse(app.brain.use_wiki_teacher,
+                         "галочка Вики НЕ дошла до Вики-канала")
+        self.assertTrue(app.brain.use_llm_teacher,
+                        "снятие Вики погасило локальную модель — каналы склеены")
+
+    def test_both_teacher_switches_off_reach_both_flags(self):
+        app = self._app()
+        app.llm_enabled = False
+        app.wiki_enabled = False
+        app._push()
+        self.assertFalse(app.brain.use_llm_teacher)
+        self.assertFalse(app.brain.use_wiki_teacher)
+
+    def test_third_channel_alone_keeps_search_alive(self):
+        """
+        П.19: снятые УЧИТЕЛЯ (1+2) не имеют права отменять поиск знания, если
+        включён 3-й канал. ЗАМЕРЕНО до правки: окно передавало
+        allow_teacher=teacher_enabled, и при llm=off, wiki=off, ask=on вопрос
+        пользователю не был задан НИ РАЗУ (rep.not_asked = 4 слова).
+        """
+        from ui.app_gui import Lipid2GUI
+        app = type("App", (), {})()
+        app.llm_enabled, app.wiki_enabled, app.ask_enabled = False, False, True
+        self.assertTrue(
+            Lipid2GUI._any_knowledge_channel.__get__(app, type(app))(),
+            "3-й канал включён, но поиск знания отключён: переключатель "
+            "Учителя глушит канал, который к нему не относится")
+        app.ask_enabled = False
+        self.assertFalse(
+            Lipid2GUI._any_knowledge_channel.__get__(app, type(app))(),
+            "все три канала сняты, а поиск всё равно обещан")
 
     def test_ask_switch_reaches_brain(self):
         app = self._app()
@@ -328,14 +360,16 @@ class TestGuiSwitchesReachBrainFlags(unittest.TestCase):
                          "галочка опыта НЕ дошла до мозга")
 
     def test_each_switch_is_independent(self):
-        """Три канала — ТРИ разных флага; один выключенный не гасит остальные."""
+        """Четыре канала — ЧЕТЫРЕ разных флага; один выключенный не гасит остальные."""
         app = self._app()
-        app.teacher_enabled = False
+        app.llm_enabled = False
+        app.wiki_enabled = True
         app.ask_enabled = True
         app.experience_enabled = True
         app._push()
         self.assertFalse(app.brain.use_llm_teacher)
-        self.assertFalse(app.brain.use_wiki_teacher)
+        self.assertTrue(app.brain.use_wiki_teacher,
+                        "галочка LLM погасила Википедию — флаги перепутаны")
         self.assertTrue(app.brain.ask_user_enabled,
                         "галочка Учителя погасила 3-й канал — флаги перепутаны")
         self.assertTrue(app.brain.learn_experience)

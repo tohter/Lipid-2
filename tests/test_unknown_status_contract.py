@@ -140,6 +140,17 @@ class TestTwoKindsOfUnknown(unittest.TestCase):
                       "исчерпание лимита выдало неспрошеное слово за «не найдено»")
         self.assertTrue(any("лимит" in n.lower() for n in rep.notes),
                         "лимит исчерпан молча")
+        # П.21: тех же причин в notes МАЛО для пользователя — они режутся [:6].
+        # Числа обязаны жить в отчёте КАК ПОЛЯ, а не только в тексте.
+        self.assertEqual(rep.teacher_budget, 1,
+                         "бюджет урока не попал в отчёт: пользователь не видит "
+                         "границу, из которой его вычеркнули")
+        self.assertEqual(rep.blocked_by_limit, 1,
+                         f"счётчик слов, отсечённых ЛИМИТОМ, не заполнен: "
+                         f"{rep.blocked_by_limit} (not_asked={rep.not_asked})")
+        text = rep.as_text()
+        self.assertIn("1 из 1", text,
+                      "в итоговой строке нет «N из M» — сводки о бюджете нет")
         unknowns = self._read()["unknown_words"]
         # Спрошенное и найденное слово уходит из unknown_words совсем;
         # неспрошеные остаются со статусом not_asked.
