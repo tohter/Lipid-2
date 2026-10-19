@@ -51,7 +51,8 @@ if __package__ in (None, ""):        # прямой запуск: python core/ex
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from core.morph import Morph, split_sentences, analyze, CONTENT_POS
+from core.morph import (Morph, split_sentences, analyze, split_clauses,
+                       is_subordinate_marker, CONTENT_POS)
 
 # ── управление предлогов: какой падеж они требуют ──────────
 # Без этой таблицы «на широком подоконнике» превратилось бы в «кошка =
@@ -189,6 +190,16 @@ APPOSITION_CONJ = "или"
 
 # Противопоставительные союзы: они ОБРЫВАЮТ область действия «не».
 ADVERSATIVE_CONJ = ("а", "но")
+
+# Союзы придаточного, которые морфология сама называет CONJ/ADVB (замер:
+# «когда» -> CONJ|ADVB, «где» -> ADVB|CONJ, «чтобы» -> CONJ). Слова с падежными
+# формами («который») тут не перечисляются — они ловятся граммемами, см.
+# morph.RELATIVE_GRAMMEMES: список обязан был бы помнить все восемь падежей.
+# «после»/«перед» ИСКЛЮЧЕНЫ намеренно: как предлоги они стоят в любом
+# «после обеда», и объявлять там придаточное — обесценивать предупреждение
+# (тот же приём, что отказ печатать ложные «спорные ИМ.п.»).
+SUBORD_CONJ = ("когда", "пока", "чтобы", "где", "если", "хотя",
+               "поскольку", "будто", "словно", "чем", "как")
 
 
 class NegationScope:
@@ -509,6 +520,11 @@ class SentenceFacts:
     aliases: List[tuple] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
     tokens: List[dict] = field(default_factory=list)
+    # Сказуемое ГЛАВНОЙ части (лемма) — нужно придаточному цели: «спрятала,
+    # чтобы ловить» связывает «ловить» с «спрятала», а не с подлежащим.
+    # ЗАМЕРЕНО до правки: часть «чтобы не ловить её» не давала НИ ОДНОЙ связи,
+    # потому что личный глагол в ней один — главный, а он в другой части.
+    main_action: str = ""
 
     @property
     def content_lemmas(self) -> List[str]:
@@ -573,6 +589,367 @@ class SimpleExtractor:
         return out
 
     def extract(self, sentence: str, order: int = 0) -> SentenceFacts:
+        """
+        Разбор предложения. Сложноподчинённое разбирается ПО ЧАСТЯМ.
+
+        ЗАЧЕМ (замер, п.18). Плоский разбор ищет ОДИН субъект и ОДНО сказуемое
+        на весь текст, и второе сказуемое остаётся без пары:
+          «Мяч, который бросил мальчик, укатился»  -> «укатился» потеряно,
+                                                      записано «мяч CAN_DO
+                                                      бросить» (инверсия)
+          «Дом, где жил пёс, сгорел»              -> «дом CAN_DO жила»
+        Придаточное вырезается из главного предложения (СКЕЛЕТ), поэтому у
+        главного остаётся своё сказуемое, а придаточное разбирается отдельно.
+        Союзное слово при этом не просто выбрасывается: его падеж говорит, КТО
+        что делал, — см. _relative_part.
+        """
+        sentence = (sentence or "").strip()
+        if not sentence:
+            return self._extract_flat(sentence, order)
+        parts = split_clauses(sentence)
+        if len(parts) <= 1 or not any(p["sub"] for p in parts):
+            return self._extract_flat(sentence, order)
+
+        subs = [p for p in parts if p["sub"]]
+        # СКЕЛЕТ главного предложения: части придаточного ВЫРЕЗАНЫ целиком, а не
+        # заменены пустотой — иначе «Дом, где жил пёс, сгорел» несло бы «жила»
+        # и в главном.
+        skeleton = " ".join(p["text"] for p in parts if not p["sub"]).strip()
+        res = self._extract_flat(skeleton, order)
+        # evidence обязано остаться ИСХОДНЫМ предложением: по evidence ищут,
+        # откуда взялась связь, а скелет — служебная строка, которой в тексте нет.
+        for f in res.facts:
+            f.evidence = sentence
+        for e in res.events:
+            e.evidence = sentence
+
+        for part in subs:
+            if self._relative_part(part["text"], res, sentence, order):
+                continue
+            if self._purpose_part(part["text"], res, sentence):
+                continue
+            # Придаточное без союзного слова («когда играл дождь»): порядок слов
+            # там обычный, общий разбор с ним справляется. NegationScope берётся
+            # СВОЙ, по этой части — иначе «не» из придаточного цели отрицает
+            # главное (замер: «кошка спрятала мышь, чтобы НЕ есть её» записывало
+            # «кошка НЕ прятала мышь»). Тот же приём, что в NEGATION_TASK.md,
+            # только граница — СЕГМЕНТ, а не часть простого предложения.
+            sub = self._extract_flat(part["text"], order)
+            for f in sub.facts:
+                f.evidence = sentence
+                res.facts.append(f)
+            for e in sub.events:
+                e.evidence = sentence
+                res.events.append(e)
+            # Общую заметку о разрыве связей из ЧАСТИ не тащим: про неё уже
+            # известно, что она придаточное, и она разобрана. Два предупреждения
+            # об одном и том же обесценивают оба.
+            res.notes.extend(n for n in sub.notes
+                             if "связи могут быть разорваны" not in n)
+
+        # Заметка обязана остаться: без строки в отчёте нельзя отличить
+        # «придаточного не было» от «придаточное размечено, но не разобрано».
+        res.notes.append("придаточное: разобрано по частям (%d ч.)" % len(parts))
+        res.facts = self._dedup(res.facts)
+        return res
+
+    # ── ПРИДАТОЧНОЕ С СОЮЗНЫМ СЛОВОМ (п.18) ────────────────────
+
+    def _relative_part(self, clause: str, res: SentenceFacts,
+                       evidence: str, order: int) -> bool:
+        """
+        Придаточное с союзным словом: «который бросил мальчик»,
+        «берега которой заросли».
+
+        Возвращает True, если часть разобрана (пусть и с пометкой о неполноте),
+        False — если её следует отдать общему разбору.
+
+        ПОЧЕМУ НЕ ПОДСТАНОВКА АНТЕЦЕДЕНТА. Соблазн велик: заменить «который»
+        словом, к которому оно относится, и позвать обычный разбор. ЗАМЕРЕНО,
+        что обычный разбор на порядок слов опереться не может: «Мяч бросил
+        мальчик» и без всякого придаточного даёт «мяч CAN_DO бросить», потому
+        что словарь у «мяч» ставит вин.п. 0.67 против им.п. 0.33 (замер), а у
+        «мальчик» им.п. единственный. Подстановка унаследовала бы ровно ту
+        инверсию агент/объект, ради исправления которой всё затеяно. Поэтому
+        роль здесь берётся из ПАДЕЖА союзного слова.
+
+        Падеж союзного слова — это ответ на вопрос «кто кого»:
+          им.п.  -> антецедент сам делает («пёс, который охранял дом»)
+          вин.п. -> антецедент испытывает («мяч, который бросил мальчик»)
+          род.п. -> принадлежность («река, берега которой заросли»)
+        Двусмысленность им./вин. снимается НЕ частотой (замер: у «который»
+        им.п. 0.83 против вин. 0.17 — частота всегда тянула бы им.п.), а
+        тем, МОЖЕТ ЛИ вообще слово стоять в винительном: у «мальчик» вин.п. не
+        существует, у «дом» существует.
+        """
+        toks = self._tag_prepositions(analyze(clause))
+        rel = next((t for t in toks if t.get("relative")), None)
+        if rel is None:
+            return False
+
+        others = [t for t in toks if t.get("content") and t is not rel
+                  and not t.get("prep")
+                  and t.get("role") in ("subject", "object")]
+
+        antecedent = self._antecedent(evidence, rel, clause)
+        if not antecedent:
+            res.notes.append(
+                "придаточное с «%s»: определяемое слово не найдено — связи "
+                "придаточного НЕ записаны" % rel["word"])
+            return True
+
+        case = self._relative_case(rel, others)
+        verbs = [t for t in toks if t.get("content")
+                 and t.get("role") == "action"
+                 and any(v["pos"] in VERB_POS for v in t["variants"])
+                 and t["lemma"] not in COPULAS]
+        predicate = next((v for v in verbs
+                          if any(x.get("person") or x.get("tense")
+                                 for x in v["variants"])), None)
+        if predicate is None:
+            res.notes.append("придаточное «%s» без личного глагола — связи не "
+                             "записаны" % clause)
+            return True
+        # ХВОСТ ГЛАГОЛА ОБЯЗАТЕЛЬНО ЛЕММА. Замер до правки: «дом --CAN_DO-->
+        # жила»: в граф легла ФОРМА, и знание об одном глаголе разъехалось бы
+        # по двум узлам («жить» и «жила») навсегда.
+        verb = self._pick(predicate, VERB_POS) or predicate["variants"][0]
+        action = verb["lemma"]
+
+        # Отрицание — по ОБЛАСТИ ЭТОЙ ЧАСТИ. «не» из придаточного цели не имеет
+        # власти над главным (замер: «кошка спрятала мышь, чтобы НЕ есть её»
+        # отрицало «спрятала»). Граница — сегмент, а не часть простого
+        # предложения, как в NEGATION_TASK.md.
+        negs = NegationScope(toks)
+        made = False
+        mark_from = len(res.facts)
+
+        if case in ("nom", "voc"):
+            # антецедент — агент
+            res.facts.append(self._fact_from_variant(
+                antecedent, predicate, "CAN_DO", evidence, negs, verb))
+            made = True
+            obj = next((t for t in others
+                        if self._pick(t, ("NOUN", "ADJF"), case="acc")
+                        or self._pick(t, ("NOUN", "ADJF"), case="gen")), None)
+            if obj is not None:
+                ov = (self._pick(obj, ("NOUN", "ADJF"), case="acc")
+                      or self._pick(obj, ("NOUN", "ADJF"), case="gen"))
+                res.facts.append(self._fact_from_variant(
+                    action, obj, "OBJECT_OF", evidence, negs, ov))
+
+        elif case == "acc":
+            # антецедент — пациент. Агент обязан стоять в им.п.; приоритет у
+            # слова, которое винительным быть НЕ может (оно однозначно).
+            agent = next((t for t in others
+                          if self._has_case(t, ("NOUN", "ADJF"), "nom")
+                          and not self._can_be_accusative(t)), None)
+            if agent is None:
+                agent = next((t for t in others
+                              if self._has_case(t, ("NOUN", "ADJF"), "nom")),
+                             None)
+            if agent is None:
+                res.notes.append(
+                    "придаточное «%s»: антецедент в вин.п., агент в им.п. не "
+                    "найден — действие записано БЕЗ субъекта" % clause)
+            else:
+                av = (self._pick(agent, ("NOUN", "ADJF"), case="nom")
+                      or agent["variants"][0])
+                res.facts.append(Fact(
+                    head=av["lemma"], relation="CAN_DO", tail=action,
+                    evidence=evidence,
+                    negated=negs.negates_pair(action, predicate),
+                    confidence=self._conf(verb, True), ambiguous=True))
+                made = True
+            res.facts.append(Fact(
+                head=action, relation="OBJECT_OF", tail=antecedent,
+                evidence=evidence,
+                negated=negs.negates_pair(action, predicate),
+                confidence=self._conf(verb, True), ambiguous=True))
+            made = True
+            self._relative_event(res, negs, predicate,
+                                 agent["lemma"] if agent else "?",
+                                 action, antecedent, order, evidence)
+
+        else:
+            # род./дат./твор./предл. — придаточное о принадлежности:
+            # «река, берега которой заросли» = берега ПРИНАДЛЕЖАТ реке.
+            owner = next((t for t in others
+                          if self._pick(t, ("NOUN",), case="gen") is not None
+                          or self._pick(t, ("NOUN",), case="acc") is not None),
+                         None)
+            if owner is not None:
+                ov = (self._pick(owner, ("NOUN",), case="gen")
+                      or self._pick(owner, ("NOUN",), case="acc")
+                      or owner["variants"][0])
+                res.facts.append(Fact(
+                    head=ov["lemma"], relation="PART_OF", tail=antecedent,
+                    evidence=evidence,
+                    negated=negs.negates_pair(ov["lemma"], owner),
+                    confidence=self._conf(ov, True), ambiguous=True))
+                res.facts.append(self._fact_from_variant(
+                    ov["lemma"], predicate, "CAN_DO", evidence, negs, verb))
+                made = True
+
+        if made and case in ("nom", "voc"):
+            self._relative_event(res, negs, predicate, antecedent, action,
+                                 self._relative_object(res, action, evidence),
+                                 order, evidence)
+        # ДИНАМИКА, а не онтология. Плоский разбор помечает факты события
+        # целиком (_collect_events), и факты придаточного обязаны помечаться
+        # так же. ЗАМЕРЕНО сразу после первой правки: «пёс CAN_DO охранять»
+        # осталось predicate=fact, то есть единичное происхождение рассказом
+        # осело бы как вечное знание о виде — ровно тот дефект, из-за которого
+        # события и вынесли в отдельную секцию (EVENTS_TASK.md).
+        if made and self._predicate_tense(predicate) == "past":
+            for f in res.facts[mark_from:]:
+                f.predicate = "event"
+        return True
+
+    def _relative_event(self, res: SentenceFacts, negs, predicate, subject,
+                        action, obj, order, evidence) -> None:
+        """
+        Событие придаточного. Собирается здесь, а не в _collect_events:
+        тот метод берёт субъект из плоского разбора, а у придаточного субъект
+        определён падежом союзного слова.
+        """
+        tense = self._predicate_tense(predicate)
+        if tense != "past":
+            return
+        res.events.append(EventRecord(
+            subject=subject or "?", action=action, obj=obj or "",
+            tense=tense, order=order, evidence=evidence,
+            negated=negs.negates_pair(action, predicate)))
+
+    @staticmethod
+    def _relative_object(res: SentenceFacts, action: str, evidence: str) -> str:
+        for f in reversed(res.facts):
+            if f.head == action and f.relation == "OBJECT_OF":
+                return f.tail
+        return ""
+
+    def _purpose_part(self, clause: str, res: SentenceFacts,
+                      evidence: str) -> bool:
+        """
+        Придаточное ЦЕЛИ: «спрятала мышь, чтобы не ловить её».
+
+        ЗАМЕРЕНО до правки: такая часть не давала НИ ОДНОЙ связи — личный
+        глагол в ней единственный, и он стоит в главной части, а общий разбор
+        без сказуемого возвращает пустоту. Отношение PURPOSE для этого случая
+        в реестре ЕСТЬ (core/storage.py, «пришёл -> увидеть»), просто
+        придаточное цели до него не доходило.
+
+        Отрицание берётся из области САМОЙ части, поэтому «чтобы НЕ ловить»
+        отрицает цель, а не главное действие — ровно то, что было перевёрнуто.
+        """
+        toks = self._tag_prepositions(analyze(clause))
+        if any(t.get("relative") for t in toks):
+            return False        # это придаточное определения, не цели
+        verbs = [t for t in toks if t.get("content")
+                 and t.get("role") == "action"
+                 and any(v["pos"] in VERB_POS for v in t["variants"])
+                 and t["lemma"] not in COPULAS]
+        if not verbs:
+            return False
+        if any(any(x.get("person") or x.get("tense") for x in v["variants"])
+               for v in verbs):
+            return False        # там есть своё сказуемое — справится общий разбор
+        inf = self._pick(verbs[0], ("INFN",))
+        if inf is None:
+            return False
+        head = res.main_action
+        negs = NegationScope(toks)
+        if not head:
+            res.notes.append("придаточное цели «%s»: главное действие не найдено, "
+                             "цель НЕ записана" % clause)
+            return True
+        res.facts.append(Fact(
+            head=head, relation="PURPOSE", tail=inf["lemma"],
+            evidence=evidence,
+            negated=negs.negates_pair(head, verbs[0]),
+            confidence=self._conf(inf, False)))
+        return True
+
+    # ── Падеж союзного слова и антецедент ──────────────────
+
+    def _relative_case(self, rel: dict, others: List[dict]) -> str:
+        """
+        Падеж союзного слова — его решает СОСТАВ придаточного, а не словарь.
+
+        Двусмысленны только им.п. и вин.п. (замер: «который» -> [им. 0.83,
+        вин. 0.17], «которая» -> только им.п.), прочие падежи однозначны.
+
+        Им./вин. разрешаются по тому, есть ли в придаточном слово, которое
+        винительным быть НЕ может: такое слово и есть подлежащее, значит
+        субъект занят КЕМ-ТО ДРУГИМ, и союзному слову остаётся объект.
+        Проверено на обеих парных конструкция:
+          «который бросил мальчик» — «мальчик» только им.п. -> который=вин.
+          «который охранял дом»   — «дом» может быть вин.п., обязательного
+                                    подлежащего нет -> который=им.
+        Частота тут бессильна: она всегда даёт им.п. (0.83), то есть всегда
+       агентом антецедент, и одна из двух конструкций была бы неверной.
+        """
+        cases = [v["case"] for v in rel["variants"] if v["pos"] == "ADJF"]
+        if not cases:
+            return ""
+        core = {c for c in cases if c in ("nom", "acc")}
+        if core == {"nom"}:
+            return "nom"
+        if core == {"acc"}:
+            return "acc"
+        if core == {"nom", "acc"}:
+            obliged = [t for t in others
+                       if self._has_case(t, ("NOUN", "ADJF"), "nom")
+                       and not self._can_be_accusative(t)]
+            return "acc" if obliged else "nom"
+        for want in ("gen", "dat", "ins", "loc"):
+            if want in cases:
+                return want
+        return cases[0]
+
+    @staticmethod
+    def _can_be_accusative(tok: dict) -> bool:
+        """
+        Может ли слово ВООБЩЕ стоять в винительном падеже.
+
+        Тот признак, который снимает омонимию им./вин. там, где частота
+        бессильна. ЗАМЕРЕНО: «мальчик» и «река» — только им.п.; «дом», «мяч»,
+        «мышь» — им.п./вин.п. Значит в «который бросил мальчик» агент —
+        мальчик, больше некому; частотный же разбор всегда выбирал бы им.п. у
+        «который» и делал агентом мяч.
+        """
+        return any(v["case"] == "acc"
+                   for v in tok.get("variants", [])
+                   if v["pos"] in ("NOUN", "ADJF", "NUMR"))
+
+    @staticmethod
+    def _antecedent(sentence: str, rel: dict, clause: str) -> str:
+        """
+        Определяемое слово — ближайшее существительное ЛЕВЕЕ придаточного.
+
+        Позиция, а не догадка о смысле: придаточное стоит при определяемом
+        слове. Именно существительное: местоимение узлом графа не является, и
+        «он, который...» породило бы узел «он».
+        """
+        head = sentence
+        if clause and clause in head:
+            head = head[:head.index(clause)]
+        elif clause:
+            low = head.lower()
+            cut = low.find(str(rel.get("word", "")).lower())
+            if cut > 0:
+                head = head[:cut]
+        for t in reversed(analyze(head)):
+            if not t.get("content") or t.get("role") != "subject":
+                continue
+            if t.get("prep"):
+                continue
+            variants = Morph.parse_all(t["word"])
+            if variants and variants[0]["pos"] == "NOUN":
+                return t["lemma"]
+        return ""
+
+    def _extract_flat(self, sentence: str, order: int = 0) -> SentenceFacts:
         res = SentenceFacts(sentence=sentence.strip())
         toks = self._tag_prepositions(analyze(sentence))
         res.tokens = toks
@@ -923,6 +1300,11 @@ class SimpleExtractor:
         # Оставляем самое уверенное: дубли в графе выглядели бы как подтверждение
         # факта, которого не было.
         res.facts = self._dedup(res.facts)
+        # Сказуемое ГЛАВНОЙ части нужно придаточному цели, которое разбирается
+        # отдельно (см. _purpose_part). Нулевая связка — не действие: её «лемма»
+        # служебный символ, и вешать на него PURPOSE значило бы изобрести глагол.
+        if pred is not None and not self._is_zero_copula(pred):
+            res.main_action = pred["lemma"]
         return res
 
     # ── СТАТИКА / ДИНАМИКА ─────────────────────────────────
@@ -1556,9 +1938,20 @@ class SimpleExtractor:
         есть «не»". Оба законны: вызывающий может точно знать, что связь
         отрицается целиком (объект при отрицанном действии)."""
         if variant is None:
-            _rel, variant = self._case_role(tail_tok)
-            if variant is None:
-                variant = tail_tok["variants"][0]
+            if tail_tok.get("role") == "action":
+                # Хвост — ГЛАГОЛ. Брать вариант у _case_role нельзя: тот ищет
+                # существительные, а у глагольной формы словарь обязан дать
+                # омонима. ЗАМЕРЕНО на «Дом, где жил пёс, сгорел»: для «жил»
+                # словарь даёт ГЛАГОЛ жить 0.96 и СУЩЕСТВИТЕЛЬНОЕ жила 0.01,
+                # и в граф легла «жила» — форма вместо леммы. Два узла («жить»
+                # и «жила») разъезжаются по графу навсегда, и собрать их
+                # обратно уже нельзя.
+                variant = (self._pick(tail_tok, VERB_POS)
+                           or tail_tok["variants"][0])
+            else:
+                _rel, variant = self._case_role(tail_tok)
+                if variant is None:
+                    variant = tail_tok["variants"][0]
         return self._fact_from_variant(head_tok["lemma"], tail_tok, rel,
                                        evidence, neg, variant)
 
@@ -1591,9 +1984,18 @@ class SimpleExtractor:
 
     @staticmethod
     def _has_subordinate(toks: List[dict]) -> bool:
-        return any(t["word"] in ("который", "которая", "которые", "которого",
-                                 "когда", "пока", "после", "перед", "чтобы")
-                   and t["content"] for t in toks)
+        """
+        Есть ли в предложении придаточное — по РАЗМЕТКЕ, а не по списку слов.
+
+        Союзное слово придаточного больше НЕ значимое (content=False), поэтому
+        проверять content на нём бессмысленно: признак живёт в ключе "relative".
+        Забыть об этом — значит потерять заметку на придаточном, а заметка есть
+        единственное, чем экстрактор честно признаётся в неумении.
+        """
+        return any(t.get("relative")
+                   or (t.get("word") in SUBORD_CONJ
+                       and t.get("pos") in ("CONJ", "ADVB"))
+                   for t in toks)
 
 
 if __name__ == "__main__":

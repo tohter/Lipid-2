@@ -92,6 +92,15 @@ STOP = {
     "добрый", "добрая", "утро", "вечер",
 }
 
+# СОЮЗНОЕ СЛОВО ПРИДАТОЧНОГО (очередь, п.18).
+# ЗАМЕРЕНО: у ВСЕХ падежных форм «который» (который/которая/которые/которого/
+# которой/которым/которых/которыми) pymorphy3 выдаёт граммема Subx+Anph+Apro, а
+# у «какой», «чей», «пушистый», «дом», «бросить» их нет ни в одном варианте.
+# Отсюда признак берётся из морфологии, а не из списка слов: список обязан
+# перечислить восемь падежных форм и молча пропустит ту, которую автор списка
+# не вспомнил (тот же приём, что с нормализацией граммем выше).
+RELATIVE_GRAMMEMES = frozenset({"Subx", "Anph", "Apro"})
+
 # Существительное/глагол, которые сами по себе ничего не значат в графе.
 STOP_LEMMAS = {"быть", "являться", "представлять", "казаться", "стать",
                "становиться", "называться", "считаться", "иметь", "иметься",
@@ -153,7 +162,7 @@ class MorphAnalyzerFacade:
         return out
 
     def parse(self, word: str) -> dict:
-        """Наиболее вероятный разбор. Когда синтаксис известен — używай parse_all/candidates."""
+        """Наиболее вероятный разбор. Когда синтаксис известен — используй parse_all/candidates."""
         return self.parse_all(word)[0]
 
     def _parse_heuristic(self, w: str) -> dict:
@@ -228,6 +237,33 @@ class MorphAnalyzerFacade:
         w = word_or_lemma.lower().strip(".,!?;:«»\"'()")
         return w in STOP or w in STOP_LEMMAS
 
+    def is_relative_pronoun(self, word: str) -> bool:
+        """
+        Союзное слово придаточного: «пёс, КОТОРЫЙ охранял дом».
+
+        Оно НЕ называет ничего: оно указывает на слово главного предложения и
+        служит связкой. В графе у него узла быть не может.
+        ЗАМЕРЕНО ДО ПРАВКИ (п.18): «пёс --HAS_PROPERTY--> который»,
+        «мяч --HAS_PROPERTY--> который», «берег --HAS_PROPERTY--> который» — то
+        есть служебное слово осело в онтологии как СВОЙСТВО сущности.
+
+        БЕЗ pymorphy3 возвращается False, и поведение остаётся прежним (узлы из
+        союзных слов). Это не тихая деградация: analyze() помечает available=False,
+        Learner пишет quality['morph']=False в отчёт, а экстрактор на придаточном
+        обязан оставить заметку (core.extract._has_subordinate).
+        """
+        if not _HAS_MORPH:
+            return False
+        w = word.lower().strip(".,!?;:«»\"'()")
+        if not w:
+            return False
+        vs = self.parse_all(w)
+        # all(), а не any(): вариант без Subx значит, что слово прочитано НЕ как
+        # союзное (омонимия), а вычёркивать значащее слово опаснее, чем оставить
+        # прежний шум — шум хотя бы объявлен заметкой.
+        return bool(vs) and all(
+            RELATIVE_GRAMMEMES <= set(v.get("grammemes") or ()) for v in vs)
+
     def lemma(self, word: str) -> str:
         return self.parse(word)["lemma"]
 
@@ -273,7 +309,8 @@ def analyze(sentence: str) -> List[dict]:
     остаются в списке.
     """
     toks = []
-    for w in _WORD_RE.findall(sentence or ""):
+    for m in _WORD_RE.finditer(sentence or ""):
+        w = m.group()
         raw = w
         key = w.lower()
         variants = Morph.parse_all(key)
@@ -286,6 +323,13 @@ def analyze(sentence: str) -> List[dict]:
                          "number": "", "gender": "", "score": 0.95}]
         has_content = any(v["pos"] in CONTENT_POS for v in variants)
         content = has_content and not Morph.is_stop(key)
+        # СОЮЗНОЕ СЛОВО придаточного. Оно морфологически прилагательное (ADJF),
+        # поэтому в content попадает, а узлом быть не должно — см.
+        # RELATIVE_GRAMMEMES. Для экстрактора токен остаётся РАЗЛИЧИМЫМ (ключ
+        # "relative"): по нему придаточное потом найдёт свою границу.
+        relative = content and Morph.is_relative_pronoun(key)
+        if relative:
+            content = False
         if numeric:
             content = True
         best = variants[0]
@@ -300,8 +344,103 @@ def analyze(sentence: str) -> List[dict]:
             "score": best.get("score", 0.5),
             "role": Morph.role_from(best) if content else "stop",
             "content": content,
+            "relative": relative,
+            # Позиция слова в ПРЕДЛОЖЕНИИ. Без неё нельзя вернуть вырезанную
+            # часть текста: морфология знает слова, а границы придаточного —
+            # это запятые, то есть места МЕЖДУ словами (см. split_clauses).
+            "start": m.start(),
+            "end": m.end(),
         })
     return toks
+
+
+# Союзы придаточного. Слой морфологии, потому что их читает и extract,
+# и разметка токенов: два списка разъезжаются неизбежно.
+# Это слова, которые морфология сама называет CONJ/ADVB (замер: «когда» ->
+# CONJ|ADVB, «где» -> ADVB|CONJ, «чтобы» -> CONJ). Слова с падежными формами
+# («который») здесь НЕ перечислены — они ловятся граммемами,
+# см. RELATIVE_GRAMMEMES: список обязан был бы помнить все восемь падежей и
+# молча пропустить тот, который автор списка не вспомнил.
+# «после»/«перед» ИСКЛЮЧЕНЫ намеренно: как предлоги они стоят в любом
+# «после обеда», и объявлять там придаточное — обесценивать предупреждение.
+SUBORD_CONJ = ("когда", "пока", "чтобы", "где", "если", "хотя",
+               "поскольку", "будто", "словно", "чем", "как")
+
+
+def is_subordinate_marker(tok: dict) -> bool:
+    """Токен — маркер придаточного: союзное слово или подчинительный союз."""
+    return bool(tok.get("relative")) or (
+        str(tok.get("word", "")).lower() in SUBORD_CONJ
+        and tok.get("pos") in ("CONJ", "ADVB"))
+
+
+def split_clauses(sentence: str) -> List[dict]:
+    """
+    Предложение -> части в ПОРЯДКЕ ТЕКСТА: [{"text":..., "sub": bool}].
+
+    ЗАЧЕМ (замер, п.18). У сложноподчинённого предложения ищутся ОДИН субъект
+    и ОДНО сказуемое на весь текст, и второе сказуемое остаётся без пары:
+    «Мяч, который бросил мальчик, укатился» теряло «укатился» entirely, а
+    «Дом, где жил пёс, сгорел» записывало «дом CAN_DO жила».
+
+    ГРАНИЦА — не произвольная запятая (по запятой рассыпались бы и
+    однородные члены, и аппозиции, и деепричастные обороты — а это уже
+    поведение, зафиксированное другими тестами). Граница строится ВОКРУГ
+    МАРКЕРА придаточного: союзное слово или подчинительный союз, ищутся
+    ближайшие запятые слева и справа от него; без запятой часть идёт до конца
+    предложения. Всё остальное предложение остаётся ОДНОЙ частью.
+
+    «Река, берега которой заросли, замёрзла» — маркер «которой» стоит НЕ в
+    начале части; левая запятая отстоит на два слова, и без расширания назад
+    придаточным объявлялось бы «которой заросли» без субъекта.
+
+    Одна запятая в тексте = и одна часть (придаточного нет) -> len(...)==1,
+    и вызывающий работает ровно как раньше.
+    """
+    toks = analyze(sentence)
+    if not toks:
+        return []
+    marks = [i for i, t in enumerate(toks) if is_subordinate_marker(t)]
+    if not marks:
+        return [{"text": sentence.strip(), "sub": False}]
+    # Запятые/точка с запятой МЕЖДУ словами: граница части = позиция слова,
+    # за которым такая запятая стоит.
+    def comma_before(i: int) -> bool:
+        if i <= 0:
+            return False
+        gap = sentence[toks[i - 1]["end"]:toks[i]["start"]]
+        return "," in gap or ";" in gap
+
+    spans = []
+    for i in marks:
+        start = i
+        while start > 0 and not comma_before(start):
+            start -= 1
+        end = i + 1
+        while end < len(toks) and not comma_before(end):
+            end += 1
+        spans.append((start, end))
+    # вложенные/пересекающиеся маркеры склеиваются в одну часть
+    spans.sort()
+    merged = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+
+    out, pos = [], 0
+    for idx, (s, e) in enumerate(merged):
+        if s > pos:
+            out.append({"text": sentence[toks[pos]["start"]:toks[s]["start"]].strip(),
+                        "sub": False})
+        out.append({"text": sentence[toks[s]["start"]:toks[e - 1]["end"]].strip(),
+                    "sub": True})
+        pos = e
+    if pos < len(toks):
+        out.append({"text": sentence[toks[pos]["start"]:toks[-1]["end"]].strip(),
+                    "sub": False})
+    return [c for c in out if c["text"]]
 
 
 if __name__ == "__main__":
