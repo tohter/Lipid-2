@@ -183,6 +183,111 @@ class TestProperties(unittest.TestCase):
             tw._MORPH, tw._MORPH_TRIED = saved
 
 
+class TestCategoryHierarchy(unittest.TestCase):
+    """
+    Категории Википедии — единственный источник иерархии, а иерархия отвечает
+    на «что такое X», когда определения в записи нет.
+
+    Замер: experiments/wiki_category_snapshot.json (22 живых слова, сняты ТЕМ
+    ЖЕ запросом, что и канал), разбор — experiments/p26b_wiki_noise.py.
+    """
+
+    SNAP = os.path.join(ROOT, "experiments", "wiki_category_snapshot.json")
+
+    def setUp(self):
+        from teachers.teacher_wiki import WikiTeacher
+        self.wiki = WikiTeacher(memory_dir="/tmp/l2-cats")
+
+    def test_article_markup_never_becomes_an_ontology_category(self):
+        """
+        ЗАМЕРЕНО до правки: у слова «работа» обе категории Вики оказались
+        разметкой статьи, остаточная ветка вернула ОТФИЛЬТРОВАННОЕ, и в graph
+        легло «работа — это статьи со ссылками на викисловарь».
+        """
+        raw = ["Статьи со ссылками на Викисловарь",
+               "Страницы, использующие волшебные ссылки ISBN"]
+        out = self.wiki._categories_to_hierarchy(raw, "работа")
+        self.assertEqual([], out,
+                         f"разметка статьи стала категрией онтологии: {out}")
+
+    def test_filter_speaks_when_nothing_but_markup_remained(self):
+        """
+        Пусто молча = «категорий не было», неотличимо от «все категории —
+        мусор». Канал обязан сказать, что иерархию он не принёс.
+
+        Проверка — подпиской на core.logchannel, а не перехватом stdout:
+        вывод в stdout зависит от LIPID2_STATUS, а обязанность канала — дойти
+        до слушателя (GUI) при ЛЮБЫХ флагах терминала.
+        """
+        from core import logchannel
+        seen = []
+        sid = logchannel.subscribe(seen.append)
+        try:
+            self.wiki._categories_to_hierarchy(
+                ["Статьи со ссылками на Викисловарь"], "работа")
+        finally:
+            logchannel.unsubscribe(sid)
+        self.assertIn("работа", " | ".join(seen),
+                      "иерархия пуста, а слушатель об этом не узнал: "
+                      f"{seen}")
+
+    def test_no_category_at_all_stays_silent(self):
+        """Слово без категорий — не авария. Кричать на пустоте значит
+        обесценить настоящее сообщение из предыдущего теста."""
+        from core import logchannel
+        seen = []
+        sid = logchannel.subscribe(seen.append)
+        try:
+            self.assertEqual([], self.wiki._categories_to_hierarchy([], "хдя"))
+        finally:
+            logchannel.unsubscribe(sid)
+        self.assertEqual([], seen, f"канал зашумел на законной пустоте: {seen}")
+
+    def test_wiki_gives_categories_in_alphabetical_order(self):
+        """
+        Док канала утверждал «категории Вики идут от абстрактных к конкретным»
+        и ОБРАЩАЛ порядок. Это неверно: ru.wikipedia отдаёт prop=categories в
+        АЛФАВИТНОМ порядке, поэтому hierarchy[0] — алфавитный первый, а не
+        ближайший род.
+
+        ЗАМЕР (experiments/wiki_category_snapshot.json, 22 слова):
+        у 19 из 22 первая видимая категория = алфавитно первая.
+        Отсюда «собака — это волки», «солнце — это жёлтые карлики», «кошка —
+        это животные-компаньоны». Этот тест ЗАПРЕЩАЕТ доверять порядку,
+        полученному из Вики: любая починка обязана строить порядок по
+        СОДЕРЖАНИЮ (родители категорий), а не переставлять alphabet.
+        """
+        import json
+        from core.records import meaningful_categories
+        snap = json.load(open(self.SNAP, encoding="utf-8"))
+        alphabetical = checked = 0
+        for word, rec in sorted(snap.items()):
+            vis = meaningful_categories(rec["title"],
+                                        self.wiki._categories_to_hierarchy(
+                                            rec["categories"], word))
+            if len(vis) < 2:
+                continue
+            checked += 1
+            low = [c.lower() for c in vis]
+            if low[0] == sorted(low)[0]:
+                alphabetical += 1
+        self.assertGreaterEqual(
+            alphabetical, 2 * checked // 3,
+            f"порядок категорий перестал быть алфавитным ({alphabetical} из "
+            f"{checked}) — значит появился источник порядка. Это ХОРОШО, но "
+            f"тогда должен существовать ЗАМЕР, что он даёт ближайшее понятие, "
+            f"а не самое общее (experiments/p26b_wiki_noise.py, п.10)")
+
+    def test_snapshot_covered(self):
+        """Снимок обязан оставаться данным, а не пустой подпоркой теста."""
+        import json
+        snap = json.load(open(self.SNAP, encoding="utf-8"))
+        self.assertGreaterEqual(len(snap), 20,
+                                "снимок усох — цифры замера больше не данные")
+        self.assertTrue(all(r["categories"] for r in snap.values()),
+                        "в снимке есть слово без категорий — нечего измерять")
+
+
 class TestFirstSentence(unittest.TestCase):
     """Определение = ВСЁ первое предложение, а не обрывок до первой точки."""
 
@@ -230,9 +335,6 @@ class TestFirstSentence(unittest.TestCase):
         self.assertEqual(self.wiki._first_sentence(""), "")
         self.assertEqual(self.wiki._first_sentence(None), "")
 
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
