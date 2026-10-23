@@ -47,19 +47,24 @@ NEAR, FAR = "обувь", "кустарный предмет"
 COARSE, PRECISE = "вещь", "обувь"
 
 
-def write_world(directory, hierarchy, weights=None):
-    """Мир с одной сущностью и (опционально) наблюдениями заданного веса."""
+def write_world(directory, hierarchy, weights=None, concept=CONCEPT):
+    """Мир с одной сущностью и (опционально) наблюдениями заданного веса.
+
+    concept меняет ТОЛЬКО имя сущности: слова разного рода нужны тесту
+    согласования рода, а ответ обязан говорить про то слово, о котором
+    спрашивают, а не про зашитое в файл «валенок».
+    """
     obs = {}
     for cat, w in (weights or {}).items():
-        obs[f"{CONCEPT}|IS_A|{cat}"] = {
-            "head": CONCEPT, "relation": "IS_A", "tail": cat,
+        obs[f"{concept}|IS_A|{cat}"] = {
+            "head": concept, "relation": "IS_A", "tail": cat,
             "confidence": 0.99, "negated": False, "support": 40,
             "weight": w, "evidence": "замер п.26", "source": "experience",
             "first_seen": 1,
         }
     world = {
-        "entities": {CONCEPT: {
-            "concept": CONCEPT, "kind": "thing", "definition": "",
+        "entities": {concept: {
+            "concept": concept, "kind": "thing", "definition": "",
             "hierarchy": list(hierarchy), "properties": [], "actions": [],
             "provenance": [{"source": "user", "note": "замер п.26"}]}},
         "relations": [], "observations": obs, "unknown_words": {},
@@ -200,13 +205,93 @@ class TestOrderOfRecordingChoosesTheAnswer(P26Base):
         Одиночная категория — ДРУГОЕ знание: пользователь сказал «X — это Y»
         одним мнением, выбирать из одного нечего. Эта ветка замурована, чтобы
         правка множественной ветки не съела одиночную.
-        ЗА ОДИНОЧНУЮ КАТЕГОРИЮ ИЗ ВИКИ МЫ ПОКА ВРУМ ТАК ЖЕ (она одна,
-        вторая не названа) — это записано в memory.txt как остаток очереди.
+
+        РАНЬШЕ ЗДЕСЬ ЖИЛА ОГОВОРКА «за одиночную категорию из Вики мы тоже
+        врум». ЗАМЕР п.A-остаток1 её снял: живой Вики-канал на 22 словах
+        ОТДАЛ определение 22 раза из 22, и из тех семи слов, где категория
+        осталась одна, «X — это <категория>» ответило НОЛЬ. Ветка «пустое
+        определение + одна категория» из Вики НЕДОСТИЖИМА: _first_sentence
+        берёт первое предложение статьи, а оно есть у любой нетекстовой
+        страницы. Очередь «А-остаток1» мертва — об этом и следующий тест.
         """
         write_world(self.dir, [PRECISE])
         text = self.answer()
         self.assertIn(f"это {PRECISE}", text, text)
 
+
+class TestWikiBranchCannotFallIntoCategoryAnswer(P26Base):
+    """
+    Очередь обещала починку: «одна категория от Вики отвечает как род — 7 слов
+    из 22». ЗАМЕР постановку убил, а не починил, и это надо зафиксировать
+    кодом, иначе через месяц кто-то снова напишет про эти семь слов.
+
+    experiments/pR1_reach.py, три независимых проверки:
+      1. Живой Вики-канал, те же семь слов (книга, река, город, экосистема,
+         луна, валенок, рыбы): «X — это <категория>» — 0 из 7. Все семь
+         ответили первым предложением статьи.
+      2. Оффлайн по снимку 22 вступлений: definition непустой — 22 из 22.
+      3. Все три канала (локалка / Вики / пользователь): ни один не дал
+         «пустое definition + ровно одна категория».
+
+    Значит тест не про ответ, а про Границу: путь, который сегодня мёртв,
+    обязан остаться мёртвым, когда Вики поменяет формат выдачи.
+    """
+
+    def test_wiki_concept_always_carries_a_definition(self):
+        """У сущности, пришедшей из Вики, определение НЕ пустое."""
+        import teachers.teacher_wiki as tw
+        leads = json.load(open(os.path.join(ROOT, "experiments",
+                              "wiki_lead_snapshot.json"), encoding="utf-8"))
+        teacher = tw.WikiTeacher.__new__(tw.WikiTeacher)
+        empty = []
+        for title, rec in leads.items():
+            definition = (teacher._first_sentence(rec["lead"]) or "").strip()
+            if not definition:
+                empty.append(title)
+        self.assertEqual(
+            empty, [],
+            f"у {len(empty)} статей Вики определение пустое: {empty}. Значит "
+            "ветка «пустое определение + категория» снова ДОСТИЖИМА и ответ "
+            "сможет выдать алфавитную категорию за род — ровно то, из-за чего "
+            "в очкреди стоит пункт А-остаток1.")
+
+
+
+class TestAnswerAgreesWithTheWordGender(P26Base):
+    """
+    ОТДЕЛЬНЫЙ ДЕФЕКТ, который дал тот же замер (experiments/pR1_reach.py).
+
+    Фразу «известно, что он относится к:» я вставил в ответ накануне, и
+    местоимение в ней ЗАШТОПАНО мужским родом. ЗАМЕР на шести словах разного
+    рода (вода, туфля, окно, озеро, ёлка, стол): род не совпал в 5 случаях из
+    6 — «Определения у вода нет; известно, что ОН относится к: жидкости».
+    Единственное совпадение пришлось на «стол», то есть на слово мужского
+    рода: формула работает только для одного рода из трёх.
+
+    Ошибка того же класса, что уже была в проекте с «который»: текст ответа
+    собран из догадки, а не из разбора. Правка — формулировка без рода.
+    """
+
+    def test_multi_category_answer_never_asserts_masculine_gender(self):
+        for word in ("вода", "туфля", "окно", "озеро", "ёлка", "стол"):
+            # Род проверяется на СВОЁМ слове: если мир о другом, мозг
+            # отвечает отказом и проверка на род становится пустой.
+            write_world(self.dir, [COARSE, PRECISE], concept=word)
+            text = self.answer(f"что такое {word}")
+            self.assertIn("Определения", text,
+                          f"это не ответ о «{word}», проверка не состоялась: "
+                          f"{text}")
+            self.assertNotIn(
+                "что он относится", text,
+                f"ответ про «{word}» приписывает ему мужской род: {text}")
+
+    def test_reworded_answer_still_names_both_sets(self):
+        """Правка формулировки не имеет права съесть сами категории."""
+        write_world(self.dir, [COARSE, PRECISE])
+        text = self.answer()
+        self.assertIn(COARSE, text, text)
+        self.assertIn(PRECISE, text, text)
+        self.assertIn("Определения", text, text)
 
 def sorted_words(text):
     return sorted(w.strip(" .,;:") for w in text.split() if len(w) > 2)

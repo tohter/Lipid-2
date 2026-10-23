@@ -1,6 +1,6 @@
 # ЛИПИД-2: ЧТО УЖЕ УМЕЕТ
 
-*составлено 23.10.2026 по 513 зелёным тестам и живым прогонам*
+*составлено 23.10.2026 по 516 зелёным тестам и живым прогонам*
 
 ---
 
@@ -170,8 +170,8 @@ brain/simulator.py:  « why прекратился пожар?»
 ## 9. Цифры
 
 ```
-тестов:                    513 OK
-  из них контрактных:      500 в 25 файлах test_*_contract.py
+тестов:                    516 OK
+  из них контрактных:      503 в 25 файлах test_*_contract.py
 статикой запрещены:        мёртвый код, заглушки, write-only атрибуты
 строк Python:              27 292   файлов: 83   коммитов: 50
 полный шлюз:               ~2 мин (103 с тесты + ~25 с GUI-прогоны)
@@ -188,7 +188,7 @@ IS_A / CAN_DO / OBJECT_OF` учебного мира, LLM не участвов�
 ## 10. Как проверить за 5 минут
 
 ```bash
-LIPID2_STATUS=0 .venv/bin/python -m unittest discover -s tests   # 513 OK
+LIPID2_STATUS=0 .venv/bin/python -m unittest discover -s tests   # 516 OK
 LIPID2_STATUS=0 .venv/bin/python tools/clean_world.py --check     # ЧИСТО
 LIPID2_MEMORY_DIR=/tmp/m .venv/bin/python run.py                  # GUI
 ```
