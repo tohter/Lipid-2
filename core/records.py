@@ -146,6 +146,27 @@ def same_word(a: str, b: str) -> bool:
     return n >= 4 and la[:min(n, 4)] == lb[:min(n, 4)]
 
 
+def _bracket_spans(text):
+    """Интервалы скобочных вставок, вложенность учитывается.
+
+    Нужен потому, что тире живёт не только в определениях, но и внутри
+    этимологических скобок Википедии («(нид. Vleugel, нем. Flügel — крыло)»).
+    Незакрытую скобку считаем открытой до конца строки: обрывок лида тоже
+    обязан резаться по настоящей связке, а не по случайному тире.
+    """
+    spans = []
+    stack = []
+    for i, ch in enumerate(text):
+        if ch in "([{«":
+            stack.append(i)
+        elif ch in ")])}»":
+            if stack:
+                spans.append((stack.pop(), i + 1))
+    for i in stack:
+        spans.append((i, len(text)))
+    return spans
+
+
 def strip_self_name(concept: str, text: str, min_rest: int = 3) -> str:
     """
     Отрезать от пояснения САМО ОБОЗНАЧАЕМОЕ СЛОВО, если оно стоит в начале.
@@ -170,11 +191,28 @@ def strip_self_name(concept: str, text: str, min_rest: int = 3) -> str:
         first = out.split(" ", 1)[0].strip(",.:;»\"")
         if not (same_word(first, concept) or first.lower() == concept.lower()):
             break
+        # Разделитель ищется ВНЕ скобок. ЗАМЕРЕНО на живом канале: лида
+        # «Флюгер (нид. Vleugel, нем. Flügel — крыло) — метеорологический
+        # прибор…» давал ответ «Флюгер — крыло) — метеорологический прибор…",
+        # потому что первое « — » стоит внутри этимологической скобки, а срез
+        # по нему оставляет висячий «крыло)». Скобка — не часть определения,
+        # резать по ней нельзя. Языковой список («лат.», «нид.», «нем.» …)
+        # ДОКУПАТЬ НЕ СТАЛИ: он отсёк бы 0 новых случаев (замер по снимку
+        # лидов), а маскирование скобок чинит класс целиком — тот же дефект
+        # пришёл бы с «(англ. …)» или «(пол. …)».
+        hide = _bracket_spans(out)
         cut = -1
         for sep in (" — ", " - ", " -- ", ": ", ", "):
-            pos = out.find(sep)
-            if pos > 0:
-                cut = pos + len(sep)
+            start = 0
+            while True:
+                pos = out.find(sep, start)
+                if pos <= 0:
+                    break
+                if not any(a <= pos < b for a, b in hide):
+                    cut = pos + len(sep)
+                    break
+                start = pos + 1
+            if cut > 0:
                 break
         rest = out[cut:].strip(" ,.:;—-") if cut > 0 else ""
         core_words = [w for w in rest.replace("—", " ").split()

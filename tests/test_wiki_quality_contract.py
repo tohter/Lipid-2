@@ -78,6 +78,32 @@ class TestDefinition(unittest.TestCase):
             "флюгер", "Флюгер — прибор для измерения направления ветра.")
         self.assertEqual(out, "прибор для измерения направления ветра.")
 
+    def test_bracketed_etymology_is_not_the_copula(self):
+        """
+        ЗАМЕРЕНО живым каналом (23 слова снимка wiki_lead_snapshot.json):
+        «Флюгер (нид. Vleugel, нем. Flügel — крыло) — метеорологический
+        прибор…» отвечалось как
+            «Флюгер — крыло) — метеорологический прибор…"
+        Разделитель искался первым вхождением « — », а оно стоит ВНУТРИ
+        скобки: в ответ уезжал огрызок «крыло)» с висячей скобкой.
+        Языковой список («лат.», «нем.» …) дополнять НЕ стали — замер дал 0
+        новых отсеков; скобки маскируются целиком, поэтому тот же дефект с
+        «(англ. …)» или «(пол. …)» закрыт тем же кодом.
+        """
+        from brain.lipid2_brain import Lipid2Brain
+        from core.records import strip_self_name
+        raw = ("Флюгер (нид. Vleugel, нем. Flügel — крыло) — метеорологический "
+               "прибор для измерения направления (иногда и скорости) ветра.")
+        out = Lipid2Brain._definition_phrase("флюгер", raw)
+        self.assertTrue(out.startswith("метеорологический прибор"), out)
+        self.assertNotIn("крыло", out)
+        self.assertNotIn(")", out.split("(")[0])   # висячей скобки в начале нет
+        # тот же класс дефекта со стороны ответа ПОЛЬЗОВАТЕЛЯ: путь общий
+        self.assertEqual(strip_self_name("стол", "Стол (от др.-рус. столъ — доска) "
+                                                "— мебель"), "мебель")
+        # вложенная скобка не должна сдвигать границу связки
+        self.assertEqual(strip_self_name("х", "Х (а (б — в) г) — прибор"), "прибор")
+
     def test_long_definition_cut_at_word_bound(self):
         from brain.lipid2_brain import Lipid2Brain
         out = Lipid2Brain._definition_phrase("тест", "слово " * 200)
