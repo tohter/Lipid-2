@@ -201,6 +201,24 @@ ADVERSATIVE_CONJ = ("а", "но")
 SUBORD_CONJ = ("когда", "пока", "чтобы", "где", "если", "хотя",
                "поскольку", "будто", "словно", "чем", "как")
 
+# Наречие МЕСТА в придаточном. У «где» НЕТ грамем союзного слова (замер:
+# ADVB 0.636 / CONJ 0.364), поэтому RELATIVE_GRAMMEMES его не ловит вовсе —
+# он строит связь по этому слову, а не по разметке (очередь B).
+WHERE_ADVERB = "где"
+
+
+def prep_is_place(prep: str) -> bool:
+    """
+    Предлог называет МЕСТО, а не иную обстановку.
+
+    Берётся из той же таблицы PREP_CASES, по которой плоский разбор ставит
+    отношение, — иначе две ветки одного и того же предложения расходились бы
+    во мнениях. «о/об» дают ABOUT: «книга, О КОТОРОЙ думал пёс» — не место.
+    """
+    if not prep:
+        return True          # предложный без предлога — «в дому» = место
+    return PREP_CASES.get(prep, (("",), ""))[1] == "LOCATED_IN"
+
 
 class NegationScope:
     """
@@ -624,6 +642,14 @@ class SimpleExtractor:
             e.evidence = sentence
 
         for part in subs:
+            # СВЯЗЬ С МЕСТОМ считается ПЕРВОЙ, до ветвления по типу части:
+            # ни _relative_part, ни общий разбор её не дают (замер до правки:
+            # «Дом, где жил пёс, сгорел» — только CAN_DO, ни одной связи с
+            # местом). ЗАМЕРЕНО и обратное: вызов внутри _relative_part был
+            # недостижим и для «где» (у наречия нет ключа "relative", метод
+            # выходит в первых строках), и для «в котором» (loc-падеж
+            # отводится в ветку принадлежности и возвращается раньше).
+            self._where_place(res, part["text"], sentence)
             if self._relative_part(part["text"], res, sentence, order):
                 continue
             if self._purpose_part(part["text"], res, sentence):
@@ -771,6 +797,32 @@ class SimpleExtractor:
                                  agent["lemma"] if agent else "?",
                                  action, antecedent, order, evidence)
 
+        elif case == "loc" and prep_is_place(rel.get("prep") or ""):
+            # МЕСТО, а не принадлежность: «дом, В КОТОРОМ жил пёс».
+            # Антецедент здесь НЕ владелец и НЕ участник действия: он ТАМ,
+            # где действие происходит; саму связь «действие -> место» пишет
+            # _where_place, а этой ветке остаётся вернуть АГЕНТА.
+            # ЗАМЕРЕНО до правки: предлог «в» перетекал через союзное слово
+            # на «пёс», подлежащее пропадало, и придаточное не давало НИ
+            # ОДНОГО CAN_DO — в графе оставался лишь «дом CAN_DO сгореть».
+            agent = next((t for t in others
+                          if self._has_case(t, ("NOUN", "ADJF"), "nom")
+                          and not self._can_be_accusative(t)), None)
+            if agent is None:
+                agent = next((t for t in others
+                              if self._has_case(t, ("NOUN", "ADJF"), "nom")),
+                             None)
+            if agent is None:
+                res.notes.append(
+                    "придаточное места «%s»: кто действует — не найдено, "
+                    "действие записано БЕЗ субъекта" % clause)
+            else:
+                av = (self._pick(agent, ("NOUN", "ADJF"), case="nom")
+                      or agent["variants"][0])
+                res.facts.append(self._fact_from_variant(
+                    av["lemma"], predicate, "CAN_DO", evidence, negs, verb))
+                made = True
+
         else:
             # род./дат./твор./предл. — придаточное о принадлежности:
             # «река, берега которой заросли» = берега ПРИНАДЛЕЖАТ реке.
@@ -804,6 +856,92 @@ class SimpleExtractor:
         if made and self._predicate_tense(predicate) == "past":
             for f in res.facts[mark_from:]:
                 f.predicate = "event"
+        return True
+
+    def _where_place(self, res: SentenceFacts, clause: str,
+                     evidence: str) -> bool:
+        """
+        Место действия из придаточного: «дом, ГДЕ жил пёс» ->
+        «жить --LOCATED_IN--> дом» (очередь B, SUBORDINATE_TASK.md п.9).
+
+        НАПРАВЛЕНИЕ — ПО КОНВЕНЦИИ РЕЕСТРА, а не по тексту очереди. Очередь
+        сформулировала как «дом --LOCATED_IN--> жить». ЗАМЕРЕНО: все
+        существующие пути пишут «действие -> место», и направление заперто
+        тестом tests/test_learning_contract.py:99 — ("сидеть",LOCATED_IN,
+        "подоконник"):
+          «Пёс живёт в доме.»          -> ('жить','LOCATED_IN','дом')
+          «В доме живёт пёс.»          -> ('жить','LOCATED_IN','дом')
+          «Кошка спит на подоконнике.» -> ('спать','LOCATED_IN','подоконник')
+        Писать обратное — рассорить одно отношение в двух направлениях.
+
+        ПОЧЕМУ СВЯЗЬ ВООБЩЕ ТЕРЯЛАСЬ. «Где» — наречие, граммем союзного
+        слова у него нет (замер: ADVB 0.636 / CONJ 0.364), ключом "relative"
+        оно не помечено, поэтому в _relative_part не попадает ВОВСЕ, а в
+        общем разборе строить связь нечем: антецедент живёт в СОСЕДНЕЙ части.
+        Здесь связь строится по ЛЕММЕ наречия и по антецеденту, найденному
+        левее части, — а не по разметке.
+
+        Метод вызывают ОДНО место — цикл частей в _extract_subordinate,
+        ПЕРВЫМ, до ветвления по типу части. Токены, отрицание и антецедент
+        считаются ПО СВОЕЙ ЧАСТИ — тот же приём, что с NegationScope в
+        _extract_subordinate: «не» из другой части власти над этой не имеет.
+
+        Местом считается и наречие «где», и союзное слово в предложном
+        падеже: «дом, В КОТОРОМ жил пёс» — про то же самое. Действие
+        обязано быть ЛИЧНЫМ глаголом: participle («стол, на котором
+        леЖАЛА книга» — тут как раз личное) от краткого причастия
+        («дом, в котором НАПИСАНО слово») отличается граммемой person —
+        она есть только у личного глагола.
+
+        Антецедент обязателен: без него связь не из чего строить, а
+        правдоподобная ложь дороже отсутствующей связи (тот же принцип, что
+        в TestHonestGapStillHonest). Замер: в «Я был ТАМ, где жил пёс»
+        _antecedent возвращает '' — здесь ничего не сочиняем.
+
+        Заметка обязательна: без строки в отчёте не отличить «места в
+        предложении нет» от «место найдено, но связь не записана».
+        """
+        toks = self._tag_prepositions(analyze(clause))
+        # МЕСТО, а не любая обстановка. «Книга, О КОТОРОЙ думал пёс» — это
+        # ABOUT (см. PREP_CASES: о/об -> ABOUT), и ЗАМЕРЕНО, что плоский путь
+        # так его и трактует. Выдать за место — сочинить отношение; до правки
+        # этой связи не было вовсе, и вернуть её ложной нельзя.
+        def is_place(t: dict) -> bool:
+            if t.get("word") == WHERE_ADVERB:
+                return True
+            return bool(t.get("relative")) and t.get("case") == "loc" \
+                and prep_is_place(t.get("prep") or "")
+
+        where = next((t for t in toks if is_place(t)), None)
+        if where is None:
+            return False
+        rel = next((t for t in toks if t.get("relative")), None)
+        antecedent = self._antecedent(evidence, rel or where, clause)
+        if not antecedent:
+            if where.get("word") == WHERE_ADVERB:
+                res.notes.append(
+                    "придаточное с «%s»: определяемое слово не найдено — "
+                    "связь «действие -> место» НЕ записана" % WHERE_ADVERB)
+            return False
+        verbs = [t for t in toks if t.get("content")
+                 and t.get("role") == "action"
+                 and any(v["pos"] in VERB_POS for v in t["variants"])
+                 and t["lemma"] not in COPULAS]
+        # ЛИЧНЫЙ глагол. Замер: у «сгоревший»/«написано» person нет, у
+        # «жил»/«сидит» есть — только личное сказуемое называет действие,
+        # которое happens В месте.
+        predicate = next((v for v in verbs
+                          if any(x.get("person") or x.get("tense")
+                                 for x in v["variants"])), None)
+        if predicate is None:
+            return False
+        verb = self._pick(predicate, VERB_POS) or predicate["variants"][0]
+        negs = NegationScope(toks)
+        res.facts.append(Fact(
+            head=verb["lemma"], relation="LOCATED_IN", tail=antecedent,
+            evidence=evidence,
+            negated=negs.negates_pair(verb["lemma"], predicate),
+            confidence=self._conf(verb, False)))
         return True
 
     def _relative_event(self, res: SentenceFacts, negs, predicate, subject,
@@ -1487,7 +1625,13 @@ class SimpleExtractor:
                 # для следующего слова: в «кипит при ста градусах» «при»
                 # досталось «ста», а «градусах» стало безпредложным и
                 # превратилось в LOCATED_IN вместо CONDITION.
-                if t["pos"] == "NOUN":
+                #
+                # Союзное слово — ТОЖЕ голова предлога. ЗАМЕРЕНО до правки на
+                # «Дом, в котором жил пёс, сгорел»: «в» считалось висящим
+                # ещё на трёх словах, доставало «пёс», и тот переставал быть
+                # подлежащим — придаточное теряло агента («нет ни
+                # подлежащего, ни сказуемого»), а вместе с ним и CAN_DO.
+                if t["pos"] == "NOUN" or t.get("relative"):
                     pending, budget = "", 0
             else:
                 t["prep"] = ""
