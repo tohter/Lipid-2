@@ -13,7 +13,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 try:
-    from core.records import merge_entity
+    from core.records import merge_entity, normalize_provenance
 except Exception as _exc:
     # Молча дублировать правило нельзя: каждая копия теряет данные по-своему.
     # Поэтому вариант «только новая запись» громко анонсирован и явно хуже.
@@ -22,6 +22,9 @@ except Exception as _exc:
 
     def merge_entity(prev, new):
         return new if isinstance(new, dict) else (prev or {})
+
+    def normalize_provenance(prov, *, source=None):
+        return []
 
 try:
     # Атомарная запись: json.dump в открытый на "w" файл при обрыве процесса
@@ -298,6 +301,19 @@ class AgentTeacherV2:
                     key = self._target_key(ent, role)
                     if not key or not isinstance(ent, dict) or not ent:
                         return
+                    # МЕТКА КАНАЛА. Прежний Учитель не писал provenance ВООБЩЕ
+                    # (замер 26.10: ни одного места в файле), тогда как Вики
+                    # пишет «wiki», пользователь — «user», урок — имя источника.
+                    # Без метки слияние НЕ МОЖЕТ знать, чей порядок иерархии
+                    # главенствует, и `hierarchy[0]` доставался тому каналу,
+                    # который успел ответить первым (п.A-остаток3).
+                    prov = normalize_provenance(ent.get("provenance"),
+                                                source="llm")
+                    if not prov:
+                        prov = [{"source": "llm",
+                                 "evidence": str(ent.get("definition") or "")[:200],
+                                 "at": None}]
+                    ent = dict(ent, provenance=prov)
                     prev = world["entities"].get(key)
                     if isinstance(prev, dict) and prev:
                         # САМОЕ ЧАСТОЕ: базовый и производный концепт — одно слово
