@@ -237,6 +237,52 @@ class TestWikiBranchCannotFallIntoCategoryAnswer(P26Base):
     обязан остаться мёртвым, когда Вики поменяет формат выдачи.
     """
 
+    def test_no_channel_can_produce_single_category_answer(self):
+        """
+        ТО ЖЕ измерение, распространённое на ВСЕ ЧЕТЫРЕ канала (п.A-остаток4
+        закрыт осознанно, а не «на всякий случай»). Ветка «X — это <категория>»
+        живёт в _definition_answer при ОДНОЙ категории и пустом определении.
+
+        ЗАМЕР 26.10 (свежий, после п.A-остаток3 — ранжирование слияния могло
+        схлопнуть список, проверено отдельно):
+          * Вики     : definition непустой 22/22 (следующий тест);
+          * локалка  : «пустое definition + ровно 1 категория» — 0 слов из 20
+                       (test_teacher_prompt_contract);
+          * слияние локалка<->Вики в обоих порядках — 0 слов из 20;
+          * пользователь: 10 формулировок ответа, включая «флюгер» и «не
+                       знаю» — 0: _learn_from_user кладёт в definition ВСЮ
+                       фразу, поэтому пустой он бывает только при пустом
+                       ответе, когда и записи нет;
+          * урок (извлечение из текста): из трёх предложений записана ОДНА
+                       сущность, и то ДЕЙСТВИЕ — оно уходит в
+                       _describe_action, минуя ветку категории.
+        """
+        b = self.brain_no_channels()
+        singles = []
+        for answer in ("это животное", "животное; пушистый", "флюгер",
+                       "это флюгер", "прибор", "не знаю", "млекопитающее",
+                       "это млекопитающее; теплокровное"):
+            data = b._learn_from_user("кошка", answer)
+            if not data:
+                continue
+            ent = data["base_entity"]
+            if len(ent.get("hierarchy") or []) == 1 and \
+                    not str(ent.get("definition") or "").strip():
+                singles.append(answer)
+        self.assertEqual(
+            singles, [],
+            f"канал пользователя породил ветку «X — это Y» из ответов {singles}: "
+            "категория — множество, а не род, и выдавать её за определение "
+            "нельзя. Пункт А-остаток4 ОБЯЗАН быть перечислен новым ЗАМЕРОМ, "
+            "а не правкой формулировки на глаз")
+
+    def brain_no_channels(self):
+        from brain.lipid2_brain import Lipid2Brain
+        b = Lipid2Brain(memory_dir=self.dir)
+        b.use_llm_teacher = b.use_wiki_teacher = b.ask_user_enabled = False
+        b.learn_experience = False
+        return b
+
     def test_wiki_concept_always_carries_a_definition(self):
         """У сущности, пришедшей из Вики, определение НЕ пустое."""
         import teachers.teacher_wiki as tw
