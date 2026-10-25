@@ -601,12 +601,19 @@ class Learner:
                 if key in seen:
                     continue
                 seen.add(key)
-                events.append({
+                record = {
                     "subject": ev.subject, "action": ev.action, "obj": ev.obj,
                     "tense": ev.tense, "order": ev.order,
                     "evidence": (ev.evidence or sf.sentence)[:220],
                     "source": source,
-                })
+                }
+                # Причина переживает урок ТОЛЬКО если она была названа. Пустую
+                # строку не пишем: формат события читают storyload и симулятор,
+                # и пустое поле у каждой записи — шум без смысла (заперто
+                # тестом test_generic_event_without_cause_got_no_empty_field).
+                if getattr(ev, "cause", ""):
+                    record["cause"] = ev.cause
+                events.append(record)
                 rep.events_new += 1
 
         # ОЖИДАНИЯ, выведенные ИЗ ТЕКСТА (конструкция просьбы/запрета).

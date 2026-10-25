@@ -90,8 +90,32 @@ PREP_CASES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "через":   (("acc",), "ABOUT"),
     "внутри":  (("gen",), "LOCATED_IN"),
     "при":     (("loc", "dat"), "CONDITION"),
+    # ── ПРИЧИНА (очередь G) ─────────────────────────────────
+    # Замер (experiments/pG_causes_measure.py) показал: этих слов в таблице не
+    # было ВООБЩЕ, поэтому _tag_prepositions их не помечал, слово шло в разбор
+    # самостоятельной лексемой, а отношение выходило наугад:
+    #     «Пожар погас вследствие дождя»  -> погаснуть OBJECT_OF дождь
+    #     «Успех пришёл благодаря тренеру» -> прийти    RECIPIENT тренер
+    # падежи разные (pymorphy: «дождя» gen, «тренеру» dat) — переписать их
+    # одним родовым нельзя.
+    "вследствие": (("gen",), "CAUSES"),
+    "ввиду":      (("gen",), "CAUSES"),
+    "благодаря":  (("dat",), "CAUSES"),
 }
 ALL_PREPS = set(PREP_CASES)
+
+# Однозначные причинные предлоги: ВЫРАЗЕСТЬ ИМ МЕСТО НЕЧЕМ («вследствие угла»
+# — не русская фраза), поэтому перекоса на место здесь не будет.
+CAUSE_PREPS = frozenset(p for p, (_c, rel) in PREP_CASES.items()
+                        if rel == "CAUSES")
+
+# СПОРНЫЕ предлоги: один и тот же оборот читается и как место, и как причина.
+# Замер корпуса: МЕСТО 7/7 и ПРИЧИНА 6/6 дают ОДНО И ТО ЖЕ LOCATED_IN; морфо-
+# логия молчит («угла», «дождя», «куста» — все неодушевлённые существительные).
+# Перевод в CAUSES отложен РЕШЕНИЕМ ХОЗЯИНА: любой дефолт здесь обязан соврать
+# одной из групп (месту или причине). Дефолт оставлен месту, он заперт тестом
+# tests/test_cause_extraction_contract.py — менять только вместе с memory.txt.
+AMBIGUOUS_CAUSE_PREPS = frozenset({"из-за", "от"})
 
 # Глаголы-связки: значения не несут, соединяют подлежащее с именной частью.
 # «кошка есть животное» — это IS_A, а не действие «есть».
@@ -205,6 +229,16 @@ SUBORD_CONJ = ("когда", "пока", "чтобы", "где", "если", "х
 # ADVB 0.636 / CONJ 0.364), поэтому RELATIVE_GRAMMEMES его не ловит вовсе —
 # он строит связь по этому слову, а не по разметке (очередь B).
 WHERE_ADVERB = "где"
+
+
+def prep_is_cause(prep: str) -> bool:
+    """Однозначный причинный предлог («вследствие», «ввиду», «благодаря»).
+
+    Противоположность prep_is_place, а не дополнение: «из-за» НЕ входит — он
+    место и причина одновременно, спорные случаи перечислены в
+    AMBIGUOUS_CAUSE_PREPS.
+    """
+    return bool(prep) and prep in CAUSE_PREPS
 
 
 def prep_is_place(prep: str) -> bool:
@@ -476,6 +510,14 @@ class EventRecord:
     order: int = 0
     evidence: str = ""
     negated: bool = False
+    # Причина СОБЫТИЯ (очередь G). Хранится здесь, а не в онтологии: «пожар
+    # погас вследствие дождя» — единичный случай, а закон из одного случая не
+    # выводится (тот же принцип, что отделил события от знаний). До правки
+    # причина не попадала НИКУДА: в observations её не пускал признак события,
+    # а формат события умел хранить только subject/action/obj — урок проходил,
+    # и мир о причине молчал (замер 3/3 предложений, см.
+    # tests/test_cause_extraction_contract.py).
+    cause: str = ""
 
     def describe(self) -> str:
         tail = f" -> {self.obj}" if self.obj else ""
@@ -1385,6 +1427,28 @@ class SimpleExtractor:
                               if content.index(n) < content.index(t)), None)
                 if owner is not None:
                     rel, t = "PART_OF", owner
+            # ── ПРИЧИНА (очередь G): направление ПЕРЕВОРАЧИВАЕТ обычную
+            # запись. Головой CAUSES обязан БЫТЬ причина, хвостом — следствие
+            # (в ручных данных мира: предательство --CAUSES--> обида, а
+            # brain/simulator.py читает это как causes(причина) -> следствия).
+            # Обычный поток пишет зависимое в ХВОСТ, поэтому «дождь» оказался
+            # бы следствием, а «погаснуть» — его причиной. Перевернутая
+            # причина опаснее отсутствующей: граф начал бы учить, что пожар
+            # вызывает дождь, и отличить это от знания нельзя.
+            if prep_is_cause(t.get("prep") or ""):
+                effect = verb_head(content.index(t))
+                if effect:
+                    res.facts.append(Fact(
+                        head=variant["lemma"], relation="CAUSES", tail=effect,
+                        evidence=res.sentence,
+                        negated=negs.negates_pair(variant["lemma"], t),
+                        confidence=self._conf(
+                            variant,
+                            self._n_variants(t, ("NOUN", "ADJF")) > 1)))
+                    continue
+                res.notes.append(
+                    "причина «%s» названа, а следствия нет — CAUSES не записан"
+                    % variant["lemma"])
             res.facts.append(self._fact_from_variant(
                 verb_head(content.index(t)) or head or subj_lemma,
                 t, rel, res.sentence, negs, variant))
@@ -1515,11 +1579,18 @@ class SimpleExtractor:
             if f.head == action and f.relation != "CAN_DO":
                 obj = f.tail
                 break
+        # Причина события ищется по СЛЕДСТВИЮ: у CAUSES головой стоит причина,
+        # а хвостом — действие (данные мира: предательство --CAUSES--> обида),
+        # поэтому сравниваем ХВОСТ с действием этого события. Без этого поля
+        # причинный предлог в прошедшем времени исчезал бесследно.
+        cause = next((f.head for f in res.facts
+                      if f.relation == "CAUSES" and f.tail == action), "")
         res.events.append(EventRecord(
             subject=subject, action=action, obj=obj, tense=tense,
             order=order, evidence=res.sentence,
             negated=(neg.negates(pred) if isinstance(neg, NegationScope)
-                     else bool(neg))))
+                     else bool(neg)),
+            cause=cause))
         # Факты этого предложения — ДИНАМИКА, а не онтология.
         for f in res.facts:
             f.predicate = "event"
