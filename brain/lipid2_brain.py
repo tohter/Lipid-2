@@ -1149,6 +1149,14 @@ class Lipid2Brain:
                 rep = _consolidate(world, table, dry_run=True)
                 d = _decay(table, rate, dry_run=True)
                 rep.decayed, rep.compacted = d.decayed, d.compacted
+                # ТАК ЖЕ, как в brain.sleep.sleep(): изменения и заметки сна
+                # переносятся в отчёт целиком. Замер: здесь копировались только
+                # счётчики, из-за чего «затухло 3» доходило до владельца, а
+                # «ЧТО именно умерло» — нет, и панель сна (ui/app_gui.py,
+                # перебирает rep.changes и rep.notes) не показывала ни одной
+                # строки о затухании, хотя считала его.
+                rep.changes.extend(d.changes)
+                rep.notes.extend(d.notes)
                 return {"report": rep, "text": rep.as_text(), "saved": False}
             with world_transaction(self.world_filepath) as world:
                 table = _table_of(merge_json(live, world.get("transitions")))
@@ -1156,6 +1164,8 @@ class Lipid2Brain:
                 rep = _consolidate(world, table)
                 d = _decay(table, rate)
                 rep.decayed, rep.compacted = d.decayed, d.compacted
+                rep.changes.extend(d.changes)
+                rep.notes.extend(d.notes)
                 # Секцию transitions правит ТА ЖЕ транзакция: выход из блока
                 # сохранит и observations, и transitions одним атомарным
                 # снимком. Иначе между двумя записями наблюдался бы мир, где
@@ -1178,7 +1188,18 @@ class Lipid2Brain:
             if rep.created or rep.raised or rep.lowered:
                 self.learner.replay_observations(self._load_world())
                 self.core.sync_lemmas()
-                self._say("🌙 " + rep.as_text())
+            # НАЗВАТЬ обязан любой сон, изменивший таблицу, а не только тот,
+            # что что-то создал. Замер: сон с created=0, raised=0, lowered=0,
+            # decayed=4, compacted=3 в журнале НЕ ВЫГЛЯДЕЛ сном — владелец не
+            # мог увидеть, что система регулярно выстригает опыт и молча
+            # меняет предсказания. Смерть перехода называется по имени:
+            # счётчик «стерто 3» не отличается от «такого опыта не было».
+            if (rep.created or rep.raised or rep.lowered
+                    or rep.decayed or rep.compacted or rep.file_conflict):
+                line = "🌙 " + rep.as_text()
+                for note in rep.notes:
+                    line += "\n   " + note
+                self._say(line)
             return {"report": rep, "text": rep.as_text(), "saved": True}
         except Exception as exc:
             self._say(f"⚠️ сон НЕ состоялся: {type(exc).__name__}: {exc}")
