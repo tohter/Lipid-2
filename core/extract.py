@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from core.morph import (Morph, split_sentences, analyze, split_clauses,
-                       is_subordinate_marker, CONTENT_POS)
+                       is_subordinate_marker, CONTENT_POS, NOISE_SCORE)
 
 # ── управление предлогов: какой падеж они требуют ──────────
 # Без этой таблицы «на широком подоконнике» превратилось бы в «кошка =
@@ -988,7 +988,15 @@ class SimpleExtractor:
                  and t["lemma"] not in COPULAS]
         if not verbs:
             return False
-        if any(any(x.get("person") or x.get("tense") for x in v["variants"])
+        # «Своё сказуемое» ищем ТОЛЬКО по значимым вариантам. Замер (очередь C):
+        # у слова «есть» помимо инфинитива (0.893) висит вариант «быть» 3 л. наст.вр.
+        # с весом 0.036 — шум словаря в 25 раз тише. Проверка без порога
+        # считала его сказуемым и ОТДАВАЛА часть цели общему разбору, который
+        # там ничего не находит: итог — цель терялась совсем. Тот же дефект и
+        # тот же порог, что уже починены в «котором» (см. NOISE_SCORE).
+        if any(any((x.get("person") or x.get("tense"))
+                   and x.get("score", 0.0) >= NOISE_SCORE
+                   for x in v["variants"])
                for v in verbs):
             return False        # там есть своё сказуемое — справится общий разбор
         inf = self._pick(verbs[0], ("INFN",))
