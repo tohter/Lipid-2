@@ -40,7 +40,7 @@ if _ROOT not in sys.path:
 
 from core.schemes import SchemeInterpreter
 from core.extract import SimpleExtractor
-from brain.emotions import EmotionSystem
+from brain.emotions import MAX_EMOTION, EmotionSystem
 from brain.simulator import Event, SimulationResult, Simulator, StaticKnowledge
 
 
@@ -60,8 +60,24 @@ def _extractor() -> SimpleExtractor:
     return _EXTRACTOR
 
 # Порог «плохой» шкалы, при котором агент ПЕРЕХОДИТ К ДЕЙСТВИЮ.
-# DRAFT (догадка): согласуется с уровнем «агрессия» в emotions.py.
+# Согласуется с уровнем «агрессия» в emotions.py. ЗАМЕР F/M2 важнее самого
+# числа: порог ПРОХОДИМ только пока decay <= MAX_EMOTION - порог = 25.
+# При decay=26 потолок шкалы 229, и спуск невозможен ни при каком заряде —
+# поэтому на этот порог нельзя смотреть как на «достаточно сильнее обидеть»
+# (см. _unreachable_threshold, там отказ называет причину).
 AGGRESSION_THRESHOLD = 230
+
+# УМОЛЧАНИЯ шкал. Вынесены из сигнатуры agent(): калибровка должна быть
+# возможной снаружи, а не только правкой brain (замер F/M7: рассказ при своём
+# заряде 200 живёт при близости >= 1.5, а порог полосы достигается применённым
+# зарядом от 294).
+DEFAULT_ATTACK = 40
+DEFAULT_DECAY = 8
+# ПОКОЙ «хорошей» шкалы. 0 = нынешнее поведение побитово: приязнь гаснет в
+# «безразличие» за 15 тиков тишины (замер F/M5). Ненулевое значение — решение
+# хозяина, а не техническое: пол 20 уже даёт слово «легкая приязнь», пол 19 —
+# ещё «безразличие» (границы полос GOOD_LEVELS).
+GOOD_FLOOR = 0
 
 
 # ─────────────────────────────────────────────────────────────
@@ -168,12 +184,15 @@ class SocialSimulator(Simulator):
     """
 
     def __init__(self, world: Dict, closeness: float = None,
-                 script: List[Dict] = None):
+                 script: List[Dict] = None, attack: int = None,
+                 decay: int = None):
         super().__init__(world)
         self.agents: Dict[str, EmotionSystem] = {}
         self.expectations: List[Expectation] = []
         self.violations: List[Violation] = []
         self.tick_index: int = 0
+        # Параметры шкал по умолчанию для агентов, которых заводит сценарий.
+        self.defaults = {"attack": attack, "decay": decay}
         # Снимок эмоций ВСЕХ агентов на момент каждого события. Нужен, чтобы
         # судить о состоянии НА МОМЕНТ действия, а не на момент вопроса: к
         # моменту вопроса эмоция уже могла затухнуть, и это было бы враньём.
@@ -219,8 +238,8 @@ class SocialSimulator(Simulator):
             kind = str(d.get("do", "")).strip()
             if kind == "agent":
                 self.agent(str(d.get("name", "")),
-                           attack=int(d.get("attack", 40)),
-                           decay=int(d.get("decay", 8)))
+                           attack=d.get("attack", self.defaults.get("attack")),
+                           decay=d.get("decay", self.defaults.get("decay")))
             elif kind == "please":
                 self.agent(str(d.get("name", ""))).please(
                     int(d.get("amount", 0)),
@@ -263,11 +282,22 @@ class SocialSimulator(Simulator):
         return done
 
     # ── агенты и время ─────────────────────────────────────
-    def agent(self, name: str, attack: int = 40, decay: int = 8) -> EmotionSystem:
-        """Завести агента с эмоциями. Одушевлённые несут ОБЕ шкалы сразу."""
+    def agent(self, name: str, attack: int = None,
+              decay: int = None) -> EmotionSystem:
+        """
+        Завести агента с эмоциями. Одушевлённые несут ОБЕ шкалы сразу.
+
+        attack/decay раньше были вписаны прямо в сигнатуру (40, 8), из-за чего
+        калибровать их было НЕЧЕМ: ни рассказ, ни тест, ни окно не могли
+        передать другое число, не переписывая brain. Теперь умолчания живут
+        константами модуля, а снаружи задаются параметром (замер F/M7).
+        """
         name = name.lower().strip()
         if name not in self.agents:
-            self.agents[name] = EmotionSystem(attack=attack, decay=decay)
+            self.agents[name] = EmotionSystem(
+                attack=DEFAULT_ATTACK if attack is None else attack,
+                decay=DEFAULT_DECAY if decay is None else decay,
+                good_floor=GOOD_FLOOR)
         return self.agents[name]
 
     def tick(self) -> None:
@@ -335,9 +365,14 @@ class SocialSimulator(Simulator):
         Записать событие. Если оно нарушает чьё-то ожидание — в «плохую» шкалу
         ожидающего идёт заряд (base_charge x closeness).
 
-        base_charge и closeness — DRAFT-числа (см. шапку модуля): замером станет
-        прогон рассказа. closeness здесь — та самая «степень близости» хозяина:
-        гадость от близкого ранит сильнее, от чужого — слабее.
+        base_charge и closeness раньше были помечены DRAFT. ЗАМЕР F/M7 снял
+        неопределённость: решает ПРОИЗВЕДЕНИЕ base_charge x closeness — оно
+        должно достичь 294 (минимум для полосы «агрессия» при дефолтных шкалах,
+        замер F/M3). При заряде 200 это близость >= 1.47 (шаг 0.25: 1.25 ->
+        186, 1.5 -> 236). Выше 294 произведение расти уже бесполезно: шкала
+        упёрлась в насыщение и дальше растёт только СРОК (F/M4).
+        closeness здесь — та самая «степень близости» хозяина: гадость от
+        близкого ранит сильнее, от чужого — слабее.
         """
         ev = self.add_event(subject, action, obj, text)
         hit: List[Violation] = []
@@ -383,6 +418,39 @@ class SocialSimulator(Simulator):
         if 0 <= idx < len(self.snapshots):
             return self.snapshots[idx]
         return {}
+
+    def _unreachable_threshold(self, agent: str, scheme=None) -> str:
+        """
+        Скажи про порог, который шкала этого агента физически не может пройти.
+
+        ЗАМЕР F/M2: максимум шкалы при бесконечном заряде = 255 - decay, а не
+        255. При decay=26 потолок 229, порог рассказа 230 — спуск не получится
+        НИКАКИМ зарядом и ни за сколько тиков. Молча сказать «чисел не
+        хватает» было бы враньём: оно подсказывает «сильнее обидеть», чего не
+        бывает. Проверяем ВСЕ пороги схемы kind=threshold, а не только злой
+        230 — иначе проверка была бы про кошку, а про шкалы.
+        """
+        emo = self.agents.get(agent)
+        if emo is None:
+            return ""
+        scale_of = {"bad": emo.bad, "good": emo.good}
+        out = []
+        for step in getattr(scheme, "steps", []):
+            if getattr(step, "kind", "") != "threshold":
+                continue
+            sc = scale_of.get(getattr(step, "scale", ""))
+            if sc is None:
+                continue
+            want = int(getattr(step, "value", 0))
+            top = sc.reachable_max()
+            if top < want:
+                out.append(
+                    f"порог «{step.role}» = {want} НЕДОСТИЖИМ для «{agent}»: "
+                    f"максимум шкалы «{step.scale}» = {top} "
+                    f"(255 - decay {sc.decay}, замер F/M2). Никаким зарядом и "
+                    f"ни за сколько тиков не проходит: нужен decay <= "
+                    f"{MAX_EMOTION - want} или порог ниже {top}")
+        return out[0] if out else ""
 
     # ── ГЛАВНЫЙ ВЫВОД: СХЕМА ИЗ ДАННЫХ ────────────────────
     def why_acted(self, agent: str, action: str,
@@ -451,8 +519,24 @@ class SocialSimulator(Simulator):
                                    "action": action})
         res.chain.extend(walk.chain)
         if not walk.ok:
+            # Сначала честный вопрос: а мог бы порог пройти вообще? Отказ,
+            # который этого не различает, лечит не то (см. _unreachable_threshold).
+            why = self._unreachable_threshold(agent, scheme)
+            if why:
+                res.missing.insert(0, why)
             res.missing.extend(walk.missing)
             return res
+
+        # Насыщение шкалы НЕ выдаём за измерение силы (замер F/M4): заряд 294
+        # и заряд 100000 дают один пик и одно слово, дальше растёт только СРОК.
+        # Пусть человек видит, что шкала упёрлась и «на сколько сильнее» тут
+        # уже не про силу.
+        sc = self.agents[agent].bad
+        if sc.saturated():
+            res.chain.append(
+                f"шкала «bad» УПЕРЛАСЬ в насыщение: максимум {sc.reachable_max()}"
+                f" (255 - decay {sc.decay}); дальнейший рост заряда меняет не "
+                f"силу, а срок жизни эмоции (замер F/M4)")
 
         res.answer = interp.render(scheme.answer, walk.bindings)
         res.ok = True
@@ -464,18 +548,32 @@ class SocialSimulator(Simulator):
 # ДЕМОНСТРАЦИЯ: рассказ про кошку и канарейку
 # ─────────────────────────────────────────────────────────────
 
-CLOSENESS_LIVING_TOGETHER = 2.0    # «жили вместе», «кошка любила» — близкие. DRAFT.
+CLOSENESS_LIVING_TOGETHER = 2.0    # «жили вместе», «кошка любила» — близкие.
+# ЗАМЕР F/M7: решает НЕ близость сама по себе, а ПРИМЕНЁННЫЙ заряд
+# (base_charge x closeness): он обязан достичь 294 (порог F/M3). При стандартном
+# заряде 200 это близость >= 1.47 (замер шагом 0.25: 1.25 -> 186 мало,
+# 1.5 -> 236 прошло). 2.0 — с запасом. ВНИМАНИЕ (моя же ошибка, пойманная
+# контрольным замером): «при близости 1.0 рассказа не будет» — НЕВЕРНО:
+# заряд 294 при близости 1.0 даёт 230 и спуск ДА.
 
 # Сколько тиков проходит между ключевыми событиями рассказа. Выбрано НЕ
 # наобум: при прогоне рассказа замерено, что «плохая» шкала кошки к моменту
 # действия равна 128 (4 тика, рано), 247 (8 тиков, пик), 231 (12), 199 (16,
-# уже прошло). То есть есть ОКНО: гнев зреет и затухает. 8 — середина окна.
+# уже прошло). То есть есть ОКНО: гнев зреет и затухает.
+#
+# ЗАМЕР F/M6 переснял это окно цифрами: спуск (порог 230) получается при
+# between_ticks 8..12, т.е. середина окна 10, а НЕ 8. Прежняя фраза «8 —
+# середина окна» была неверна; 8 — КРАЙ окна, первое значение, где гнев
+# успевает дозреть. Оставлено 8 сознательно: ближе к событию, меньше тиков
+# ожидания, а заперто числом 8..12 в tests/test_emotion_calibration_contract.
 # Это и есть «время или порог активации» — не украшение, а замер.
 RIPEN_TICKS = 8
 
 
 def build_cat_canary_simulator(closeness: float = CLOSENESS_LIVING_TOGETHER,
-                               between_ticks: int = RIPEN_TICKS) -> SocialSimulator:
+                               between_ticks: int = RIPEN_TICKS,
+                               attack: int = None, decay: int = None
+                               ) -> SocialSimulator:
     """
     Собирает симулятор из учебной базы cat_canary_world.json.
 
@@ -483,6 +581,9 @@ def build_cat_canary_simulator(closeness: float = CLOSENESS_LIVING_TOGETHER,
     (секция "script") и исполняется интерпретатором. Здесь — только
     параметры, которые тесты хотят варьировать: between_ticks подставляется
     ВМЕСТО плейсхолдера "$between_ticks", a closeness уходит в конструктор.
+
+    attack/decay добавлены очередью F: без них калибровка шкал была возможна
+    только правкой brain — рассказ не мог передать другие параметры шкал.
     """
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     exp = os.path.join(root, "experiments")
@@ -494,7 +595,8 @@ def build_cat_canary_simulator(closeness: float = CLOSENESS_LIVING_TOGETHER,
     for d in script:
         if d.get("n") == "$between_ticks":
             d["n"] = int(between_ticks)
-    sim = SocialSimulator(world, closeness=closeness, script=script)
+    sim = SocialSimulator(world, closeness=closeness, script=script,
+                          attack=attack, decay=decay)
     return sim
 
 
