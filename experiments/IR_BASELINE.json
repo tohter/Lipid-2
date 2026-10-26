@@ -38,13 +38,6 @@
     "nested": true
    }
   ],
-  "brain/ir.py": [
-   {
-    "module": "pymorphy3",
-    "line": 6,
-    "nested": false
-   }
-  ],
   "brain/learner.py": [
    {
     "module": "core.extract",
@@ -167,15 +160,23 @@
   "core/storage.py": 11,
   "core/transitions.py": 49
  },
+ "core_reaches_lang": {},
+ "lang_files": [
+  "lang/__init__.py",
+  "lang/ru/__init__.py",
+  "lang/ru/questions.py"
+ ],
  "tests_touching_russian": {
   "checks_comparing_russian": 553,
   "files": 37,
-  "checks_with_russian_message_only": 424
+  "checks_with_russian_message_only": 453
  },
  "totals": {
   "D_debt_files": 3,
-  "S_seam_sites": 12,
-  "S_seam_files": 9,
+  "C_core_reaches_lang": 0,
+  "L_lang_files": 3,
+  "S_seam_sites": 11,
+  "S_seam_files": 8,
   "S_seams_inside_core": 5,
   "O_output_methods": 6,
   "R_core_ruslits": 169,

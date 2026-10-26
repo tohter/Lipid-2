@@ -43,8 +43,14 @@ from tools.langborder import (LANGUAGE_MODULES, measure, py_files,
 
 # ── ПОТОЛКИ: сняты experiments/IR_BASELINE.json 26.10 ─────────────────
 CEILINGS = {
+    # C = 0 НАВСЕГДА, это не «сегодня ноль», а закон: через lang/ имеют право
+    # ходить brain/ и ui/, ядро — только через IR. Пока язык лежал внутри
+    # core/, импорт ловился категорией S; после переезда (A1/A2) он стал бы
+    # невидим, и закон остался бы только на бумаге.
+    "C_core_reaches_lang": 0,
     "D_debt_files": 3,          # core/extract.py, core/morph.py, core/lemma.py
-    "S_seam_sites": 12,         # импортов языка не-языковым кодом
+    "S_seam_sites": 11,         # импортов языка не-языковым кодом (было 12,
+                                # A1 убрал шов brain/ir.py -> pymorphy3)
     "S_seams_inside_core": 5,   # из них ВНУТРИ ядра — это нарушения закона
     "O_output_methods": 6,      # публичных методов, отдающих русскую строку
     "R_core_ruslits": 169,      # русских ДАННЫХ в нейтральном core/
@@ -136,6 +142,27 @@ class TestCeilingsHold(unittest.TestCase):
         self.assertLessEqual(sum(inside.values()),
                              CEILINGS["S_seams_inside_core"],
                              f"ядро тянет язык здесь: {inside}")
+
+    def test_core_never_reaches_into_lang(self):
+        """
+        Отдельная проверка именно для C, потому что её нельзя «понизить»
+        вместе с прогрессом: единственный допустимый результат — ноль.
+        """
+        rep = measure()
+        self.assertEqual(rep["totals"]["C_core_reaches_lang"], 0,
+                         f"ядро импортирует lang/ руками: "
+                         f"{rep['core_reaches_lang']}. Это тот же импорт языка, "
+                         f"что и S, просто ставший невидимым после переезда "
+                         f"языка в lang/. Закон: ядро -> только через IR.")
+
+    def test_language_dir_is_actually_measured(self):
+        """
+        Обратная сторона: lang/ обязан попадать в обход, иначе его файлы выпадают из меры и любой импорт из них не заметен.
+        """
+        rep = measure()
+        live = {f.replace(os.sep, "/") for f in rep["lang_files"]}
+        self.assertIn("lang/ru/questions.py", live,
+                      "lang/ не сканируется — категория C мерит пустоту")
 
     def test_language_files_stay_the_only_language_in_core(self):
         """

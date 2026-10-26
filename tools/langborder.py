@@ -62,8 +62,12 @@ LANGUAGE_MODULES = {
 }
 # Ядро НЕ должно их знать. brain/ имеет право (это его работа — говорить с
 # человеком), но обязан делать это ЧЕРЕЗ lang/, а не руками.
+LANG_DIR = "lang/"
 CORE_PACKAGES = ("core",)
 BRAIN_PACKAGES = ("brain",)
+# Куда язык ИМЕЕТ ПРАВО лежать (шаг A1/A2). Файлы отсюда — язык по месту
+# жительства, а не должник внутри ядра.
+LANGUAGE_PACKAGES = ("lang",)
 
 
 def py_files(*packages):
@@ -152,6 +156,10 @@ def lang_imports(rel):
 
 
 def is_language_file(rel):
+    """Язык по имени модуля ИЛИ по месту жительства (lang/<xx>/...)."""
+    norm = rel.replace(os.sep, "/")
+    if norm.startswith(LANG_DIR):
+        return True
     return module_root(rel[:-3].replace(os.sep, "."), rel) in LANGUAGE_MODULES \
         or rel.replace(os.sep, ".")[:-3] in LANGUAGE_MODULES
 
@@ -325,6 +333,24 @@ def price_of_ir_output():
     return checked, len(files), msg_only
 
 
+def core_reaches_lang(rel):
+    """
+    ЯДРО, которое импортирует lang/, — это та же дыра, что импорт core.morph,
+    только ставшая НЕВИДИМОЙ после шага A1. Пока язык лежал в core/morph.py,
+    импорт ловила категория S. Стоит переехать ему в lang/ru/morph.py, как
+    `from lang.ru.morph import Morph` перестал бы быть языковым импортом по
+    имени, и закон осталось бы только на бумаге. Поэтому потолок C = 0 и он
+    не меняется никогда: через lang/ имеют право ходить brain/ и ui/, ядро —
+    только через IR.
+    """
+    hits = []
+    for mod, lineno, nested in imports_of(parse(rel)):
+        full = module_root(mod, rel)
+        if full.split(".")[0] == LANGUAGE_PACKAGES[0]:
+            hits.append({"module": full, "line": lineno, "nested": nested})
+    return hits
+
+
 def measure():
     report = {
         "language_files": [],          # D: долговой язык внутри core
@@ -334,8 +360,13 @@ def measure():
         "language_ruslits": {},        # справочно: кириллица в файлах-языках
         "core_messages": {},           # print/log/raise — косметика, НЕ граница
         "core_demo": {},               # строки самопроверок __main__
+        "core_reaches_lang": {},       # C: ядро тянет lang/ мимо IR
+        "lang_files": [],              # справочно: где язык живёт сейчас
     }
-    for rel in py_files(*CORE_PACKAGES, *BRAIN_PACKAGES):
+    for rel in py_files(*CORE_PACKAGES, *BRAIN_PACKAGES, *LANGUAGE_PACKAGES):
+        if rel.startswith(LANG_DIR):
+            report["lang_files"].append(rel)
+            continue        # lang/ — язык по месту жительства: не шов, не долг
         if is_language_file(rel):
             report["language_files"].append(rel)
         hits = lang_imports(rel)
@@ -346,6 +377,9 @@ def measure():
         if om:
             report["output_methods"][rel] = om
         if rel.startswith("core" + os.sep):
+            reach = core_reaches_lang(rel)
+            if reach:
+                report["core_reaches_lang"][rel] = reach
             rl, msg, demo = classify_ruslits(rel)
             if not (rl or msg or demo):
                 continue
@@ -368,6 +402,10 @@ def measure():
         "checks_with_russian_message_only": msg_only}
     report["totals"] = {
         "D_debt_files": len(report["language_files"]),
+        # C обязан остаться НУЛЁМ навсегда: см. core_reaches_lang
+        "C_core_reaches_lang": sum(len(v)
+                                   for v in report["core_reaches_lang"].values()),
+        "L_lang_files": len(report["lang_files"]),
         "S_seam_sites": sum(len(v) for v in report["seams"].values()),
         "S_seam_files": len(report["seams"]),
         # ШВЫ ВНУТРИ core — единственные из двенадцати, что нарушают закон
@@ -401,6 +439,16 @@ def print_report(rep):
     print("\n[1. ДОЛГ] языковые модули ВНУТРИ core — это будущий lang/ru:")
     for f in rep["language_files"]:
         print(f"   {f}")
+
+    if rep["core_reaches_lang"]:
+        print("\n[1б. ЯДРО ТЯНЕТ lang/ РУКАМИ — это тот же импорт языка, "
+              "ставший невидимым после переезда. ПОТОЛОК = 0:")
+        for f, hits in sorted(rep["core_reaches_lang"].items()):
+            mods = ", ".join(h["module"] for h in hits)
+            lines = ",".join(str(h["line"]) for h in hits)
+            print(f"   {f:34} x{len(hits)}  {mods}  (стр {lines})")
+    print(f"\n   язык живёт здесь ({t['L_lang_files']}): "
+          f"{', '.join(rep['lang_files']) or 'пока нигде'}")
 
     print(f"\n[2. ШВЫ] импортов языка не-языковым кодом: "
           f"{t['S_seam_sites']} в {t['S_seam_files']} файлах —"

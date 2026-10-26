@@ -5,7 +5,7 @@ import time
 from typing import Dict, Any, List, Optional
 
 # Импортируем вынесенный IR-парсер
-from brain.ir import IRParser
+from lang.ru.questions import IRParser
 # Импортируем Учителей (3 канала знаний)
 from teachers.teacher1 import AgentTeacherV2       # Канал 1: локальная LLM (Gemma/llama.cpp)
 from teachers.teacher_wiki import WikiTeacher      # Канал 2: интернет (Википедия)
@@ -991,7 +991,7 @@ class Lipid2Brain:
 
         До этой правки Experience был измерительным прибором: цикл считал
         точность и молчал. Предсказание «кошка -> пить» не подсказывало
-        brain/ir, какое знание показать первым (memory.txt, п.24). Здесь
+        lang/ru/questions, какое знание показать первым (memory.txt, п.24). Здесь
         появляется ЕДИНСТВЕННЫЙ вход, которым ответы читают опыт: словарь
         {"tail", "strength", "norm"} для top-k хвостов.
 
