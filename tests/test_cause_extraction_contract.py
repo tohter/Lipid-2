@@ -25,9 +25,11 @@ tests/test_cause_extraction_contract.py — замок очереди G: при�
 Числа тест НЕ хранит в голове: ИТОГ пересобирается скриптом-замером командой
 (урок 16: цифра без команды замера — догадка).
 """
+import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -268,6 +270,50 @@ class TestMeasurementIsReproducible(unittest.TestCase):
     def test_manual_world_count(self):
         """Миров с ручным CAUSES ровно 1 — от него проверяется ориентация."""
         self.assertEqual(int(self.s["manual_worlds"]), 1)
+
+    def test_manual_world_detector_is_format_not_substring(self):
+        """
+        Счётчик «мир с CAUSES» обязан смотреть ФОРМАТ, а не искать подстроку.
+
+        ЗАМЕРЕНО: прежний вариант («любой .json со строкой CAUSES») поднял
+        manual_worlds с 1 до 5 от одного соседнего файла — отчёта метрики,
+        где CAUSES всего лишь имя отношения. Тест обязан упасть и на grep'e,
+        и на пустом корпусе: для этого один файл с CAUSES в ТЕКСТЕ фразы и
+        один мир с CAUSES в observations.
+        """
+        import importlib.util
+        import shutil
+        spec = importlib.util.spec_from_file_location("pGm", MEASURE)
+        # модуль измерителя при импорте выполняет замер, поэтому функцию
+        # достаём текстом и исполняем в чистом пространстве имён
+        with open(MEASURE, encoding="utf-8") as fh:
+            src = fh.read()
+        start = src.index("def manual_cause_worlds(")
+        end = src.index("worlds = manual_cause_worlds(")
+        ns = {"json": json, "_os": os}
+        exec(src[start:end], ns)
+        detect = ns["manual_cause_worlds"]
+
+        tmp = tempfile.mkdtemp(prefix="pG_detect_")
+        try:
+            # мир в формате мира: observations + relation == CAUSES
+            with open(os.path.join(tmp, "real_world.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"observations": {"a|CAUSES|b": {"head": "a",
+                                                           "relation": "CAUSES",
+                                                           "tail": "b"}}}, fh)
+            # НЕ мир: CAUSES упоминается как текст/имя отношения вне формата
+            with open(os.path.join(tmp, "report.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"by_rel": {"CAUSES": "0/1"},
+                           "cases": [{"text": "A CAUSES B"}]}, fh)
+            self.assertEqual(detect(tmp), ["real_world.json"],
+                             "счётчик считает миром любой файл со словом "
+                             "CAUSES — метрика зависит от соседних файлов")
+            # и mutation-guard: пустой каталог обязан давать пусто, а не «1»
+            self.assertEqual(detect(tempfile.mkdtemp(prefix="pG_empty_")), [])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_past_tense_cause_survives(self):
         """Причина прошедшего времени переживает урок во всех 3 случаях.

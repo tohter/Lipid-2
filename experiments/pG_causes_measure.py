@@ -107,9 +107,44 @@ print()
 print("G4. ориентация CAUSES в данных и её потребитель")
 import json                                          # noqa: E402
 import os as _os                                     # noqa: E402
-worlds = [fn for fn in sorted(_os.listdir(_os.path.join(ROOT, "experiments")))
-          if fn.endswith(".json") and "CAUSES" in
-          open(_os.path.join(ROOT, "experiments", fn), encoding="utf-8").read()]
+
+
+def manual_cause_worlds(exp_dir):
+    """
+    Миры, где CAUSES вписан РУКАМИ.
+
+    ПРЕЖНЕЕ ОПРЕДЕЛЕНИЕ БЫЛО ЛОЖНЫМ: «любой .json в experiments, где
+    встречается строка CAUSES». Значит счётчик зависел от того, что лежит в
+    каталоге по СОСЕДСТВУ, а не от формата мира. ЗАМЕРЕНО: добавление метрики
+    золотого корпуса (experiments/CORPUS_METRIC*.json, где CAUSES — имя
+    отношения в отчёте) подняло manual_worlds с 1 до 5, и запертый тест
+    test_manual_world_count упал. Тот же класс хрупкости, что grep вместо
+    поведения: ищем подстроку вместо структуры.
+
+    Теперь мир — это мир: секция observations с записью relation == CAUSES.
+    Слово в тексте фразы или в отчёте миром не считается.
+    """
+    found = []
+    for fn in sorted(_os.listdir(exp_dir)):
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(_os.path.join(exp_dir, fn), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (ValueError, OSError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        obs = data.get("observations")
+        if not isinstance(obs, dict):
+            continue
+        if any(isinstance(v, dict) and v.get("relation") == "CAUSES"
+               for v in obs.values()):
+            found.append(fn)
+    return found
+
+
+worlds = manual_cause_worlds(_os.path.join(ROOT, "experiments"))
 print(f"  миров с CAUSES, вписанным руками: {len(worlds)} {worlds}")
 if worlds:
     d = json.load(open(_os.path.join(ROOT, "experiments", worlds[0]),

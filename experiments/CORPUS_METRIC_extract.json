@@ -1,0 +1,2484 @@
+{
+ "dev": {
+  "cases": 35,
+  "per_case": [
+   {
+    "id": "d01",
+    "text": "Кошка ловит мышь.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "кошка",
+      "CAN_DO",
+      "ловить"
+     ],
+     [
+      "ловить",
+      "OBJECT_OF",
+      "мышь"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d02",
+    "text": "Собака сторожит дом.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "собака",
+      "CAN_DO",
+      "сторожить"
+     ],
+     [
+      "сторожить",
+      "OBJECT_OF",
+      "дом"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d03",
+    "text": "Пчела собирает нектар.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "пчела",
+      "CAN_DO",
+      "собирать"
+     ],
+     [
+      "собирать",
+      "OBJECT_OF",
+      "нектар"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d04",
+    "text": "Мальчик читает книгу.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "мальчик",
+      "CAN_DO",
+      "читать"
+     ],
+     [
+      "читать",
+      "OBJECT_OF",
+      "книга"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d05",
+    "text": "У кошки есть хвост.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "кошка",
+      "HAS_PART",
+      "хвост"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "d06",
+    "text": "У стола четыре ножки.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [],
+    "misses": [
+     [
+      "стол",
+      "HAS_PART",
+      "ножка"
+     ]
+    ],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "ножка",
+      "LOCATED_IN",
+      "стол"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "d07",
+    "text": "Хвост собаки мокрый.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "хвост",
+      "PART_OF",
+      "собака"
+     ],
+     [
+      "хвост",
+      "HAS_PROPERTY",
+      "мокрый"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d08",
+    "text": "Кошка — млекопитающее.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "кошка",
+      "IS_ROLE",
+      "млекопитающее"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "d09",
+    "text": "Стол деревянный.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "стол",
+      "HAS_PROPERTY",
+      "деревянный"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "d10",
+    "text": "Кошки пушистые.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "кошка",
+      "HAS_PROPERTY",
+      "пушистый"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "d11",
+    "text": "Кошка спрятала мышь, чтобы не есть её.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 1,
+    "neg_hits": [
+     [
+      "спрятать",
+      "PURPOSE",
+      "есть"
+     ]
+    ],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "кошка",
+      "CAN_DO",
+      "спрятать"
+     ],
+     [
+      "спрятать",
+      "OBJECT_OF",
+      "мышь"
+     ]
+    ],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 3
+   },
+   {
+    "id": "d12",
+    "text": "Дом, где жил пёс, сгорел.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "жить",
+      "LOCATED_IN",
+      "дом"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "дом",
+      "CAN_DO",
+      "сгореть"
+     ],
+     [
+      "пёс",
+      "CAN_DO",
+      "жить"
+     ]
+    ],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 3
+   },
+   {
+    "id": "d13",
+    "text": "Дом, в котором жил пёс, сгорел.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "жить",
+      "LOCATED_IN",
+      "дом"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "дом",
+      "CAN_DO",
+      "сгореть"
+     ],
+     [
+      "пёс",
+      "CAN_DO",
+      "жить"
+     ]
+    ],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 3
+   },
+   {
+    "id": "d14",
+    "text": "Пожар погас вследствие дождя.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "дождь",
+      "CAUSES",
+      "погаснуть"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "пожар",
+      "CAN_DO",
+      "погаснуть"
+     ]
+    ],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d15",
+    "text": "Витя дал кошке корм.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "витя",
+      "CAN_DO",
+      "дать"
+     ],
+     [
+      "дать",
+      "RECIPIENT",
+      "кошка"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "дать",
+      "OBJECT_OF",
+      "корм"
+     ]
+    ],
+    "junk_hits": [
+     [
+      "дать",
+      "OBJECT_OF",
+      "кошка"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 4
+   },
+   {
+    "id": "d16",
+    "text": "Кошка открыла мышь лапой.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "открыть",
+      "INSTRUMENT",
+      "лапа"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "кошка",
+      "CAN_DO",
+      "открыть"
+     ],
+     [
+      "открыть",
+      "OBJECT_OF",
+      "мышь"
+     ]
+    ],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 3
+   },
+   {
+    "id": "d17",
+    "text": "Вода кипит при ста градусах.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "вода",
+      "CAN_DO",
+      "кипеть"
+     ]
+    ],
+    "misses": [
+     [
+      "кипеть",
+      "CONDITION",
+      "сто градусов"
+     ]
+    ],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "кипеть",
+      "CONDITION",
+      "градус"
+     ]
+    ],
+    "known_gap": true,
+    "produced_n": 2
+   },
+   {
+    "id": "d18",
+    "text": "Солнце светит днём.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "солнце",
+      "CAN_DO",
+      "светить"
+     ],
+     [
+      "светить",
+      "CIRCUMSTANCE",
+      "день"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d19",
+    "text": "Слон весит пять тонн.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "слон",
+      "VALUE",
+      "5 тонн"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "d20",
+    "text": "Книга стоит 5000 рублей.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "книга",
+      "VALUE",
+      "5000 рублей"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "d21",
+    "text": "Кит не рыба, а млекопитающее.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "кит",
+      "IS_ROLE",
+      "млекопитающее"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 1,
+    "neg_hits": [
+     [
+      "кит",
+      "IS_ROLE",
+      "рыба"
+     ]
+    ],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d22",
+    "text": "Кошка не спит.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 1,
+    "neg_hits": [
+     [
+      "кошка",
+      "CAN_DO",
+      "спать"
+     ]
+    ],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "d23",
+    "text": "Кошка съела канарейку.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "кошка",
+      "CAN_DO",
+      "съесть"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "съесть",
+      "OBJECT_OF",
+      "канарейка"
+     ]
+    ],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d24",
+    "text": "Гиппопотам, или бегемот, живёт в реке.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "гиппопотам",
+      "CAN_DO",
+      "жить"
+     ],
+     [
+      "жить",
+      "LOCATED_IN",
+      "река"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d25",
+    "text": "Мальчик выглянул из-за угла.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "мальчик",
+      "CAN_DO",
+      "выглянуть"
+     ],
+     [
+      "выглянуть",
+      "LOCATED_IN",
+      "угол"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "выглянуть",
+      "OBJECT_OF",
+      "угол"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 3
+   },
+   {
+    "id": "d26",
+    "text": "Огонь гасит вода.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "вода",
+      "CAN_DO",
+      "гасить"
+     ],
+     [
+      "гасить",
+      "OBJECT_OF",
+      "огонь"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d27",
+    "text": "Кошка сидит на подоконнике.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "кошка",
+      "CAN_DO",
+      "сидеть"
+     ],
+     [
+      "сидеть",
+      "LOCATED_IN",
+      "подоконник"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d28",
+    "text": "Пёс живёт в доме.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "пёс",
+      "CAN_DO",
+      "жить"
+     ],
+     [
+      "жить",
+      "LOCATED_IN",
+      "дом"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d29",
+    "text": "Ветер качает ветви берёзы.",
+    "markup_conflict": [],
+    "expect_n": 3,
+    "hits": [
+     [
+      "ветер",
+      "CAN_DO",
+      "качать"
+     ],
+     [
+      "качать",
+      "OBJECT_OF",
+      "ветвь"
+     ]
+    ],
+    "misses": [
+     [
+      "ветвь",
+      "PART_OF",
+      "берёза"
+     ]
+    ],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "качать",
+      "OBJECT_OF",
+      "берёза"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 3
+   },
+   {
+    "id": "d30",
+    "text": "Медведь спит всю зиму.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "медведь",
+      "CAN_DO",
+      "спать"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "спать",
+      "OBJECT_OF",
+      "зима"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d31",
+    "text": "Дети играют во дворе.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "ребёнок",
+      "CAN_DO",
+      "играть"
+     ],
+     [
+      "играть",
+      "LOCATED_IN",
+      "двор"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d32",
+    "text": "Садовник поливает цветы.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "садовник",
+      "CAN_DO",
+      "поливать"
+     ],
+     [
+      "поливать",
+      "OBJECT_OF",
+      "цветок"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d33",
+    "text": "Нож режет хлеб.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "нож",
+      "CAN_DO",
+      "резать"
+     ],
+     [
+      "резать",
+      "OBJECT_OF",
+      "хлеб"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "d34",
+    "text": "Учитель объяснил правило ученикам.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "объяснить",
+      "RECIPIENT",
+      "ученик"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "объяснить",
+      "OBJECT_OF",
+      "правило"
+     ],
+     [
+      "учитель",
+      "CAN_DO",
+      "объяснить"
+     ]
+    ],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 3
+   },
+   {
+    "id": "d35",
+    "text": "Стена построена из кирпича.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "стена",
+      "LOCATED_IN",
+      "кирпич"
+     ]
+    ],
+    "known_gap": true,
+    "produced_n": 1
+   }
+  ],
+  "recall": 0.9434,
+  "recall_plain": 0.9608,
+  "known_gap_found": "1/2",
+  "precision_strict": 0.7143,
+  "precision_triaj": 0.9,
+  "also_ok": 13,
+  "junk": 7,
+  "role_loss": 0,
+  "junk_rate": 0.1,
+  "unlabeled": 0,
+  "markup_conflicts": 0,
+  "forbid_violations": 0,
+  "produced_total": 70,
+  "expect_total": 53,
+  "hit_total": 50,
+  "by_rel": {
+   "CAN_DO": "18/18",
+   "CAUSES": "1/1",
+   "CIRCUMSTANCE": "1/1",
+   "CONDITION": "0/1",
+   "HAS_PART": "1/2",
+   "HAS_PROPERTY": "3/3",
+   "INSTRUMENT": "1/1",
+   "IS_ROLE": "2/2",
+   "LOCATED_IN": "7/7",
+   "OBJECT_OF": "8/8",
+   "PART_OF": "1/2",
+   "RECIPIENT": "2/2",
+   "VALUE": "2/2"
+  }
+ },
+ "heldout": {
+  "cases": 49,
+  "per_case": [
+   {
+    "id": "h01",
+    "text": "Лиса ловит зайца.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "лиса",
+      "CAN_DO",
+      "ловить"
+     ],
+     [
+      "ловить",
+      "OBJECT_OF",
+      "заяц"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h02",
+    "text": "Косарь косит траву.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "косарь",
+      "CAN_DO",
+      "косить"
+     ],
+     [
+      "косить",
+      "OBJECT_OF",
+      "трава"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h03",
+    "text": "Море покрывается льдом.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "море",
+      "CAN_DO",
+      "покрываться"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "покрываться",
+      "INSTRUMENT",
+      "лёд"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h04",
+    "text": "Повар солит суп.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "повар",
+      "CAN_DO",
+      "солить"
+     ],
+     [
+      "солить",
+      "OBJECT_OF",
+      "суп"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h05",
+    "text": "Плотник делает стол.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "плотник",
+      "CAN_DO",
+      "делать"
+     ],
+     [
+      "делать",
+      "OBJECT_OF",
+      "стол"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h06",
+    "text": "Крыша дома покраснела.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [],
+    "misses": [
+     [
+      "крыша",
+      "PART_OF",
+      "дом"
+     ]
+    ],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "крыша",
+      "CAN_DO",
+      "покраснеть"
+     ]
+    ],
+    "junk_hits": [
+     [
+      "покраснеть",
+      "OBJECT_OF",
+      "дом"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h08",
+    "text": "Лёд скользкий.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "лёд",
+      "HAS_PROPERTY",
+      "скользкий"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "h09",
+    "text": "Гвозди ржавые.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "гвоздь",
+      "HAS_PROPERTY",
+      "ржавый"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "h10",
+    "text": "Воробей — птица.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "воробей",
+      "IS_ROLE",
+      "птица"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "h11",
+    "text": "Ручка двери сломалась.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [],
+    "misses": [
+     [
+      "ручка",
+      "PART_OF",
+      "дверь"
+     ]
+    ],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "ручка",
+      "CAN_DO",
+      "сломаться"
+     ]
+    ],
+    "junk_hits": [
+     [
+      "сломаться",
+      "OBJECT_OF",
+      "дверь"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h12",
+    "text": "Сахар тает в воде.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "сахар",
+      "CAN_DO",
+      "таять"
+     ],
+     [
+      "таять",
+      "LOCATED_IN",
+      "вода"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h13",
+    "text": "Поезд прибыл на вокзал.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "поезд",
+      "CAN_DO",
+      "прибыть"
+     ],
+     [
+      "прибыть",
+      "LOCATED_IN",
+      "вокзал"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "прибыть",
+      "OBJECT_OF",
+      "вокзал"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 3
+   },
+   {
+    "id": "h14",
+    "text": "Мальчик порезал палец ножом.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "порезать",
+      "INSTRUMENT",
+      "нож"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "мальчик",
+      "CAN_DO",
+      "порезать"
+     ],
+     [
+      "порезать",
+      "OBJECT_OF",
+      "палец"
+     ]
+    ],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 3
+   },
+   {
+    "id": "h15",
+    "text": "Хозяйка дала соседке соли.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "дать",
+      "RECIPIENT",
+      "соседка"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "дать",
+      "OBJECT_OF",
+      "соль"
+     ],
+     [
+      "хозяйка",
+      "CAN_DO",
+      "дать"
+     ]
+    ],
+    "junk_hits": [
+     [
+      "дать",
+      "OBJECT_OF",
+      "соседка"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 4
+   },
+   {
+    "id": "h16",
+    "text": "Мост построили за лето.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": true,
+    "produced_n": 0
+   },
+   {
+    "id": "h17",
+    "text": "Автобусы ходят редко.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "автобус",
+      "CAN_DO",
+      "ходить"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "h18",
+    "text": "Дождь смыл землю.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "дождь",
+      "CAN_DO",
+      "смыть"
+     ],
+     [
+      "смыть",
+      "OBJECT_OF",
+      "земля"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h19",
+    "text": "Собаки грызут кости.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "собака",
+      "CAN_DO",
+      "грызть"
+     ],
+     [
+      "грызть",
+      "OBJECT_OF",
+      "кость"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h20",
+    "text": "Река разлилась весной.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "река",
+      "CAN_DO",
+      "разлиться"
+     ],
+     [
+      "разлиться",
+      "CIRCUMSTANCE",
+      "весна"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "разлиться",
+      "OBJECT_OF",
+      "весна"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 3
+   },
+   {
+    "id": "h21",
+    "text": "Больной температура тридцать девять градусов.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "температура",
+      "HAS_PROPERTY",
+      "больной"
+     ],
+     [
+      "температура",
+      "PART_OF",
+      "градус"
+     ]
+    ],
+    "known_gap": true,
+    "produced_n": 2
+   },
+   {
+    "id": "h22",
+    "text": "Температура тридцать девять градусов.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [],
+    "misses": [
+     [
+      "температура",
+      "VALUE",
+      "тридцать девять градусов"
+     ]
+    ],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "температура",
+      "PART_OF",
+      "градус"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "h23",
+    "text": "Дерево высокое.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "дерево",
+      "HAS_PROPERTY",
+      "высокий"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "h24",
+    "text": "У реки есть берега.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "река",
+      "HAS_PART",
+      "берег"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "h25",
+    "text": "Дом стоит на холме.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [],
+    "misses": [
+     [
+      "дом",
+      "CAN_DO",
+      "стоять"
+     ],
+     [
+      "стоять",
+      "LOCATED_IN",
+      "холм"
+     ]
+    ],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "дом",
+      "CAN_DO",
+      "стоить"
+     ],
+     [
+      "стоить",
+      "LOCATED_IN",
+      "холм"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h26",
+    "text": "Кошка спит на подоконнике.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "кошка",
+      "CAN_DO",
+      "спать"
+     ],
+     [
+      "спать",
+      "LOCATED_IN",
+      "подоконник"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h27",
+    "text": "Ветер стих к вечеру.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [],
+    "misses": [
+     [
+      "ветер",
+      "CAN_DO",
+      "стихнуть"
+     ]
+    ],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "ветер",
+      "LOCATED_IN",
+      "вечер"
+     ],
+     [
+      "ветер",
+      "OBJECT_OF",
+      "стих"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h28",
+    "text": "Кот не пьёт молоко.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 2,
+    "neg_hits": [
+     [
+      "кот",
+      "CAN_DO",
+      "пить"
+     ],
+     [
+      "пить",
+      "OBJECT_OF",
+      "молоко"
+     ]
+    ],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h29",
+    "text": "Лыжник идёт быстро.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "лыжник",
+      "CAN_DO",
+      "идти"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 1
+   },
+   {
+    "id": "h30",
+    "text": "Снег растает от тепла.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "снег",
+      "CAN_DO",
+      "растаять"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "растаять",
+      "LOCATED_IN",
+      "тепло"
+     ]
+    ],
+    "junk_hits": [],
+    "known_gap": true,
+    "produced_n": 2
+   },
+   {
+    "id": "h31",
+    "text": "Мальчик выглядит из-за угла.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "выглядеть",
+      "LOCATED_IN",
+      "угол"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "мальчик",
+      "CAN_DO",
+      "выглядеть"
+     ]
+    ],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h32",
+    "text": "Пожар гаснет из-за дождя.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "пожар",
+      "CAN_DO",
+      "гаснуть"
+     ]
+    ],
+    "junk_hits": [
+     [
+      "гаснуть",
+      "LOCATED_IN",
+      "дождь"
+     ]
+    ],
+    "known_gap": true,
+    "produced_n": 2
+   },
+   {
+    "id": "h33",
+    "text": "Он думает о погоде.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": true,
+    "produced_n": 0
+   },
+   {
+    "id": "h34",
+    "text": "Тетрадь, или блокнот, лежит на столе.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "лежать",
+      "LOCATED_IN",
+      "стол"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "тетрадь",
+      "CAN_DO",
+      "лежать"
+     ]
+    ],
+    "junk_hits": [
+     [
+      "лежать",
+      "OBJECT_OF",
+      "блокнот"
+     ]
+    ],
+    "known_gap": true,
+    "produced_n": 3
+   },
+   {
+    "id": "h35",
+    "text": "Стекло разбилось, потому что упал камень.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "стекло",
+      "CAN_DO",
+      "разбиться"
+     ]
+    ],
+    "junk_hits": [
+     [
+      "упасть",
+      "OBJECT_OF",
+      "камень"
+     ]
+    ],
+    "known_gap": true,
+    "produced_n": 2
+   },
+   {
+    "id": "h36",
+    "text": "Дорогу замело, так как метель усилилась.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "метель",
+      "CAN_DO",
+      "усилиться"
+     ]
+    ],
+    "junk_hits": [],
+    "known_gap": true,
+    "produced_n": 1
+   },
+   {
+    "id": "h37",
+    "text": "Река, берега которой заросли ивняком, обмелела.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "река",
+      "HAS_PROPERTY",
+      "обмелелый"
+     ]
+    ],
+    "junk_hits": [],
+    "known_gap": true,
+    "produced_n": 1
+   },
+   {
+    "id": "h38",
+    "text": "Вода такая горячая, что её не потрогаешь.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "вода",
+      "HAS_PROPERTY",
+      "горячий"
+     ]
+    ],
+    "junk_hits": [
+     [
+      "вода",
+      "CAN_DO",
+      "потрогать"
+     ]
+    ],
+    "known_gap": true,
+    "produced_n": 2
+   },
+   {
+    "id": "h39",
+    "text": "Надо есть рыбу.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": true,
+    "produced_n": 0
+   },
+   {
+    "id": "h40",
+    "text": "Кот, которого заметила мышь, замер.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [
+     [
+      "мышь",
+      "CAN_DO",
+      "заметить"
+     ],
+     [
+      "заметить",
+      "OBJECT_OF",
+      "кот"
+     ],
+     [
+      "кот",
+      "CAN_DO",
+      "замереть"
+     ]
+    ],
+    "junk_hits": [],
+    "known_gap": true,
+    "produced_n": 3
+   },
+   {
+    "id": "h41",
+    "text": "Волк охотится на оленя.",
+    "markup_conflict": [],
+    "expect_n": 1,
+    "hits": [
+     [
+      "волк",
+      "CAN_DO",
+      "охотиться"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "охотиться",
+      "LOCATED_IN",
+      "олень"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h42",
+    "text": "Мельница стоит на берегу реки.",
+    "markup_conflict": [],
+    "expect_n": 3,
+    "hits": [],
+    "misses": [
+     [
+      "мельница",
+      "CAN_DO",
+      "стоять"
+     ],
+     [
+      "стоять",
+      "LOCATED_IN",
+      "берег"
+     ],
+     [
+      "берег",
+      "PART_OF",
+      "река"
+     ]
+    ],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "мельница",
+      "CAN_DO",
+      "стоить"
+     ],
+     [
+      "стоить",
+      "LOCATED_IN",
+      "берег"
+     ],
+     [
+      "стоить",
+      "OBJECT_OF",
+      "река"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 3
+   },
+   {
+    "id": "h43",
+    "text": "Пила режет дерево быстро.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "пила",
+      "CAN_DO",
+      "резать"
+     ],
+     [
+      "резать",
+      "OBJECT_OF",
+      "дерево"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h44",
+    "text": "Дом выше сарая.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "дом",
+      "LOCATED_IN",
+      "выша"
+     ],
+     [
+      "дом",
+      "PART_OF",
+      "сарай"
+     ]
+    ],
+    "known_gap": true,
+    "produced_n": 2
+   },
+   {
+    "id": "h45",
+    "text": "Учитель вошёл в класс.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "учитель",
+      "CAN_DO",
+      "войти"
+     ],
+     [
+      "войти",
+      "LOCATED_IN",
+      "класс"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "войти",
+      "OBJECT_OF",
+      "класс"
+     ]
+    ],
+    "known_gap": false,
+    "produced_n": 3
+   },
+   {
+    "id": "h46",
+    "text": "Пчелы делают мёд.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "пчела",
+      "CAN_DO",
+      "делать"
+     ],
+     [
+      "делать",
+      "OBJECT_OF",
+      "мёд"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h47",
+    "text": "Ваня чинит велосипед.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "ваня",
+      "CAN_DO",
+      "чинить"
+     ],
+     [
+      "чинить",
+      "OBJECT_OF",
+      "велосипед"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h48",
+    "text": "Гора выше холма.",
+    "markup_conflict": [],
+    "expect_n": 0,
+    "hits": [],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [
+     [
+      "гора",
+      "LOCATED_IN",
+      "выша"
+     ],
+     [
+      "гора",
+      "PART_OF",
+      "холм"
+     ]
+    ],
+    "known_gap": true,
+    "produced_n": 2
+   },
+   {
+    "id": "h49",
+    "text": "Тучи закрыли солнце.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "туча",
+      "CAN_DO",
+      "закрыть"
+     ],
+     [
+      "закрыть",
+      "OBJECT_OF",
+      "солнце"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   },
+   {
+    "id": "h50",
+    "text": "Зеркало висит в прихожей.",
+    "markup_conflict": [],
+    "expect_n": 2,
+    "hits": [
+     [
+      "зеркало",
+      "CAN_DO",
+      "висеть"
+     ],
+     [
+      "висеть",
+      "LOCATED_IN",
+      "прихожая"
+     ]
+    ],
+    "misses": [],
+    "neg_n": 0,
+    "neg_hits": [],
+    "neg_misses": [],
+    "forbid_hits": [],
+    "extra": [],
+    "also_ok": [],
+    "junk_hits": [],
+    "known_gap": false,
+    "produced_n": 2
+   }
+  ],
+  "recall": 0.8421,
+  "recall_plain": 0.8364,
+  "known_gap_found": "2/2",
+  "precision_strict": 0.5275,
+  "precision_triaj": 0.7143,
+  "also_ok": 17,
+  "junk": 26,
+  "role_loss": 0,
+  "junk_rate": 0.2857,
+  "unlabeled": 0,
+  "markup_conflicts": 0,
+  "forbid_violations": 0,
+  "produced_total": 91,
+  "expect_total": 57,
+  "hit_total": 48,
+  "by_rel": {
+   "CAN_DO": "21/24",
+   "CIRCUMSTANCE": "1/1",
+   "HAS_PART": "1/1",
+   "HAS_PROPERTY": "3/3",
+   "INSTRUMENT": "1/1",
+   "IS_ROLE": "1/1",
+   "LOCATED_IN": "7/9",
+   "OBJECT_OF": "10/10",
+   "PART_OF": "0/3",
+   "RECIPIENT": "1/1",
+   "VALUE": "0/1"
+  }
+ }
+}
