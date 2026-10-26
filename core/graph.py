@@ -9,8 +9,66 @@ if __package__ in (None, ""):
 
 from core.sdr import SDR1024, prewarm
 from core.index import SdrIndex
-from core.lemma import LemmaResolver
 from core.storage import StorageManager, NodeType, RelationType
+
+
+class NoSurfaceForms:
+    """
+    Заглушка сведения поверхностных форм («флюгера» -> «флюгер").
+
+    ПОЧЕМУ ОНА ВООБЩЕ НУЖНА (граница языка, IR шаг A2.1). Ядро по закону не
+    имеет права импортировать язык: сведения русских падежей — решение,
+    принятое по-русски. Значит резолвер обязан ПРИХОДИТЬ ИЗВНЕ. Но ядро
+    создаётся в 15 местах (мозг, демо, эксперименты, тесты), и в каждом из
+    них язык могут не передать. Молча вернуть «форм не знаю» нельзя — это
+    тот самый дефект, который уже чинили в этом файле: без индекса форм
+    падежи перестают пониматься, а выглядит это как «в памяти ничего нет».
+    Поэтому: печатаем В STDERR один раз на экземпляр и продолжаем работать
+    грубо (ровно как core/records.py деградирует без pymorphy3 и как
+    core/actions.py живёт без Morph).
+    """
+
+    warned = False
+
+    def __init__(self, owner: str = "GraphMemory"):
+        self.owner = owner
+
+    def _warn(self):
+        """
+        ОДИН РАЗ, НО НЕ ПРИ КОНСТРУИРОВАНИИ. Ядро создают в 15 местах, и
+        большинству из них сведения о формах не нужны (демо ядра,
+        эксперименты над пластикостью, тесты распада). Орать на них —
+        обесценить предупреждение, а вместе с ним и этот дефект. Кричим ровно
+        там, где формы ЗАПРОСИЛИ и не нашли: attach / resolve / resolve_name.
+        Тогда потерю нельзя списать на «я про формы и не думал».
+        """
+        if NoSurfaceForms.warned:
+            return
+        NoSurfaceForms.warned = True
+        print(f"[{self.owner}] ⚠ сведения о ФОРМАХ СЛОВА НЕ ВНЕДРЕНЫ: "
+              f"падежи ядро НЕ различает — «флюгера» не найдёт узел «флюгер». "
+              f"Передать службу: GraphMemory(surface_forms=<резолвер>). "
+              f"Мозг передаёт, тест на формы обязан передать сам.",
+              file=sys.stderr, flush=True)
+
+    def attach(self, names):
+        self._warn()
+        return 0
+
+    def add(self, name):
+        return None
+
+    def resolve(self, word):
+        self._warn()
+        return (None, 0.0)
+
+    def resolve_name(self, word):
+        self._warn()
+        return None
+
+    def __len__(self):
+        return 0
+
 
 class Node:
     """Узел графа памяти с поддержкой типов узлов и синонимов."""
@@ -56,7 +114,7 @@ class GraphMemory:
     - Профилей действий (Kinetic, Metabolic, Semiotic)
     - Сохранения и сжатия в бинарник
     """
-    def __init__(self):
+    def __init__(self, surface_forms=None):
         self.nodes: Dict[str, Node] = {}
         self.storage = StorageManager()
         # SDR-индекс: аргмакс перекрытия матрицей, а не Python-циклом по узлам.
@@ -64,7 +122,14 @@ class GraphMemory:
         # Резолвер поверхностных форм («флюгера» -> «флюгер»). Работает по
         # float-эмбеддингу, а НЕ по перекрытию SDR: на 20 битах морфология не
         # различима (замеры — experiments/RESULTS.md, раздел 6).
-        self.lemmas = LemmaResolver()
+        #
+        # ПРИХОДИТ ИЗВНЕ (граница языка, шаг A2.1): это языковая зависимость,
+        # и ядро не смеет её импортировать — см. NoSurfaceForms. Тот же
+        # приём, что уже применён в core/records.py (деградация с громким
+        # предупреждением) и core/actions.py (Morph с available=False).
+        self.lemmas = surface_forms if surface_forms is not None \
+            else NoSurfaceForms()
+        self.surface_forms_available = surface_forms is not None
         self._lemmas_attached = False
 
     def get_or_create_node(self, name: str, node_type: int = NodeType.ENTITY,
@@ -88,11 +153,20 @@ class GraphMemory:
         return node
 
     # ── узнавание формы слова ──────────────────────────────
-    def sync_lemmas(self):
+    def sync_lemmas(self, surface_forms=None):
         """
         Индексирует все имена узлов для сведения форм. Вызывать пачкой —
         кодирование имён дорогое, по одному его гонять нельзя.
+
+        РЕЗОЛВЕР МОЖНО ПЕРЕДАТЬ СЮДА (вместо конструктора) — это не второй
+        механизм, а то же окно: ядро НЕ смеет импортировать язык (граница,
+        шаг A2.1), а индекс форм нужен не всегда. Предупреждение тоже
+        кричится здесь, а не при конструировании: ядро создают в 15 местах,
+        большинству формы не нужны, и ор на них обесценил бы warning.
         """
+        if surface_forms is not None:
+            self.lemmas = surface_forms
+            self.surface_forms_available = True
         if not self.nodes:
             return 0
         self.lemmas.attach(list(self.nodes.keys()))

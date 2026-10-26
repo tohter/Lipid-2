@@ -142,8 +142,18 @@ def module_root(name, current_file):
 
 
 def lang_imports(rel):
-    """Сеамы: где не-языковой код тянет язык."""
+    """
+    Швы: где не-языковой код тянет язык.
+
+    КАЖДЫЙ шов помечается, лежит ли он ВНУТРИ демо-самопроверки
+    (`if __name__ == "__main__"`). Это не снисхождение, а та же логика, что
+    уже применена к кириллице: цикл обязан кормиться русским текстом, иначе
+    самопроверка ничего не проверяет, но в библиотечный путь этот импорт не
+    попадает. Без разделения A2 физически не смог бы довести S_seams_inside_core
+    до нуля: в core/cortex.py русский текст стоит именно в демо.
+    """
     tree = parse(rel)
+    spans = demo_spans(tree)
     hits = []
     for mod, lineno, nested in imports_of(tree):
         full = module_root(mod, rel)
@@ -151,7 +161,8 @@ def lang_imports(rel):
         cand = {full, full.split(".")[0]}
         if cand & LANGUAGE_MODULES or any(
                 c.startswith("pymorphy3") for c in cand):
-            hits.append({"module": full, "line": lineno, "nested": nested})
+            hits.append({"module": full, "line": lineno, "nested": nested,
+                         "demo": in_span(lineno, spans)})
     return hits
 
 
@@ -203,6 +214,25 @@ DIAGNOSTIC_FUNCS = {"print", "warn", "info", "error", "debug", "_status",
                     "log", "warning", "exception"}
 
 
+def demo_spans(tree):
+    """Строковые диапазоны `if __name__ == "__main__"` и def main()/demo()."""
+    spans = []
+    for n in ast.walk(tree):
+        if isinstance(n, ast.If):
+            names = {x.id for x in ast.walk(n.test) if isinstance(x, ast.Name)}
+            vals = {x.value for x in ast.walk(n.test)
+                    if isinstance(x, ast.Constant)}
+            if "__name__" in names and "__main__" in vals:
+                spans.append((n.lineno, n.end_lineno))
+        elif isinstance(n, ast.FunctionDef) and n.name in ("main", "demo"):
+            spans.append((n.lineno, n.end_lineno))
+    return spans
+
+
+def in_span(lineno, spans):
+    return any(a <= lineno <= b for a, b in spans)
+
+
 def classify_ruslits(rel):
     """
     Русские литералы core/, разложенные по ПРИРОДЕ. Одна цифра «сколько
@@ -226,19 +256,10 @@ def classify_ruslits(rel):
     for n in ast.walk(tree):
         for ch in ast.iter_child_nodes(n):
             parent[id(ch)] = n
-    demo_spans = []
-    for n in ast.walk(tree):
-        if isinstance(n, ast.If):
-            names = {x.id for x in ast.walk(n.test) if isinstance(x, ast.Name)}
-            vals = {x.value for x in ast.walk(n.test)
-                    if isinstance(x, ast.Constant)}
-            if "__name__" in names and "__main__" in vals:
-                demo_spans.append((n.lineno, n.end_lineno))
-        elif isinstance(n, ast.FunctionDef) and n.name in ("main", "demo"):
-            demo_spans.append((n.lineno, n.end_lineno))
+    spans = demo_spans(tree)
 
     def in_demo(lineno):
-        return any(a <= lineno <= b for a, b in demo_spans)
+        return in_span(lineno, spans)
 
     data, msg, demo = 0, 0, 0
     for node in ast.walk(tree):
@@ -347,7 +368,8 @@ def core_reaches_lang(rel):
     for mod, lineno, nested in imports_of(parse(rel)):
         full = module_root(mod, rel)
         if full.split(".")[0] == LANGUAGE_PACKAGES[0]:
-            hits.append({"module": full, "line": lineno, "nested": nested})
+            hits.append({"module": full, "line": lineno, "nested": nested,
+                         "demo": in_span(lineno, spans)})
     return hits
 
 
@@ -406,15 +428,29 @@ def measure():
         "C_core_reaches_lang": sum(len(v)
                                    for v in report["core_reaches_lang"].values()),
         "L_lang_files": len(report["lang_files"]),
-        "S_seam_sites": sum(len(v) for v in report["seams"].values()),
-        "S_seam_files": len(report["seams"]),
+        # S считает ТОЛЬКО рабочие швы. Демо-швы — справочно (как M и X):
+        # они не попадают в библиотечный путь, но обязаны быть видны числом,
+        # чтобы «ноль швов» не оказался нулём, нарисованным демо-блоком.
+        "S_seam_sites": sum(1 for v in report["seams"].values()
+                            for h in v if not h.get("demo")),
+        "S_demo_seam_sites": sum(1 for v in report["seams"].values()
+                                 for h in v if h.get("demo")),
+        # файлом считается только тот, где есть хотя бы один РАБОЧИЙ шов:
+        # иначе «9 файлов» осталось бы, даже когда все швы уехали в демо
+        "S_seam_files": sum(1 for v in report["seams"].values()
+                            if any(not h.get("demo") for h in v)),
         # ШВЫ ВНУТРИ core — единственные из двенадцати, что нарушают закон
         # напрямую. Мозг имеет право говорить с человеком; ядро — нет. Без
         # отдельной меры эти четыре тонут в общем числе и рефакторинг можно
         # объявить готовым, не тронув их.
+        "S_demo_seams_inside_core": sum(
+            1 for f, v in report["seams"].items()
+            if f.startswith("core" + os.sep)
+            for h in v if h.get("demo")),
         "S_seams_inside_core": sum(
-            len(v) for k, v in report["seams"].items()
-            if k.startswith("core" + os.sep)),
+            1 for f, v in report["seams"].items()
+            if f.startswith("core" + os.sep)
+            for h in v if not h.get("demo")),
         "O_output_methods": sum(len(v)
                                 for v in report["output_methods"].values()),
         "R_core_ruslits": sum(report["core_ruslits"].values()),
@@ -450,9 +486,13 @@ def print_report(rep):
     print(f"\n   язык живёт здесь ({t['L_lang_files']}): "
           f"{', '.join(rep['lang_files']) or 'пока нигде'}")
 
-    print(f"\n[2. ШВЫ] импортов языка не-языковым кодом: "
+    print(f"\n[2. ШВЫ] РАБОЧИХ импортов языка не-языковым кодом: "
           f"{t['S_seam_sites']} в {t['S_seam_files']} файлах —"
-          f" ровно столько мест обязан закрыть IR:")
+          f" ровно столько мест обязан закрыть IR")
+    print(f"   (справочно: ещё {t['S_demo_seam_sites']} швов стоят в "
+          f"демо-самопроверках `__main__` — в библиотечный путь не попадают, "
+          f"нарушением НЕ считаются, но число обязано быть видно: «ноль швов», "
+          f"дорисованный демо-блоком, это не ноль)")
     for f, hits in sorted(rep["seams"].items(),
                           key=lambda kv: -len(kv[1])):
         mods = ", ".join(sorted({h["module"] for h in hits}))

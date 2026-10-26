@@ -9,71 +9,74 @@
    {
     "module": "core.morph",
     "line": 24,
-    "nested": false
+    "nested": false,
+    "demo": false
    }
   ],
   "core/cortex.py": [
    {
     "module": "core.morph",
     "line": 384,
-    "nested": true
+    "nested": true,
+    "demo": false
    },
    {
     "module": "core.morph",
     "line": 531,
-    "nested": true
-   }
-  ],
-  "core/graph.py": [
-   {
-    "module": "core.lemma",
-    "line": 12,
-    "nested": false
+    "nested": true,
+    "demo": false
    }
   ],
   "core/records.py": [
    {
     "module": "pymorphy3",
     "line": 66,
-    "nested": true
+    "nested": true,
+    "demo": false
    }
   ],
   "brain/learner.py": [
    {
     "module": "core.extract",
     "line": 52,
-    "nested": false
+    "nested": false,
+    "demo": false
    },
    {
     "module": "core.morph",
     "line": 54,
-    "nested": false
+    "nested": false,
+    "demo": false
    }
   ],
   "brain/lipid2_brain.py": [
    {
     "module": "core.lemma",
     "line": 19,
-    "nested": false
+    "nested": false,
+    "demo": false
    },
    {
     "module": "core.morph",
-    "line": 1019,
-    "nested": true
+    "line": 1030,
+    "nested": true,
+    "demo": false
    }
   ],
   "brain/question.py": [
    {
     "module": "core.morph",
     "line": 33,
-    "nested": false
+    "nested": false,
+    "demo": false
    }
   ],
   "brain/social_sim.py": [
    {
     "module": "core.extract",
     "line": 42,
-    "nested": false
+    "nested": false,
+    "demo": false
    }
   ]
  },
@@ -101,12 +104,12 @@
    {
     "cls": "Lipid2Brain",
     "method": "sleep_now",
-    "line": 1206
+    "line": 1217
    },
    {
     "cls": "Lipid2Brain",
     "method": "process_input",
-    "line": 1223
+    "line": 1234
    }
   ],
   "brain/question.py": [
@@ -143,7 +146,7 @@
   "core/bitsstore.py": 26,
   "core/cortex.py": 30,
   "core/encoder.py": 8,
-  "core/graph.py": 10,
+  "core/graph.py": 11,
   "core/logchannel.py": 0,
   "core/records.py": 4,
   "core/schemes.py": 0,
@@ -167,24 +170,26 @@
   "lang/ru/questions.py"
  ],
  "tests_touching_russian": {
-  "checks_comparing_russian": 553,
+  "checks_comparing_russian": 554,
   "files": 37,
-  "checks_with_russian_message_only": 453
+  "checks_with_russian_message_only": 459
  },
  "totals": {
   "D_debt_files": 3,
   "C_core_reaches_lang": 0,
   "L_lang_files": 3,
-  "S_seam_sites": 11,
-  "S_seam_files": 8,
-  "S_seams_inside_core": 5,
+  "S_seam_sites": 10,
+  "S_demo_seam_sites": 0,
+  "S_seam_files": 7,
+  "S_demo_seams_inside_core": 0,
+  "S_seams_inside_core": 4,
   "O_output_methods": 6,
   "R_core_ruslits": 169,
-  "M_core_messages": 104,
+  "M_core_messages": 105,
   "X_core_demo": 117,
   "R_neutral_files": 9,
   "Z_language_ruslits": 630,
-  "P_ir_output_price": 553,
+  "P_ir_output_price": 554,
   "P_ir_output_files": 37
  }
 }

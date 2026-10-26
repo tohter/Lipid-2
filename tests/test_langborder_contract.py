@@ -49,9 +49,13 @@ CEILINGS = {
     # невидим, и закон остался бы только на бумаге.
     "C_core_reaches_lang": 0,
     "D_debt_files": 3,          # core/extract.py, core/morph.py, core/lemma.py
-    "S_seam_sites": 11,         # импортов языка не-языковым кодом (было 12,
-                                # A1 убрал шов brain/ir.py -> pymorphy3)
-    "S_seams_inside_core": 5,   # из них ВНУТРИ ядра — это нарушения закона
+    "S_seam_sites": 10,         # импортов языка не-языковым кодом. Было 12:
+                                # A1 убрал шов brain/ir.py -> pymorphy3,
+                                # A2.1 убрал core/graph.py -> core/lemma
+                                # (резолвер форм теперь ПРИХОДИТ в ядро извне).
+    "S_seams_inside_core": 4,   # из них ВНУТРИ ядра — это нарушения закона.
+                                # Было 5, A2.1 закрыл graph.py: остались
+                                # cortex (x2), actions, records.
     "O_output_methods": 6,      # публичных методов, отдающих русскую строку
     "R_core_ruslits": 169,      # русских ДАННЫХ в нейтральном core/
 }
@@ -78,14 +82,29 @@ class TestLawIsMeasured(unittest.TestCase):
                       "объявляет границу там, где её нет")
 
     def test_measurer_finds_core_seams(self):
-        """Четыре ядровых шва из ревью обязаны быть вмерены (cortex, graph,
-        records, actions) — именно их закрывает A2."""
+        """Ядровые швы, ЕЩЁ НЕ ЗАКРЫТЫЕ, обязаны быть вмерены — именно их
+        закрывает A2. core/graph.py из списка убран на шаге A2.1: шва там
+        больше нет, и требовать его впредь значило бы запретить улучшение.
+        Вместо требования «шить навсегда» — симметричная проверка ниже:
+        закрытый шов обязан ИСЧЕЗНУТЬ из меры, а не прятаться в нуле."""
         inside = {f: v for f, v in self.rep["seams"].items()
                   if f.startswith("core" + os.sep)}
-        for f in ("core/cortex.py", "core/graph.py", "core/records.py",
-                  "core/actions.py"):
+        for f in ("core/cortex.py", "core/records.py", "core/actions.py"):
             self.assertIn(f, inside,
                           f"шва {f} в мере не видно — закон нечем проверять")
+
+    def test_closed_seam_actually_disappears_from_measure(self):
+        """A2.1: у core/graph.py больше нет языкового импорта. Если шов
+        вернётся — упадёт эта проверка, а не «потолок»: цена молчания в том,
+        что закрытый шов нельзя потерять из виду."""
+        inside = {f: v for f, v in self.rep["seams"].items()
+                  if f.startswith("core" + os.sep)}
+        self.assertNotIn("core/graph.py", inside,
+                         "у ядра снова языковый импорт в graph.py — A2.1 откатился")
+        demo = [h for hits in inside.values() for h in hits if h.get("demo")]
+        self.assertEqual(demo, [],
+                         "демо-шов внутри core затерялся в общей мере — он обязан "
+                         "быть виден отдельным числом S_demo_seam_sites")
 
     def test_measurer_finds_the_output_hole(self):
         """brain/lipid2_brain.py process_input() возвращает человеку строку."""
@@ -185,11 +204,14 @@ class TestPriceIsKnown(unittest.TestCase):
     def test_price_of_ir_output_is_measured_not_recalled(self):
         checked, files, msg_only = price_of_ir_output()
         self.assertGreater(checked, 0, "цена не измерена")
-        # Число записано в IR_BOUNDARY.md как 553/37. Если оно поехало —
-        # документ врёт, и знать об этом надо сейчас, а не на чтении документа.
-        self.assertEqual((checked, files), (553, 37),
+        # Число записано в IR_BOUNDARY.md. Если оно поехало — документ врёт,
+        # и знать об этом надо сейчас, а не на чтении документа.
+        # 553 -> 554 на шаге A2.1: добавлен тест test_core_itself_recognizes_
+        # forms, он СРАВНИВАЕТ РУССКУЮ СТРОКУ с выводом ядра, то есть честно
+        # входит в цену A4. Числа не подгоняются: сначала замер, потом цифра.
+        self.assertEqual((checked, files), (554, 37),
                          f"цена A4 = ({checked}, {files}), а в IR_BOUNDARY.md "
-                         f"написано (553, 37) — обнови документ СЕЙЧАС")
+                         f"написано (554, 37) — обнови документ СЕЙЧАС")
         self.assertGreater(msg_only, 0,
                            "проверки только-с-сообщением перестали считаться: "
                            "цена будет завышена")
@@ -302,14 +324,38 @@ class TestMutationsAreCaught(unittest.TestCase):
     # ядро модуля, куда безопасно вставлять код уровня модуля
     TAIL = 'if __name__ == "__main__":'
 
+    # ЯКОРЬ НЕЛЬЗЯ брать из __main__: демо-самопроверка обязана кормиться
+    # русским текстом, и импорт, вставленный в демо, нарушением библиотечного
+    # пути не считается. Первый вариант мутации вставлял импорт в хвост файла
+    # — то есть ровно в демо — и перестал ловить настоящее нарушение после
+    # того, как A2.1 ввёл демо-разделение. Мутант обязан бить в рабочий путь.
+    LIB = "from core.storage import StorageManager, NodeType, RelationType"
+
     def test_new_language_import_in_core_is_caught(self):
         rep = self._patched_measure(
-            "core/graph.py", self.TAIL,
-            "from core.morph import Morph  # нарушение границы\n" + self.TAIL)
+            "core/graph.py", self.LIB,
+            "from core.morph import Morph  # нарушение границы\n" + self.LIB)
         self.assertGreater(rep["totals"]["S_seams_inside_core"],
                            CEILINGS["S_seams_inside_core"],
                            "ядро получило новый импорт языка, а замер его не "
                            "увидел — закон нечем проверять")
+
+    def test_language_import_in_demo_is_counted_but_not_a_seam(self):
+        """ОБРАТНАЯ мутация, и она важна не меньше: импорт языка внутри
+        `if __name__ == "__main__"` не попадает в библиотечный путь, поэтому
+        швом НЕ считается — но обязан всплыть числом S_demo_seam_sites. Без
+        этой пары демо-блок становится лазейкой: перенёс импорт в самопроверку
+        и «очистил» ядро. С этой парой перенос виден как минимум в мере."""
+        rep = self._patched_measure(
+            "core/graph.py", self.TAIL,
+            self.TAIL + "\n    from core.morph import Morph")
+        self.assertEqual(rep["totals"]["S_seams_inside_core"],
+                         CEILINGS["S_seams_inside_core"],
+                         "демо-импорт посчитали швом — ядру нельзя писать "
+                         "самопроверку вообще")
+        self.assertEqual(rep["totals"]["S_demo_seams_inside_core"], 1,
+                         "демо-шов внутри ядра пропал из меры — ноль, "
+                         "дорисованный демо-блоком, это не чистота")
 
     def test_new_ru_returning_method_is_caught(self):
         rep = self._patched_measure(

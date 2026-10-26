@@ -70,6 +70,28 @@ class TestMorphologicalRetrieval(unittest.TestCase):
     def test_finds_entity_by_exact_name(self):
         self.assertIsNotNone(self.brain.find_in_memory("кошка"))
 
+    def test_core_itself_recognizes_forms(self):
+        """
+        Ядро обязано узнавать форму САМО, а не через мозг (граница, шаг A2.1).
+
+        ПОЧЕМУ ЭТОТ ТЕСТ ПОЯВИЛСЯ ИМЕННО СЕЙЧАС. После A2.1 ядро больше не
+        импортирует язык: службу форм ему передаёт мозг. Я написала мутант —
+        в мозге GraphMemory() без службы — и весь набор остался ЗЕЛЁНЫМ:
+        find_in_memory ходит в мировой резолвер мозга, поэтому деградация
+        ядра осталась невидимой. Знание «падежи работают» было завязано на
+        мозг, а цикл предсказания зовёт ядро напрямую (core._recall ->
+        core.resolve), то есть тихо теряло падежи. Поэтому проверяем именно
+        ядро, и именно поведением, а не флагом available: флаг можно выставить,
+        ничего не передав.
+        """
+        self.assertTrue(self.brain.core.surface_forms_available,
+                        "мозг не внедрил ядру службу сведения форм — "
+                        "ядро слепо к падежам, а выглядит это как «в памяти "
+                        "ничего нет»")
+        node = self.brain.core.resolve("флюгера")
+        self.assertIsNotNone(node, "ядро не свело «флюгера» к узлу «флюгер»")
+        self.assertEqual(node.name, "флюгер")
+
     def test_finds_entity_by_case_form(self):
         """Родительный/дательный падеж обязан попадать в тот же узел."""
         for form in ("кошки", "кошке", "кошку", "флюгера", "флюгеру", "собаке"):
@@ -129,7 +151,13 @@ class TestGraphRecall(unittest.TestCase):
         from core.graph import GraphMemory
         from core.cortex import PredictiveCortex
         from core.sdr import SDR1024
-        g = GraphMemory()
+        from core.lemma import LemmaResolver
+        # РЕЗОЛВЕР ПЕРЕДАЁТСЯ ЯВНО (шаг A2.1 границы): ядро больше не умеет
+        # само импортировать язык, и тест, которому нужно узнавание русских
+        # падежей, обязан принести языковую службу с собой. Сила теста не
+        # изменена: сводит ли ядро «кошки» к «кошка» — проверяется ровно так
+        # же. Проверено обратным мутантом: без резолвера тест падает.
+        g = GraphMemory(surface_forms=LemmaResolver())
         for w in ("кошка", "собака", "молоко", "рыба", "стол", "окно"):
             g.get_or_create_node(w)
         c = PredictiveCortex(g, teacher=None)

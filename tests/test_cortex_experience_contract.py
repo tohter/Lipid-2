@@ -41,6 +41,7 @@ os.environ.setdefault("LIPID2_STATUS", "0")
 
 from core.cortex import Hormones, PredictiveCortex
 from core.graph import GraphMemory
+from core.lemma import LemmaResolver
 from core.storage import RelationType
 from core.transitions import (MAX_STRENGTH, TransitionTable, merge_json,
                               table_from_world)
@@ -52,7 +53,8 @@ TEXT = ("Кошка сидит на подоконнике. Кошка спит 
 
 
 def make_graph(words=("кошка", "собака", "ребёнок", "вода", "пламя")):
-    g = GraphMemory()
+    # Языковая служба передаётся ЯВНО: ядро не импортирует язык (шаг A2.1).
+    g = GraphMemory(surface_forms=LemmaResolver())
     for w in words:
         g.get_or_create_node(w)
     g.sync_lemmas()
@@ -66,7 +68,7 @@ def make_graph(words=("кошка", "собака", "ребёнок", "вода"
 class TestCortexHasNoWriteRightsToOntology(unittest.TestCase):
 
     def setUp(self):
-        self.graph = GraphMemory()
+        self.graph = GraphMemory(surface_forms=LemmaResolver())
         self.graph.get_or_create_node("кошка")
         self.graph.get_or_create_node("кошачьи")
         self.graph.get_or_create_node("молоко")
