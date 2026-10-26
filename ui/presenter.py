@@ -264,4 +264,12 @@ def summarize_report(rep) -> str:
     blocked = getattr(rep, "blocked_by_limit", 0)
     if blocked:
         line += f", лимит: {blocked} слов(а) не спрошено"
+    # Пункт B (тот же закон, что п.21 и урок 16 «чего не показано — того нет»).
+    # Фраза без единой связи — единственный исход урока, который выглядит как
+    # «в тексте нечего было брать», а на деле «разбор отказал». Оставить её
+    # только в журнале — значит оставить пользователю враньё в статус-баре.
+    silent = getattr(rep, "sentences_silent", 0)
+    total = getattr(rep, "sentences", 0)
+    if silent:
+        line += f", молчало {silent}/{total} фраз"
     return line
