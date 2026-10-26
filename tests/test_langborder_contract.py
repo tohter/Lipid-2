@@ -62,6 +62,20 @@ CEILINGS = {
 
 BASELINE = os.path.join(ROOT, "experiments", "IR_BASELINE.json")
 
+# Справочные величины: они НЕ запреты, но обязаны быть пришпилены к снимку.
+# Число без потолка и без снимка — это число, которое может уехать и молчать.
+REFERENCE_KEYS = (
+    "M_core_messages",       # print/log/raise на русском
+    "X_core_demo",           # строки __main__-самопроверок
+    "S_demo_seam_sites",     # швы внутри демо
+    "S_demo_seams_inside_core",
+    "U_outer_seam_sites",    # швы в tools/ и teachers/
+    "U_outer_seam_files",
+    "Z_language_ruslits",    # кириллица в файлах-языках
+    "P_ir_output_price",     # цена шага A4
+    "P_ir_output_files",
+)
+
 
 class TestLawIsMeasured(unittest.TestCase):
     """
@@ -340,6 +354,30 @@ class TestMutationsAreCaught(unittest.TestCase):
                            "ядро получило новый импорт языка, а замер его не "
                            "увидел — закон нечем проверять")
 
+    def test_measure_C_CAN_fire_not_only_return_zero(self):
+        """
+        Ноль нарушения — НЕ доказательство, что проверка работает.
+
+        Этот замок появился из найденного дефекта, а не из осторожности. В
+        core_reaches_lang попала ссылка на переменную spans, которой у функции
+        нет: пока ядро честно НЕ импортирует lang/, функция не доходила до
+        строки и C показывал правильный 0. Стоило нарушению появиться — NameError
+        вместо поимки. Закон C = 0 на пустоте неотличим от закона C = 0,
+        который сломался. Поэтому мутант ОБЯЗАН: (а) не уронить measure,
+        (б) дать ровно C = 1, (в) не стать при этом швом категории S.
+        """
+        rep = self._patched_measure(
+            "core/graph.py", self.LIB,
+            "from lang.ru.questions import IRParser  # нарушение границы\n"
+            + self.LIB)
+        self.assertEqual(rep["totals"]["C_core_reaches_lang"], 1,
+                         "ядро импортирует lang/, а мера C это не увидела "
+                         "(или упала) — закон C = 0 нечем проверять")
+        self.assertEqual(rep["totals"]["S_seams_inside_core"],
+                         CEILINGS["S_seams_inside_core"],
+                         "импорт lang/ посчитан швом S: категории наложились, "
+                         "улучшение S можно спрятать за ростом C")
+
     def test_language_import_in_demo_is_counted_but_not_a_seam(self):
         """ОБРАТНАЯ мутация, и она важна не меньше: импорт языка внутри
         `if __name__ == "__main__"` не попадает в библиотечный путь, поэтому
@@ -429,6 +467,30 @@ class TestBaselineFileExists(unittest.TestCase):
             self.assertEqual(snap["totals"][k], live[k],
                              f"{k}: снимок {snap['totals'][k]}, вживую "
                              f"{live[k]} — документ и код разошлись")
+
+    def test_reference_numbers_are_pinned_too(self):
+        """
+        Числа БЕЗ потолка гниют МОЛЧА, и это хуже, чем быть незамеренными:
+        незамеренное число нельзя сочинить, а протухшее — можно. Поэтому
+        C demo/M/X/U сверяются со снимком ОБЯЗАНЫ, хоть потолка и не имеют.
+        Рост такого числа не падает сам — его замечает эта проверка, и это
+        единственная защита от «у нас же было 117».
+        """
+        import json
+        with open(BASELINE, encoding="utf-8") as fh:
+            snap = json.load(fh)
+        live = measure()["totals"]
+        for k in REFERENCE_KEYS:
+            self.assertIn(k, live, f"категория {k} пропала из меры")
+            self.assertEqual(snap["totals"].get(k), live[k],
+                             f"{k}: снимок {snap['totals'].get(k)}, вживую "
+                             f"{live[k]} — число без потолка уехало незаметно")
+        # U обязана быть СПРАВОЧНОЙ: потолка у неё нет и быть не может, пока
+        # инструмент имеет право знать язык (рост потолка — решение хозяина)
+        for k in REFERENCE_KEYS:
+            self.assertNotIn(k, CEILINGS,
+                             f"{k} попала в трещотку: справочная величина "
+                             f"стала запретом без решения хозяина")
 
 
 class TestNothingIsWrittenToDisk(unittest.TestCase):

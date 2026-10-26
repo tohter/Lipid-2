@@ -169,10 +169,36 @@
   "lang/ru/__init__.py",
   "lang/ru/questions.py"
  ],
+ "outer_seams": {
+  "tools/golden_corpus.py": [
+   {
+    "module": "core.extract",
+    "line": 299,
+    "nested": true,
+    "demo": false
+   }
+  ],
+  "tools/relcov.py": [
+   {
+    "module": "core.extract",
+    "line": 19,
+    "nested": false,
+    "demo": false
+   }
+  ],
+  "teachers/teacher_wiki.py": [
+   {
+    "module": "pymorphy3",
+    "line": 35,
+    "nested": true,
+    "demo": false
+   }
+  ]
+ },
  "tests_touching_russian": {
   "checks_comparing_russian": 554,
   "files": 37,
-  "checks_with_russian_message_only": 459
+  "checks_with_russian_message_only": 464
  },
  "totals": {
   "D_debt_files": 3,
@@ -190,6 +216,8 @@
   "R_neutral_files": 9,
   "Z_language_ruslits": 630,
   "P_ir_output_price": 554,
-  "P_ir_output_files": 37
+  "P_ir_output_files": 37,
+  "U_outer_seam_sites": 3,
+  "U_outer_seam_files": 3
  }
 }

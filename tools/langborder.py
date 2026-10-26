@@ -68,6 +68,14 @@ BRAIN_PACKAGES = ("brain",)
 # Куда язык ИМЕЕТ ПРАВО лежать (шаг A1/A2). Файлы отсюда — язык по месту
 # жительства, а не должник внутри ядра.
 LANGUAGE_PACKAGES = ("lang",)
+# ИНСТРУМЕНТ: не ядро и не мозг, но и НЕ самопроверка. У tools/ и teachers/
+# main() — рабочий путь (его зовут из командной строки), поэтому demo_spans
+# вызывается для них со script=True. Сканируются СПРАВОЧНО, категории U, без
+# потолка: инструмент имеет право знать язык, но шов, переехавший в tools/, не
+# обязан становиться невидимым (ровно так A1 сделал невидимым импорт, переехав
+# в lang/). Поднимать из-за этого S_seam_sites нельзя: рост потолка — решение
+# хозяина, не моё.
+SCRIPT_PACKAGES = ("tools", "teachers")
 
 
 def py_files(*packages):
@@ -141,7 +149,7 @@ def module_root(name, current_file):
     return ".".join(parts[:len(parts) - up] + ([stripped] if stripped else []))
 
 
-def lang_imports(rel):
+def lang_imports(rel, script=False):
     """
     Швы: где не-языковой код тянет язык.
 
@@ -153,7 +161,7 @@ def lang_imports(rel):
     до нуля: в core/cortex.py русский текст стоит именно в демо.
     """
     tree = parse(rel)
-    spans = demo_spans(tree)
+    spans = demo_spans(tree, script=script)
     hits = []
     for mod, lineno, nested in imports_of(tree):
         full = module_root(mod, rel)
@@ -214,8 +222,18 @@ DIAGNOSTIC_FUNCS = {"print", "warn", "info", "error", "debug", "_status",
                     "log", "warning", "exception"}
 
 
-def demo_spans(tree):
-    """Строковые диапазоны `if __name__ == "__main__"` и def main()/demo()."""
+def demo_spans(tree, script=False):
+    """
+    Диапазоны самопроверки: `if __name__ == "__main__"` и def main()/demo().
+
+    ПОЧЕМУ ЗДЕСЬ ПАРАМЕТР, а не одно правило на всех. Блок `__name__` — это
+    самопроверка в ЛЮБОМ файле. А `def main()` — самопроверка ТОЛЬКО внутри
+    библиотеки (core/, brain/): у ИНСТРУМЕНТА (tools/, teachers/) main() есть
+    рабочий путь, его вызывают люди командной строкой, и «перенести импорт в
+    main()» там не делает код чистым. Помечать golden_corpus.main() демо-блоком
+    значило бы нарисовать ноль швов блоком, который реально работает, — ровно
+    тот дефект, от которого эта категория защищает.
+    """
     spans = []
     for n in ast.walk(tree):
         if isinstance(n, ast.If):
@@ -224,7 +242,8 @@ def demo_spans(tree):
                     if isinstance(x, ast.Constant)}
             if "__name__" in names and "__main__" in vals:
                 spans.append((n.lineno, n.end_lineno))
-        elif isinstance(n, ast.FunctionDef) and n.name in ("main", "demo"):
+        elif (not script and isinstance(n, ast.FunctionDef)
+              and n.name in ("main", "demo")):
             spans.append((n.lineno, n.end_lineno))
     return spans
 
@@ -365,7 +384,9 @@ def core_reaches_lang(rel):
     только через IR.
     """
     hits = []
-    for mod, lineno, nested in imports_of(parse(rel)):
+    tree = parse(rel)
+    spans = demo_spans(tree)
+    for mod, lineno, nested in imports_of(tree):
         full = module_root(mod, rel)
         if full.split(".")[0] == LANGUAGE_PACKAGES[0]:
             hits.append({"module": full, "line": lineno, "nested": nested,
@@ -384,6 +405,7 @@ def measure():
         "core_demo": {},               # строки самопроверок __main__
         "core_reaches_lang": {},       # C: ядро тянет lang/ мимо IR
         "lang_files": [],              # справочно: где язык живёт сейчас
+        "outer_seams": {},             # U: швы в инструменте (справочно)
     }
     for rel in py_files(*CORE_PACKAGES, *BRAIN_PACKAGES, *LANGUAGE_PACKAGES):
         if rel.startswith(LANG_DIR):
@@ -418,6 +440,17 @@ def measure():
                 report["core_messages"][rel] = msg
                 if demo:
                     report["core_demo"][rel] = demo
+    for rel in py_files(*SCRIPT_PACKAGES):
+        if rel.startswith(LANG_DIR) or is_language_file(rel):
+            continue
+        try:
+            hits = lang_imports(rel, script=True)
+        except SyntaxError:                 # pragma: no cover
+            continue
+        hits = [h for h in hits if not h.get("demo")]
+        if hits:
+            report["outer_seams"][rel] = hits
+
     checked, nfiles, msg_only = price_of_ir_output()
     report["tests_touching_russian"] = {
         "checks_comparing_russian": checked, "files": nfiles,
@@ -461,6 +494,13 @@ def measure():
         "Z_language_ruslits": sum(report["language_ruslits"].values()),
         "P_ir_output_price": checked,
         "P_ir_output_files": nfiles,
+        # U — СПРАВОЧНАЯ величина, потолка у неё НЕТ и быть не может без
+        # решения хозяина: инструмент языконезависимым обязанности не имеет.
+        # Смысл категории один: шов, переехавший из ядра в tools/, обязан
+        # остаться ВИДНЫМ числом, а не исчезнуть из меры.
+        "U_outer_seam_sites": sum(len(v)
+                                  for v in report["outer_seams"].values()),
+        "U_outer_seam_files": len(report["outer_seams"]),
     }
     return report
 
@@ -533,6 +573,17 @@ def print_report(rep):
     print("   Это НЕ должок и НЕ нарушение: это ЦЕНА шага «core отдаёт IR "
           "вместо строки». Без этой цифры обещание «осталось дописать lang/» "
           "— сочинённое.")
+
+    print(f"\n[6. ВНЕШНИЕ ШВЫ] язык импортируют инструменты: "
+          f"{t['U_outer_seam_sites']} в {t['U_outer_seam_files']} файлах "
+          f"(tools/, teachers/)")
+    for f, hits in sorted(rep["outer_seams"].items()):
+        print(f"   {f:34} x{len(hits)}  "
+              f"{','.join(h['module'] for h in hits)}")
+    print("   Это НЕ нарушение и ПОТОЛКОМ НЕ ЗАКРЫТО: учитель и инструмент")
+    print("   имеют право знать язык. Число нужно, чтобы шов, ВЫВЕЗЕННЫЙ из")
+    print("   ядра в tools/, остался виден, а не исчез из меры — ровно так")
+    print("   же A1 сделал невидимым импорт, переехав в lang/.")
 
     print("\n" + "=" * 72)
     print("ИТОГО  ", "  ".join(f"{k}={v}" for k, v in sorted(t.items())))
