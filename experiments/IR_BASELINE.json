@@ -1,0 +1,189 @@
+{
+ "language_files": [
+  "core/extract.py",
+  "core/lemma.py",
+  "core/morph.py"
+ ],
+ "seams": {
+  "core/actions.py": [
+   {
+    "module": "core.morph",
+    "line": 24,
+    "nested": false
+   }
+  ],
+  "core/cortex.py": [
+   {
+    "module": "core.morph",
+    "line": 384,
+    "nested": true
+   },
+   {
+    "module": "core.morph",
+    "line": 531,
+    "nested": true
+   }
+  ],
+  "core/graph.py": [
+   {
+    "module": "core.lemma",
+    "line": 12,
+    "nested": false
+   }
+  ],
+  "core/records.py": [
+   {
+    "module": "pymorphy3",
+    "line": 66,
+    "nested": true
+   }
+  ],
+  "brain/ir.py": [
+   {
+    "module": "pymorphy3",
+    "line": 6,
+    "nested": false
+   }
+  ],
+  "brain/learner.py": [
+   {
+    "module": "core.extract",
+    "line": 52,
+    "nested": false
+   },
+   {
+    "module": "core.morph",
+    "line": 54,
+    "nested": false
+   }
+  ],
+  "brain/lipid2_brain.py": [
+   {
+    "module": "core.lemma",
+    "line": 19,
+    "nested": false
+   },
+   {
+    "module": "core.morph",
+    "line": 1019,
+    "nested": true
+   }
+  ],
+  "brain/question.py": [
+   {
+    "module": "core.morph",
+    "line": 33,
+    "nested": false
+   }
+  ],
+  "brain/social_sim.py": [
+   {
+    "module": "core.extract",
+    "line": 42,
+    "nested": false
+   }
+  ]
+ },
+ "output_methods": {
+  "core/extract.py": [
+   {
+    "cls": "NegationScope",
+    "method": "note",
+    "line": 396
+   },
+   {
+    "cls": "ExpectationRecord",
+    "method": "describe",
+    "line": 553
+   }
+  ],
+  "core/schemes.py": [
+   {
+    "cls": "SchemeInterpreter",
+    "method": "finitive",
+    "line": 374
+   }
+  ],
+  "brain/lipid2_brain.py": [
+   {
+    "cls": "Lipid2Brain",
+    "method": "sleep_now",
+    "line": 1206
+   },
+   {
+    "cls": "Lipid2Brain",
+    "method": "process_input",
+    "line": 1223
+   }
+  ],
+  "brain/question.py": [
+   {
+    "cls": "Question",
+    "method": "as_text",
+    "line": 65
+   }
+  ]
+ },
+ "core_ruslits": {
+  "core/actions.py": 27,
+  "core/adapter.py": 0,
+  "core/bitsstore.py": 4,
+  "core/cortex.py": 5,
+  "core/encoder.py": 8,
+  "core/graph.py": 0,
+  "core/logchannel.py": 7,
+  "core/records.py": 46,
+  "core/schemes.py": 32,
+  "core/sdr.py": 0,
+  "core/storage.py": 0,
+  "core/transitions.py": 34,
+  "core/worldfile.py": 6
+ },
+ "language_ruslits": {
+  "core/extract.py": 261,
+  "core/lemma.py": 49,
+  "core/morph.py": 320
+ },
+ "core_messages": {
+  "core/actions.py": 2,
+  "core/adapter.py": 4,
+  "core/bitsstore.py": 26,
+  "core/cortex.py": 30,
+  "core/encoder.py": 8,
+  "core/graph.py": 10,
+  "core/logchannel.py": 0,
+  "core/records.py": 4,
+  "core/schemes.py": 0,
+  "core/sdr.py": 2,
+  "core/storage.py": 17,
+  "core/transitions.py": 1,
+  "core/worldfile.py": 0
+ },
+ "core_demo": {
+  "core/adapter.py": 3,
+  "core/cortex.py": 19,
+  "core/graph.py": 9,
+  "core/sdr.py": 26,
+  "core/storage.py": 11,
+  "core/transitions.py": 49
+ },
+ "tests_touching_russian": {
+  "checks_comparing_russian": 553,
+  "files": 37,
+  "checks_with_russian_message_only": 424
+ },
+ "totals": {
+  "D_debt_files": 3,
+  "S_seam_sites": 12,
+  "S_seam_files": 9,
+  "S_seams_inside_core": 5,
+  "O_output_methods": 6,
+  "R_core_ruslits": 169,
+  "M_core_messages": 104,
+  "X_core_demo": 117,
+  "R_neutral_files": 9,
+  "Z_language_ruslits": 630,
+  "P_ir_output_price": 553,
+  "P_ir_output_files": 37
+ }
+}
