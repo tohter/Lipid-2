@@ -49,13 +49,15 @@ CEILINGS = {
     # невидим, и закон остался бы только на бумаге.
     "C_core_reaches_lang": 0,
     "D_debt_files": 3,          # core/extract.py, core/morph.py, core/lemma.py
-    "S_seam_sites": 10,         # импортов языка не-языковым кодом. Было 12:
+    "S_seam_sites": 9,          # импортов языка не-языковым кодом. Было 12:
                                 # A1 убрал шов brain/ir.py -> pymorphy3,
                                 # A2.1 убрал core/graph.py -> core/lemma
-                                # (резолвер форм теперь ПРИХОДИТ в ядро извне).
-    "S_seams_inside_core": 4,   # из них ВНУТРИ ядра — это нарушения закона.
-                                # Было 5, A2.1 закрыл graph.py: остались
-                                # cortex (x2), actions, records.
+                                # (резолвер форм теперь ПРИХОДИТ в ядро извне),
+                                # A2.2 убрал core/records.py -> pymorphy3
+                                # (лемматизатор приносит lang/ru/lemma.py).
+    "S_seams_inside_core": 3,   # из них ВНУТРИ ядра — это нарушения закона.
+                                # Было 5: A2.1 закрыл graph.py, A2.2 закрыл
+                                # records.py; остались cortex (x2), actions.
     "O_output_methods": 6,      # публичных методов, отдающих русскую строку
     "R_core_ruslits": 169,      # русских ДАННЫХ в нейтральном core/
 }
@@ -97,13 +99,13 @@ class TestLawIsMeasured(unittest.TestCase):
 
     def test_measurer_finds_core_seams(self):
         """Ядровые швы, ЕЩЁ НЕ ЗАКРЫТЫЕ, обязаны быть вмерены — именно их
-        закрывает A2. core/graph.py из списка убран на шаге A2.1: шва там
-        больше нет, и требовать его впредь значило бы запретить улучшение.
-        Вместо требования «шить навсегда» — симметричная проверка ниже:
-        закрытый шов обязан ИСЧЕЗНУТЬ из меры, а не прятаться в нуле."""
+        закрывает A2. core/graph.py убран на A2.1, core/records.py на A2.2:
+        швов там больше нет, и требовать их впредь значило бы запретить
+        улучшение. Вместо требования «шить навсегда» — симметричная проверка
+        ниже: закрытый шов обязан ИСЧЕЗНУТЬ из меры, а не прятаться в нуле."""
         inside = {f: v for f, v in self.rep["seams"].items()
                   if f.startswith("core" + os.sep)}
-        for f in ("core/cortex.py", "core/records.py", "core/actions.py"):
+        for f in ("core/cortex.py", "core/actions.py"):
             self.assertIn(f, inside,
                           f"шва {f} в мере не видно — закон нечем проверять")
 
@@ -115,6 +117,9 @@ class TestLawIsMeasured(unittest.TestCase):
                   if f.startswith("core" + os.sep)}
         self.assertNotIn("core/graph.py", inside,
                          "у ядра снова языковый импорт в graph.py — A2.1 откатился")
+        self.assertNotIn("core/records.py", inside,
+                         "у ядра снова языковый импорт в records.py — A2.2 "
+                         "откатился: лемматизатор обязан приходить из lang/")
         demo = [h for hits in inside.values() for h in hits if h.get("demo")]
         self.assertEqual(demo, [],
                          "демо-шов внутри core затерялся в общей мере — он обязан "
@@ -222,10 +227,14 @@ class TestPriceIsKnown(unittest.TestCase):
         # и знать об этом надо сейчас, а не на чтении документа.
         # 553 -> 554 на шаге A2.1: добавлен тест test_core_itself_recognizes_
         # forms, он СРАВНИВАЕТ РУССКУЮ СТРОКУ с выводом ядра, то есть честно
-        # входит в цену A4. Числа не подгоняются: сначала замер, потом цифра.
-        self.assertEqual((checked, files), (554, 37),
+        # входит в цену A4. 554 -> 561 на шаге A2.2: добавлен
+        # tests/test_lemma_service_contract.py, и его проверки тоже сравнивают
+        # русские слова с ответом системы («кошки» -> «кошка») — он покупает
+        # ровно тот же билет, что и остальные, а не идёт зайцем.
+        # Числа не подгоняются: сначала замер, потом цифра.
+        self.assertEqual((checked, files), (561, 38),
                          f"цена A4 = ({checked}, {files}), а в IR_BOUNDARY.md "
-                         f"написано (554, 37) — обнови документ СЕЙЧАС")
+                         f"написано (561, 38) — обнови документ СЕЙЧАС")
         self.assertGreater(msg_only, 0,
                            "проверки только-с-сообщением перестали считаться: "
                            "цена будет завышена")

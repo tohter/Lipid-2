@@ -26,6 +26,21 @@ except Exception as _exc:
     def normalize_provenance(prov, *, source=None):
         return []
 
+# Службу сведения форм приносим СЮДА же, рядом с правилом слияния, которое без
+# неё деградирует. ОтДЕЛЬНЫМ try: отказ языка не имеет права выглядеть как
+# «core.records недоступен» и выключить слияние — это разные отказы, и путать
+# их значит потерять знание по вонющему не тому поводу. Ядро импортировать язык
+# не может (C_core_reaches_lang = 0), учитель — может. Забыть здесь значит
+# писать во Вселенную эвристикой; это ловит tests/test_lemma_service_contract.py.
+try:
+    from lang.ru.lemma import install as _install_lemma_service
+
+    _install_lemma_service()
+except Exception as _exc:                             # pragma: no cover
+    print(f"[teacher] ⚠ служба сведения форм НЕ внедрена ({_exc}) — часть "
+          f"полезных категорий будет принята за форму самого слова",
+          file=sys.stderr, flush=True)
+
 try:
     # Атомарная запись: json.dump в открытый на "w" файл при обрыве процесса
     # оставляет ОБОРВАННЫЙ JSON — следующая загрузка считает мир повреждённым.

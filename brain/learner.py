@@ -56,6 +56,17 @@ from core.records import (fact_weight, merge_entity, merge_unknown_entry,
                           observation_weight)
 from core.storage import NodeType, RelationType
 
+# Ядро само себя языком не снабжает (C_core_reaches_lang = 0 вечен). Ученик —
+# тот самый слой, который имеет право. Служба ставится ОДИН РАЗ НА ПРОЦЕСС, а
+# не передаётся аргументом в merge_entity: у records свободные функции, и их
+# зовут 17 мест (замер AST) — аргумент означал бы 17 мест, где можно забыть,
+# и ровно такой дефект уже ловили мутантом в A2.1 (мозг мог не передать
+# резолвер, и весь набор был зелёный). Забыть здесь тоже можно — это ловит
+# tests/test_lemma_service_contract.py по каждому производственному входу.
+from lang.ru.lemma import install as _install_lemma_service
+
+_install_lemma_service()
+
 try:
     from core.actions import profile_of
 except Exception as _exc:                            # pragma: no cover

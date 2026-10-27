@@ -27,6 +27,14 @@ sys.path.insert(0, ROOT)
 
 from core.records import is_empty_entity, meaningful_categories, merge_entity
 
+# См. tests/test_lemma_service_contract.py: тест, сверяющий русские формы,
+# обязан внедрить лемматизатор ЯВНО. До A2.2 морфология включалась сама собой
+# (records сам звал pymorphy3), теперь она приходит извне — и молча остаться
+# выключенной значит проверять на эвристике, думая, что проверяешь на языке.
+from lang.ru.lemma import install as _install_lemma_service
+
+_install_lemma_service()
+
 
 class TestMeaningfulCategories(unittest.TestCase):
 

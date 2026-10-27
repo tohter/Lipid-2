@@ -39,6 +39,14 @@ sys.path.insert(0, ROOT)
 from core.records import is_empty_entity, meaningful_categories, normalize_provenance
 from core.worldfile import read_world, write_world
 
+# Чистильщик ПЕРЕПИСЫВАЕТ мир, а meaningful_categories без сведения форм
+# (ЗАМЕРЕНО) путает «кошка»/«кошачьи» и не сводит «сеть»/«сети» — то есть без
+# службы он УДАЛЯЕТ полезные категории как «форму самого слова». Ядро язык не
+# зовёт, инструмент звать имеет право. Молча чистить эвристикой нельзя.
+from lang.ru.lemma import install as _install_lemma_service
+
+_install_lemma_service()
+
 MEMORY_DIR = os.environ.get("LIPID2_MEMORY_DIR",
                             os.path.join(ROOT, "data", "memory"))
 

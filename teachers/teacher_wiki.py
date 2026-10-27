@@ -84,6 +84,21 @@ except Exception as _exc:                              # pragma: no cover
     merge_entity = None
     read_world = write_world = None
 
+# Службу сведения форм приносим СЮДА же, рядом с правилом слияния, которое без
+# неё деградирует. ОтДЕЛЬНЫМ try: отказ языка не имеет права выглядеть как
+# «core.records недоступен». Здесь это особенно дорого: у этого файла и свой
+# pymorphy3 уже есть (U_outer_seam), и без службы то же самое приложение пишет
+# мир одной эвристикой, а свойства ищет списком из 24 слов. Ядро импортировать
+# язык не может (C_core_reaches_lang = 0), учитель — может.
+try:
+    from lang.ru.lemma import install as _install_lemma_service
+
+    _install_lemma_service()
+except Exception as _exc:                             # pragma: no cover
+    print(f"[wiki] ⚠ служба сведения форм НЕ внедрена ({_exc}) — часть "
+          f"полезных категорий будет принята за форму самого слова",
+          file=sys.stderr, flush=True)
+
     from contextlib import nullcontext as world_lock
 
     def default_memory_dir(memory_dir=None, filename="lipid_world.json"):

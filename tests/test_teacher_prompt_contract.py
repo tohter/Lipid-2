@@ -53,6 +53,13 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+# Файл считает meaningful_categories — то есть сверяет русские формы. Ядро в
+# A2.2 язык не зовёт, поэтому службу обязан приносить тот, кто считает.
+# До этой строки файл МОЛЧА ехал на эвристике и позеленел (замер).
+from lang.ru.lemma import install as _install_lemma_service
+
+_install_lemma_service()
+
 SNAPSHOT = os.path.join(ROOT, "experiments", "llm_hierarchy_snapshot.json")
 
 

@@ -8,7 +8,9 @@ core/records.py — правила ЗАПИСИ и СЛИЯНИЯ записей
   * что имеет право перезаписать известное (merge_entity);
   * как отсекает само обозначаемое слово из пояснения (strip_self_name).
 
-Модуль чистый: stdlib + ленивый pymorphy3. Настоящее обоснование (ЗАМЕРЕНО, а
+Модуль чистый: stdlib, НИ ОДНОГО языкового импорта (шаг A2.2 границы: здесь
+жил ленивый pymorphy3, теперь лемматизатор ПРИНОСЯТ извне через
+set_lemma_service). Настоящее обоснование (ЗАМЕРЕНО, а
 не «архитектурно правильно»): правило слияния нужно каналам знания, которые
 обязаны работать на ЛЮБОМ python3. На системном python3 этой машины нет
 numpy/scipy/torch/sentence_transformers/pymorphy3 — и import torch не происходит
@@ -20,11 +22,14 @@ numpy/scipy/torch/sentence_transformers/pymorphy3 — и import torch не пр�
 pymorphy3 подключается лениво и по той же причине: без него сравнение форм
 слов выродилось бы в отсечение окончаний, а оно (ЗАМЕРЕНО) путает
 «кошка»/«кошачьи» — настоящую категорию — и не сводит «сеть»/«сети».
+Сам ядро этот движок больше не зовёт: язык внедряет тот, кто имеет на это
+право (brain/, lang/, инструмент). Внедрить забыли — не молчим, а орём.
 """
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+import sys
+from typing import Any, Callable, Dict, List, Optional
 
 # Служебные категории Википедии. Это НЕ знание о предмете, а разметка статьи:
 # «страницы значений», «требует викификации», «заготовка». ЗАМЕРЕНО в живом
@@ -43,35 +48,79 @@ _SERVICE_CATEGORY_RE = re.compile(
 # Слова, которые поясняют связь, но сами знания не содержат.
 _LINK_WORDS = {"это", "есть", "является", "означает", "так", "то", "же", "или"}
 
-_MORPH: Any = None
-_MORPH_TRIED = False
+# ── СЛУЖБА СВЕДЕНИЯ ФОРМ (граница языка, шаг A2.2) ───────────────────
+#
+# Здесь жил `import pymorphy3`. Это был язык внутри ядра: ядро само решало,
+# куда деть русский падеж. По закону (experiments/IR_BOUNDARY.md §1) ядро не
+# имеет права ни импортировать язык, ни знать, как его зовут, — поэтому
+# лемматизатор СЮДА ПРИНОСЯТ: set_lemma_service().
+#
+# ПОЧЕМУ ОДИН УСТАНОВЩИК НА ПРОЦЕСС, А НЕ АРГУМЕНТ КАЖДОЙ ФУНКЦИИ. Функции
+# records — свободные, их зовут 17 мест (замер AST), из них 6 производственных:
+# мозг, ученик, core/storage, оба учителя, чистильщик мира. Протаскивать
+# службу аргументом сквозь все шесть — значит получить шесть мест, где её
+# можно забыть; ровно этот дефект A2.1 и поймал мутантом (мозг мог не передать
+# резолвер, и весь набор тестов был зелёный). Ядро молча деградировало бы, а
+# выглядело бы это как «в памяти ничего нет».
+#
+# ПОЭТОМУ: не принесли службу -> НЕ молчим. См. _warn_no_service().
+_LEMMA_SERVICE: Optional[Callable[[str], str]] = None
+_SERVICE_NAME = ""
+_NO_SERVICE_WARNED = False
 _LEMMA_CACHE: Dict[str, str] = {}
 
 
-def _morph():
+def set_lemma_service(lemma_fn: Callable[[str], str], *, name: str = ""):
     """
-    pymorphy3 — один раз, лениво, с ГРОМКИМ отказом.
+    Принести ядру лемматизатор: fn(слово) -> лемма | "" (empty = не знаю).
 
-    Молчание здесь стоило бы тихой деградации качества: без морфологии
-    same_word переходит на эвристику (см. _lemma_simple), и часть полезных
+    Вызывать ОДИН раз на процесс, из слоя, который имеет право знать язык
+    (brain/, lang/, инструмент). Повторный вызов разрешён: переключение
+    службы — штатный случай теста и эксперимента.
+    """
+    global _LEMMA_SERVICE, _SERVICE_NAME, _NO_SERVICE_WARNED
+    _LEMMA_SERVICE = lemma_fn
+    _SERVICE_NAME = name or getattr(lemma_fn, "__qualname__", repr(lemma_fn))
+    _NO_SERVICE_WARNED = False        # после установки обязаны замолчать
+    _LEMMA_CACHE.clear()              # кэш грубой леммы протух
+    return lemma_fn
+
+
+def clear_lemma_service() -> None:
+    """Убрать службу (тесты аварийного режима). Депродить без предупреждения
+    нельзя: после этого любая лемма считается эвристикой и обязана кричать."""
+    global _LEMMA_SERVICE, _SERVICE_NAME, _NO_SERVICE_WARNED
+    _LEMMA_SERVICE = None
+    _SERVICE_NAME = ""
+    _NO_SERVICE_WARNED = False
+    _LEMMA_CACHE.clear()
+
+
+def lemma_service_state() -> dict:
+    """Состояние службы — чтобы GUI и тесты могли сказать это ЧИСЛОМ, а не
+    «кажется, морфология есть»."""
+    return {"installed": _LEMMA_SERVICE is not None, "name": _SERVICE_NAME}
+
+
+def _warn_no_service() -> None:
+    """
+    ГРОМКО и ОДИН РАЗ: формы слов сводим наивным отсечением.
+
+    Молчание здесь стоило бы тихой деградации качества: без лемматизатора
+    same_word уходит на эвристику (см. _lemma_simple), и часть полезных
     категорий начинает считаться «формой самого слова». Пользователь обязан
     видеть, что сравнение форм стало грубым, а не получать менее правильный
     ответ с тем же лицом.
     """
-    global _MORPH, _MORPH_TRIED
-    if _MORPH_TRIED:
-        return _MORPH
-    _MORPH_TRIED = True
-    try:
-        import pymorphy3                            # type: ignore
-        _MORPH = pymorphy3.MorphAnalyzer()
-    except Exception as exc:                        # pragma: no cover
-        import sys
-        print(f"[records] ⚠ pymorphy3 недоступен ({exc}) — сравнение форм слов "
-              f"ДЕГРАДИРОВАЛО до эвристики: часть полезных категорий будет "
-              f"принята за форму самого слова", file=sys.stderr, flush=True)
-        _MORPH = None
-    return _MORPH
+    global _NO_SERVICE_WARNED
+    if _NO_SERVICE_WARNED:
+        return
+    _NO_SERVICE_WARNED = True
+    print("[records] ⚠ СЛУЖБА СВЕДЕНИЯ ФОРМ НЕ ВНЕДРЕНА — сравнение форм слов "
+          "ДЕГРАДИРОВАЛО до эвристики: часть полезных категорий будет принята "
+          "за форму самого слова. Принести лемматизатор: "
+          "core.records.set_lemma_service(fn). Язык умеет внедрять brain/ или "
+          "lang/, ядро — нет.", file=sys.stderr, flush=True)
 
 
 def _lemma_simple(word: str) -> str:
@@ -89,20 +138,23 @@ def _lemma_simple(word: str) -> str:
     cached = _LEMMA_CACHE.get(w)
     if cached is not None:
         return cached
-    m = _morph()
-    if m is not None:
+    svc = _LEMMA_SERVICE
+    if svc is not None:
         try:
             # normal_form, а НЕ normalform: AttributeError ловился общим except и
             # МОЛЧА превращал лемму в пустую строку, а пустая лемма значит
             # «это не то же слово» — тавтология переставала отфильтровываться.
-            # Проверено на pymorphy3 4.0.
-            out = (m.parse(w)[0].normal_form or "").lower()
+            # Проверено на pymorphy3 4.0. Пустая строка от службы = «не знаю»,
+            # это НЕ «не то же слово»: её отличает от ошибки только то, что
+            # служба не упала.
+            out = (svc(w) or "").lower()
         except Exception as exc:                    # pragma: no cover
-            import sys
-            print(f"[records] ⚠ pymorphy3 не разбирал «{w}»: {exc} — форма слова "
-                  f"останется unrecognized", file=sys.stderr, flush=True)
+            print(f"[records] ⚠ лемматизатор ({_SERVICE_NAME}) не разобрал "
+                  f"«{w}»: {exc} — форма слова останется unrecognized",
+                  file=sys.stderr, flush=True)
             out = ""
     else:
+        _warn_no_service()
         out = w
         for suf in ("иями", "ями", "ами", "ов", "ев", "ам", "ям", "ов", "ей",
                     "ий", "ый", "ая", "яя", "ое", "ее", "ые", "ие", "ах", "ях",
@@ -140,7 +192,7 @@ def same_word(a: str, b: str) -> bool:
     # Эвристика работает ТОЛЬКО без морфологии: общий префикс не короче 4 букв
     # и не короче «короткое слово минус 2». С pymorphy3 она наоборот склеивала
     # бы разные слова («кошка»/«кошачьи» -> общий префикс «кошк»).
-    if _morph() is not None:
+    if _LEMMA_SERVICE is not None:
         return False
     n = min(len(la), len(lb))
     return n >= 4 and la[:min(n, 4)] == lb[:min(n, 4)]
