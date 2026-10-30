@@ -62,7 +62,11 @@ CEILINGS = {
                                 # records.py, A2.3 закрыл actions.py; остался
                                 # один cortex (x2).
     "O_output_methods": 6,      # публичных методов, отдающих русскую строку
-    "R_core_ruslits": 169,      # русских ДАННЫХ в нейтральном core/
+    "R_core_ruslits": 163,      # русских ДАННЫХ в нейтральном core/
+                                # Было 169: до IR A2.4b предупреждения в
+                                # stderr (`_complain`) считались ДАННЫМИ
+                                # ядра. Понижение куплено мерой, а не дырой
+                                # — см. test_sink_rule_... ниже.
 }
 
 BASELINE = os.path.join(ROOT, "experiments", "IR_BASELINE.json")
@@ -482,6 +486,59 @@ class TestMutationsAreCaught(unittest.TestCase):
                          "орёт на косметику")
         self.assertGreater(rep["totals"]["M_core_messages"], 0,
                            "сообщение вообще не попало в категорию M")
+
+    def test_stderr_warning_is_NOT_a_violation(self):
+        """
+        Кричалка в stderr — СООБЩЕНИЕ, а не данные ядра.
+
+        Это не косметика меры: до неё предупреждения `_complain` из
+        core/transitions.py и core/worldfile.py числились русскими ДАННЫМИ,
+        то есть нарушением границы закона, которого в них нет — текст уходит в
+        stderr и ни на одно решение не влияет. Замерено: 6 литералов в трёх
+        файлах ядра (R 169 -> 163, M 105 -> 111).
+        """
+        rep = self._patched_measure(
+            "core/graph.py", self.LIB,
+            "def _cry(text):\n    import sys\n"
+            "    sys.stderr.write(text)\n"
+            '_cry("летяга летит")  # это сообщение, не данные\n' + self.LIB)
+        self.assertEqual(rep["totals"]["R_core_ruslits"],
+                         CEILINGS["R_core_ruslits"],
+                         "предупреждение в stderr засчитано ДАННЫМИ ядра")
+        self.assertGreater(rep["totals"]["M_core_messages"], 0)
+
+    def test_sink_rule_cannot_hide_data_by_returning_it(self):
+        """
+        Потолок R понижен (169 -> 163), и обязан быть доказан обратный мутант:
+        понижение куплено ЧЕСТНОЙ классификацией, а не новой лазейкой.
+
+        Приёмником считается только функция, которая строку не забирает: без
+        return и без присваивания. Если кто-то напишет «приёмник», который
+        возвращает или сохраняет переданное, это уже не лог, а хранение русских
+        данных в ядре — и обязано остаться нарушением.
+        """
+        rep = self._patched_measure(
+            "core/graph.py", self.LIB,
+            "def _keep(text):\n    import sys\n"
+            "    sys.stderr.write(text)\n    return text\n"
+            '_KEPT = _keep("летяга летит")  # нарушение: строку вернули\n'
+            + self.LIB)
+        self.assertGreater(rep["totals"]["R_core_ruslits"],
+                           CEILINGS["R_core_ruslits"],
+                           "функция, ВЕРНУВШАЯ русскую строку, прошла как лог: "
+                           "правило приёмников стало дырой")
+
+    def test_sink_rule_cannot_hide_data_by_storing_it(self):
+        """То же для сохранённой строки: global-присваивание = данные ядра."""
+        rep = self._patched_measure(
+            "core/graph.py", self.LIB,
+            "_LAST = None\n\n\ndef _stash(text):\n    import sys\n"
+            "    global _LAST\n    sys.stderr.write(text)\n    _LAST = text\n"
+            '_stash("летяга летит")  # нарушение: строку сохранили\n'
+            + self.LIB)
+        self.assertGreater(rep["totals"]["R_core_ruslits"],
+                           CEILINGS["R_core_ruslits"],
+                           "функция, СОХРАНИВШАЯ русскую строку, прошла как лог")
 
     def test_demo_literal_is_NOT_a_violation(self):
         """Строка внутри __main__-самопроверки — не данные ядра."""

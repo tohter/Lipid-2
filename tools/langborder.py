@@ -221,6 +221,51 @@ def output_methods(rel):
 DIAGNOSTIC_FUNCS = {"print", "warn", "info", "error", "debug", "_status",
                     "log", "warning", "exception"}
 
+# Приёмники, в которых текст становится СООБЩЕНИЕМ, а не ДАННЫМИ. Строка,
+# ушедшая в print или в stream.write, ни на какое решение не влияет.
+STREAM_SINK_ATTRS = ("write", "writelines")
+
+
+def stream_sinks(tree):
+    """
+    Локальные функции-кричалки: `_complain`, `_warn...` и подобные.
+
+    ПОЧЕМУ СТРУКТУРНО, а не списком имён. Список имён — это разрешение:
+    стоило один раз написать «_complain — это лог», и любая функция с таким
+    именем получила право прятать русские ДАННЫЕ ядра, а закон границы
+    перестал бы их видеть. Поэтому проверка по телу, а не по имени:
+      * у функции нет `return <значение>` — строку некому вернуть наружу;
+      * нет присваиваний — строку некуда отложить в данные;
+      * есть print или <поток>.write — строку кому-то отдают.
+    Так `_complain(text)` из core/transitions.py честно считается СООБЩЕНИЕМ,
+    а функция, которая возвращает или сохраняет переданную строку, приёмником
+    не станет и останется нарушением.
+
+    ЗАМЕР ДО И ПОСЛЕ (только переклассификация, код ядра не тронут):
+    R_core_ruslits 169 -> 163, M_core_messages 105 -> 111. Шестеро переехавших
+    сидели в core/transitions.py (34 -> 31), core/worldfile.py (6 -> 4) и
+    core/cortex.py (5 -> 4); путь у всех шестерых — sys.stderr.write.
+    """
+    names = set()
+    for n in ast.walk(tree):
+        if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        has_return_value = has_assign = emits = False
+        for sub in ast.walk(n):
+            if isinstance(sub, ast.Return) and sub.value is not None:
+                has_return_value = True
+            elif isinstance(sub, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                has_assign = True
+            elif isinstance(sub, ast.Call):
+                fn = sub.func
+                if getattr(fn, "id", None) == "print":
+                    emits = True
+                elif getattr(fn, "attr", None) in STREAM_SINK_ATTRS:
+                    emits = True
+        if emits and not has_return_value and not has_assign:
+            names.add(n.name)
+    return names
+
 
 def demo_spans(tree, script=False):
     """
@@ -276,6 +321,7 @@ def classify_ruslits(rel):
         for ch in ast.iter_child_nodes(n):
             parent[id(ch)] = n
     spans = demo_spans(tree)
+    sinks = stream_sinks(tree)
 
     def in_demo(lineno):
         return in_span(lineno, spans)
@@ -300,8 +346,9 @@ def classify_ruslits(rel):
         if isinstance(call, ast.Call):
             name = getattr(call.func, "id", None) or getattr(call.func, "attr",
                                                              None)
-        is_msg = name in DIAGNOSTIC_FUNCS or isinstance(p, ast.Raise) or (
-            isinstance(parent.get(id(p)), ast.Raise))
+        is_msg = (name in DIAGNOSTIC_FUNCS or name in sinks
+                  or isinstance(p, ast.Raise)
+                  or isinstance(parent.get(id(p)), ast.Raise))
         if in_demo(node.lineno):
             demo += 1
         elif is_msg:
