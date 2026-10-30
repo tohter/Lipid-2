@@ -44,6 +44,7 @@ from core.encoder import get_encoder
 from core.bitsstore import pack_bits
 from core.actions import ACTION_PROFILES, profile_of, is_known_action
 from core.storage import NodeType, RelationType
+from core.worldfile import default_memory_dir
 
 
 class TeacherToStorageAdapter:
@@ -54,9 +55,10 @@ class TeacherToStorageAdapter:
 
     def __init__(self, world_path: str = None):
         if world_path is None:
-            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            mem_dir = os.path.join(root, "data", "memory")
-            world_path = os.path.join(mem_dir, "lipid_world.json")
+            # КАТАЛОГ задаёт core.worldfile (F3): конвертер обязан уметь
+            # работать внутри изолированного прогона, иначе он молча
+            # подхватывает живую Вселенную, пока весь эксперимент в /tmp.
+            _, world_path = default_memory_dir(None, "lipid_world.json")
         self.world_path = world_path
         self.encoder = get_encoder()
         self._entity_id_map: Dict[str, int] = {}  # label -> id (1-based)
@@ -310,9 +312,7 @@ class TeacherToStorageAdapter:
     def save_for_storage(self, output_path: str = None) -> bool:
         """Сохраняет сконвертированный граф в JSON для StorageManager."""
         if output_path is None:
-            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            mem_dir = os.path.join(root, "data", "memory")
-            output_path = os.path.join(mem_dir, "lipid_db.json")
+            _, output_path = default_memory_dir(None, "lipid_db.json")
 
         export_data = self.convert()
 

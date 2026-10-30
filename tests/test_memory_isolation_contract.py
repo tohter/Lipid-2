@@ -18,6 +18,7 @@
 3. ОТВЕТ ПОЛЬЗОВАТЕЛЯ — тоже запись. Он беднее статьи Википедии, поэтому
    прямое присваивание стирало ранее выученные свойства того же слова.
 """
+import ast
 import json
 import os
 import subprocess
@@ -385,6 +386,256 @@ class TestGuiSwitchesReachBrainFlags(unittest.TestCase):
         app._push()
         self.assertTrue(any("не дошли до мозга" in r for r in app.journal.rows),
                         "исключение в _push_channel_flags проглочено молча")
+
+
+# ══════════════════════════════════════════════════════════════════
+# 4. ХАЗАРД F3: хранилище графа и конвертер писали молча в РАБОЧИЙ
+#    каталог, хотя весь прогон убран в LIPID2_MEMORY_DIR.
+# ══════════════════════════════════════════════════════════════════
+
+class _LiveGraphFileGuard:
+    """
+    Страж живого lipid_db.{json,lipid} на время теста.
+
+    WHY. Тест проверяет «код пишет туда, куда велено». Пока код правильный,
+    тест в живую память не лезет. Но тест обязан выдерживать и ОБРАТНОЕ: если
+    граница сломана (мутант, откат, чужая правка), падающая проверка не имеет
+    права уничтожить то, чего нельзя восстановить. ЗАМЕРЕНО на собственном
+    мутанте: путей-тест с may_write под сломанным adapter.py переписал живой
+    lipid_db.json своим учебным содержимым («пчела»), и спасло только то, что
+    я знала исходный хеш и сумела пересоздать файл демо- прогоном.
+
+    Поэтому снимок байт-в-байт ДО и возврат ПОСЛЕ — независимо от результата.
+    """
+
+    LIVE_JSON = os.path.join(ROOT, "data", "memory", "lipid_db.json")
+    LIVE_BIN = os.path.join(ROOT, "data", "memory", "lipid_db.lipid")
+
+    @staticmethod
+    def _read(path):
+        if not os.path.exists(path):
+            return None
+        with open(path, "rb") as fh:
+            return fh.read()
+
+    def setUp(self):
+        self._l2_saved = {p: self._read(p) for p in (self.LIVE_JSON, self.LIVE_BIN)}
+
+    def tearDown(self):
+        for path, blob in self._l2_saved.items():
+            if blob is None:
+                if os.path.exists(path):
+                    os.remove(path)
+            elif self._read(path) != blob:
+                with open(path, "wb") as fh:
+                    fh.write(blob)
+
+
+class TestGraphStorageHonoursMemoryDir(_LiveGraphFileGuard, unittest.TestCase):
+    """
+    StorageManager и TeacherToStorageAdapter обязаны слушать переменную.
+
+    ЗАМЕРЕНО до правки: в core/storage.py и core/adapter.py каталог был вшит
+    рукой (os.path.join(root, "data", "memory")), поэтому `python core/graph.py`
+    — «безобидная самопроверка ядра» — писал lipid_db.{json,lipid} в рабочий
+    data/memory, даже когда его запускали с LIPID2_MEMORY_DIR=/tmp. Так были
+    перезаписаны файлы, которых нет в git (*.lipid, lipid_db.json в .gitignore):
+    восстановить их невозможно, а узнала я об этом только по mtime.
+
+    Тест проверяет ПУТИ ДО ЗАПИСИ, а отдельный тест ниже — запись на диске.
+    Раздельно: путь можно поправить, а запись оставшуюся в другом месте.
+    """
+
+    CODE = (
+        "import sys, json, os\n"
+        "sys.path.insert(0, ROOTPLACEHOLDER)\n"
+        "from core.storage import StorageManager\n"
+        "from core.adapter import TeacherToStorageAdapter\n"
+        "from core.worldfile import default_memory_dir\n"
+        "s = StorageManager()\n"
+        "a = TeacherToStorageAdapter()\n"
+        # Пишем ТОЛЬКО когда нас явно пустили в изолятор: иначе сам тест стал
+        # бы писателем в живой data/memory — тем, против чего он же и стоит.
+        "written = (bool(a.save_for_storage())\n"
+        "           if os.environ.get('L2F3_MUST') == '1' else None)\n"
+        "print(json.dumps([s.json_path, s.binary_path, a.world_path,\n"
+        "                  default_memory_dir(None, 'lipid_db.json')[1],\n"
+        "                  written]))\n"
+    ).replace("ROOTPLACEHOLDER", repr(ROOT))
+
+    MINIMAL_WORLD = {"entities": {"пчела": {"concept": "пчела",
+                                            "properties": ["гудит"]}},
+                     "relations": [], "observations": {}, "unknown_words": {},
+                     "transitions": {}}
+
+    def _paths(self, env_dir=None, explicit=None, may_write=False):
+        env = dict(os.environ, LIPID2_STATUS="0")
+        if env_dir:
+            env["LIPID2_MEMORY_DIR"] = env_dir
+        else:
+            env.pop("LIPID2_MEMORY_DIR", None)
+        if may_write:
+            # конвертер ЧИТАЕТ мир, прежде чем писать: без файла он ничего не
+            # напишет, и проверка его записи выродилась бы в «не видно ошибок»
+            with open(os.path.join(env_dir, "lipid_world.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(self.MINIMAL_WORLD, fh, ensure_ascii=False)
+            env["L2F3_MUST"] = "1"
+        else:
+            env.pop("L2F3_MUST", None)
+        code = self.CODE if explicit is None else self.CODE.replace(
+            "StorageManager()", "StorageManager(memory_dir=%r)" % explicit)
+        proc = subprocess.run([sys.executable, "-c", code], env=env,
+                              capture_output=True, text=True, timeout=180)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-900:])
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+
+    def test_env_moves_graph_storage_and_adapter(self):
+        d = tempfile.mkdtemp(prefix="l2f3-")
+        paths = self._paths(env_dir=d, may_write=True)
+        for p in paths[:4]:
+            self.assertTrue(p.startswith(d + os.sep),
+                            f"{p} игнорирует LIPID2_MEMORY_DIR: граф или "
+                            f"конвертер пишет в рабочую память")
+        # ПУТЬ ещё не запись. Отдельно требуем, чтобы конвертер РЕАЛЬНО писал
+        # в изолятор: без этого тест проходил при вшитом пути записи (ЗАМЕРЕНО
+        # мутантом — его ловила только трещотка, т.е. путевой тест молчал).
+        self.assertTrue(paths[4], "конвертер не смог записать граф")
+        self.assertTrue(os.path.exists(os.path.join(d, "lipid_db.json")),
+                        "конвертер отчитался успехом, но в изоляторе файла "
+                        "нет — значит он записался мимо LIPID2_MEMORY_DIR")
+
+    def test_default_still_project_data(self):
+        """Правка не должна тайком сменить путь по умолчанию."""
+        base = os.path.join(ROOT, "data", "memory")
+        paths = self._paths()
+        self.assertEqual(paths[0], os.path.join(base, "lipid_db.json"))
+        self.assertEqual(paths[1], os.path.join(base, "lipid_db.lipid"))
+        self.assertEqual(paths[2], os.path.join(base, "lipid_world.json"))
+        # ЗДЕСЬ писать нельзя: без изолятора путь по умолчанию указывает на
+        # живой data/memory, и сам тест стал бы тем самым писателем, против
+        # которого он же и стоит. Требование «умеет записать» проверено на
+        # изолированном случае выше.
+
+    def test_explicit_memory_dir_beats_env(self):
+        env_d, arg_d = tempfile.mkdtemp(prefix="f3env-"), tempfile.mkdtemp(prefix="f3arg-")
+        paths = self._paths(env_dir=env_d, explicit=arg_d)
+        self.assertTrue(paths[0].startswith(arg_d + os.sep),
+                        "явный каталог обязан быть главнее переменной")
+        self.assertFalse(paths[0].startswith(env_d + os.sep))
+
+
+class TestCoreDemoWritesOnlyIntoIsolatedDir(_LiveGraphFileGuard, unittest.TestCase):
+    """
+    НА ДИСКЕ. Самопроверка ядра обязана оставлять артефакты В ИЗОЛЯТОРЕ.
+
+    Проверять только пути — значит поверить на слово: путь мог стать верным,
+    а запись остаться по старому адресу (или записаться дважды). Поэтому здесь
+    реально запускается core/graph.py и сравнивается живой lipid_db.json ДО и
+    ПОСЛЕ, а сам файл подменён на заведомо чужое содержимое — его НЕЧЕМ
+    восстановить из git (*.lipid и lipid_db.json в .gitignore), так что
+    случайная перезапись стоит работы.
+    """
+
+    def test_graph_demo_leaves_live_dir_untouched(self):
+        d = tempfile.mkdtemp(prefix="l2f3demo-")
+
+        def snapshot(path):
+            if not os.path.exists(path):
+                return None
+            with open(path, "rb") as fh:
+                return fh.read()
+
+        before = {p: snapshot(p) for p in (self.LIVE_JSON, self.LIVE_BIN)}
+        env = dict(os.environ, LIPID2_STATUS="0", LIPID2_MEMORY_DIR=d,
+                   # буквенный бэкенд: замерено, 0.6 с вместо 16 с; на путь
+                   # записи это не влияет — кодировщик в имя файла не входит
+                   LIPID2_SDR_BACKEND="letterhash")
+        proc = subprocess.run([sys.executable, os.path.join(ROOT, "core", "graph.py")],
+                              env=env, capture_output=True, text=True, timeout=300)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-900:])
+        self.assertTrue(os.path.exists(os.path.join(d, "lipid_db.json")),
+                        "демо ничего не записало в изолированный каталог — "
+                        "проверка вырождается в молчаливое «ничего не сломано»")
+        for p, blob in before.items():
+            now = snapshot(p)
+            self.assertEqual(now, blob,
+                             f"демотест перезаписал живой {os.path.basename(p)}")
+
+class TestHardcodedMemoryPathsAreFenced(unittest.TestCase):
+    """
+    Трещотка: в core/ зашивать data/memory имеют право ТРИ файла.
+
+    Остальные обязаны звать core.worldfile.default_memory_dir — иначе следующая
+    «мелкая» правка вернёт хазард, и его никто не заметит, пока кто-нибудь
+    снова не перезапишет то, чего нельзя восстановить.
+
+    Разрешённые — РАЗРЕШЕНЫ НЕ СЛУЧАЙНО, и это развилка, а не недосмотр:
+      worldfile.py  — он и есть источник истины, больше некому;
+      encoder.py, bitsstore.py — ПРОИЗВОДНЫЙ кэш бит и калибровки. Разделять
+      его на каждый изолированный прогон дорого (ЗАМЕРЕНО: холодная сборка
+      кэша 21.5 с против 14.6 с тёплой; при 200 прогонов — лишние 23 минуты)
+      и НЕ вредит правильности: формат несёт magic + config_hash, а при
+      несовпадении кодировщика кэш ОТВЕРГАЕТСЯ и пересобирается (bitsstore.
+      _parse, рядовая ветка). Состояние — всегда в изоляторе, кэш — общий.
+    """
+
+    ALLOWED = {"worldfile.py", "encoder.py", "bitsstore.py"}
+
+    def _offenders(self):
+        out = {}
+        core_dir = os.path.join(ROOT, "core")
+        for name in sorted(os.listdir(core_dir)):
+            if not name.endswith(".py"):
+                continue
+            with open(os.path.join(core_dir, name), encoding="utf-8") as fh:
+                tree = ast.parse(fh.read())
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "join"):
+                    vals = [a.value for a in node.args if isinstance(a, ast.Constant)]
+                    if "memory" in vals or "data" in vals:
+                        out.setdefault(name, []).append(node.lineno)
+        return out
+
+    def test_only_fenced_files_hardcode_the_dir(self):
+        offenders = self._offenders()
+        extra = sorted(set(offenders) - self.ALLOWED)
+        self.assertEqual([], extra,
+                         f"зашит путь к каталогу в чистых модулях {extra}: "
+                         f"зовите core.worldfile.default_memory_dir, иначе "
+                         f"LIPID2_MEMORY_DIR игнорируется и прогон пишет в "
+                         f"живую память (хазард F3)")
+
+    def test_fence_is_not_a_hollow_number(self):
+        """Замок обязан уметь падать: без этой проверки трещотка = пожелание."""
+        offenders = self._offenders()
+        self.assertIn("worldfile.py", offenders,
+                      "worldfile.py перестал зашивать каталог — список "
+                      "разрешённых протух, замок пора пересчитать")
+        self.assertTrue(set(self.ALLOWED) <= set(offenders),
+                        f"разрешённых файлов меньше, чем в списке: {offenders}")
+
+    def test_cache_is_deliberately_shared_not_broken(self):
+        """
+        Общий кэш обязан оставаться ОБЩИМ: если кто-то «починит» и его, тест
+        требует осознанного решения, а не тихой подмены (лишние 7 с на прогон).
+        """
+        d = tempfile.mkdtemp(prefix="l2f3cache-")
+        env = dict(os.environ, LIPID2_STATUS="0", LIPID2_MEMORY_DIR=d)
+        code = ("import sys, os; sys.path.insert(0, %r)\n"
+                "from core.encoder import get_encoder\n"
+                "e = get_encoder()\n"
+                "print(os.path.abspath(getattr(e, '_bits_file', lambda: '')()))\n"
+                % ROOT)
+        proc = subprocess.run([sys.executable, "-c", code], env=env,
+                              capture_output=True, text=True, timeout=300)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-900:])
+        bits = proc.stdout.strip().splitlines()[-1]
+        self.assertTrue(bits.startswith(os.path.join(ROOT, "data", "memory")),
+                        f"битовый кэш уехал в {bits}: замерено, что это +7 с "
+                        f"на каждый изолированный прогон; разделять нужно было "
+                        f"состояние, а не кэш")
 
 
 if __name__ == "__main__":

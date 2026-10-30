@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 from core.sdr import SDR1024
 from core.encoder import get_encoder
 from core.records import merge_entity   # noqa: F401 — правило слияния ОДНО на все каналы
-from core.worldfile import atomic_write_json
+from core.worldfile import atomic_write_json, default_memory_dir
 
 # ==============================================================================
 # ENUM-КОДЫ ДЛЯ МАКСИМАЛЬНОЙ ЭКОНОМИИ ПАМЯТИ
@@ -42,12 +42,17 @@ class RelationType(IntEnum):
 # СТРУКТУРА ХРАНИЛИЩА (STORAGE MANAGER)
 # ==============================================================================
 class StorageManager:
-    def __init__(self, json_path: str = None, binary_path: str = None):
-        # По умолчанию храним всё в data/memory/, чтобы не сорить в корень проекта.
+    def __init__(self, json_path: str = None, binary_path: str = None,
+                 memory_dir: str = None):
+        # КАТАЛОГ ПО УМОЛЧАНИЮ задаёт core.worldfile (F3). Здесь был вшит
+        # «data/memory» рукой, и граф-демо (core/graph.py -> save_to_disk)
+        # писал lipid_db.{json,lipid} в РАБОЧИЙ каталог даже когда весь прогон
+        # убран в LIPID2_MEMORY_DIR=/tmp: «безобидная» самопроверка ядра
+        # оставляла артефакты рядом с живой Вселенной. Правило то же, что
+        # спасло brain: переменная читается в ОДНОМ месте.
+        # Явный json_path/binary_path по-прежнему главнее всего.
         if json_path is None or binary_path is None:
-            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            mem_dir = os.path.join(root, "data", "memory")
-            os.makedirs(mem_dir, exist_ok=True)
+            mem_dir, _ = default_memory_dir(memory_dir, "lipid_db.json")
             if json_path is None:
                 json_path = os.path.join(mem_dir, "lipid_db.json")
             if binary_path is None:
