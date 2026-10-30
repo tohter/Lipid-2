@@ -18,21 +18,79 @@ asked_empty. Таблица переехала сюда, чтобы её вид�
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import sys
+from typing import Callable, Dict, List, Optional
 
-try:
-    from core.morph import Morph
-except Exception as _exc:                            # pragma: no cover
-    print(f"[actions] ⚠️ core.morph недоступен ({_exc}) — распознавание "
-          "глаголов останется на словарных признаках (справочник, -ся)",
-          file=__import__("sys").stderr, flush=True)
+# ── СЛУЖБА ЧАСТИ РЕЧИ (граница языка, шаг A2.3) ────────────────────
+#
+# Здесь жил `from core.morph import Morph`. Это был язык внутри ядра: ядро
+# само звало русский морфологический движок и само решало, куда деть русский
+# глагол. По закону (experiments/IR_BOUNDARY.md §1) ядро не имеет права ни
+# импортировать язык, ни знать, как его зовут, — поэтому часть речи СЮДА
+# ПРИНОСЯТ: set_pos_service().
+#
+# ПОЧЕМУ ОДНА СЛУЖБА НА ПРОЦЕСС, А НЕ АРГУМЕНТ ФУНКЦИИ. Тот же разговор, что
+# в A2.2 (см. core/records.py): looks_like_verb — свободная функция, и A2.1
+# уже показывала этот класс отказа мутантом — «мозг забыл передать резолвер»
+# прошёл всем набором зелёным.
+#
+# НЕ ПРИНЕСЛИ СЛУЖБУ — НЕ МОЛЧИМ. См. _warn_no_service(): молчаливый откат
+# здесь стоит дороже, чем где-либо, потому что неверный ответ не «хуже ответ»,
+# а неверный ДИАГНОЗ: глагол уезжает в очередь «неизвестных сущностей», получает
+# asked_empty и больше никогда не спрашивается (см. TestVerbStatusMigration).
+_POS_SERVICE: Optional[Callable[[str], str]] = None
+_POS_NAME = ""
+_NO_SERVICE_WARNED = False
 
-    class Morph:                                # type: ignore
-        available = False
 
-        @staticmethod
-        def pos(word):
-            return ""
+def set_pos_service(pos_fn: Callable[[str], str], *, name: str = ""):
+    """
+    Принести ядру распознаватель части речи: fn(слово) -> «VERB»/«INFN»/…
+
+    Вызывать ОДИН раз на процесс, из слоя, который имеет право знать язык
+    (lang/, brain/, инструмент). Повторный вызов разрешён: переключение
+    службы — штатный случай теста и эксперимента.
+    """
+    global _POS_SERVICE, _POS_NAME, _NO_SERVICE_WARNED
+    _POS_SERVICE = pos_fn
+    _POS_NAME = name or getattr(pos_fn, "__qualname__", repr(pos_fn))
+    _NO_SERVICE_WARNED = False        # после установки обязаны замолчать
+    return pos_fn
+
+
+def clear_pos_service() -> None:
+    """Снять службу. Нужна тесту: проверить, что ядро БЕЗ неё ведёт себя иначе."""
+    global _POS_SERVICE, _POS_NAME, _NO_SERVICE_WARNED
+    _POS_SERVICE = None
+    _POS_NAME = ""
+    _NO_SERVICE_WARNED = False
+
+
+def pos_service_state() -> dict:
+    """ЧТО принесено, а не «что вообще есть»: ядро обязано уметь об этом доложить."""
+    return {"installed": _POS_SERVICE is not None, "name": _POS_NAME}
+
+
+def _warn_no_service() -> None:
+    """
+    ГРОМКО и ОДИН РАЗ: глагол распознаём только словарными признаками.
+
+    Цена молчания измерена: без распознавателя остаточные глаголы живой памяти
+    («чинить», «опылять», «катиться» — их нет в справочнике профилей) перестают
+    быть действиями, получают неверный диагноз asked_empty и больше никогда не
+    спрашиваются. Мусор в файле, который выглядит как результат поиска, опаснее
+    пустоты: его никто не идёт проверять.
+    """
+    global _NO_SERVICE_WARNED
+    if _NO_SERVICE_WARNED:
+        return
+    _NO_SERVICE_WARNED = True
+    print("[actions] ⚠ СЛУЖБА ЧАСТИ РЕЧИ НЕ ВНЕДРЕНА — распознавание глаголов "
+          "ДЕГРАДИРОВАЛО до справочника и окончания -ся: глаголы вне справочника "
+          "(«чинить», «опылять», «катиться») будут приняты за сущности и получат "
+          "неверный диагноз asked_empty. Принести распознаватель: "
+          "core.actions.set_pos_service(fn). Язык умеет внедрять lang/ или brain/, "
+          "ядро — нет.", file=sys.stderr, flush=True)
 
 # Перенос из teachers/teacher_wiki.py — СОСТАВ И ЧИСЛА НЕ МЕНЯТЬ.
 #
@@ -110,13 +168,14 @@ def looks_like_verb(word: str) -> bool:
       1) в справочнике профилей (или это возвращённая форма известного
          глагола: «мнёт» -> «мять»);
       2) возвращает -ся/-сь («катиться») — такого не бывает у существительных;
-      3) морфология говорит VERB или INFN. INFN обязателен: леммы глаголов в
-         памяти хранятся инфинитивами («гасить», «чинить»), и без него вся
-         живая память осталась бы с неверным asked_empty.
+      3) ЧАСТЬ РЕЧИ, ПРИНЕСЁННАЯ ИЗВНЕ, говорит VERB или INFN (шаг A2.3 —
+         ядро больше не зовёт морфологию, см. set_pos_service). INFN обязателен:
+         леммы глаголов в памяти хранятся инфинитивами («гасить», «чинить»), и
+         без него вся живая память осталась бы с неверным asked_empty.
 
-    Возвращать False при недоступной морфологии НЕЛЬЗЯ молча: тогда глагол
-    снова уйдёт в очередь «неизвестных сущностей», и именно тот дефект, ради
-    которого написан этот модуль, вернётся тихо.
+    Возвращать False при недоступной службе НЕЛЬЗЯ молча: тогда глагол снова
+    уйдёт в очередь «неизвестных сущностей», и именно тот дефект, ради которого
+    написан этот модуль, вернётся тихо. Поэтому — _warn_no_service().
     """
     w = (word or "").lower().strip()
     if not w:
@@ -125,7 +184,12 @@ def looks_like_verb(word: str) -> bool:
         return True
     if w.endswith(("ся", "сь")):
         return True
+    if _POS_SERVICE is None:
+        _warn_no_service()
+        return False
     try:
-        return Morph.pos(w).startswith(("VERB", "INFN"))
-    except Exception:
+        return _POS_SERVICE(w).startswith(("VERB", "INFN"))
+    except Exception as exc:                         # pragma: no cover
+        print(f"[actions] ⚠️ принёсённая служба части речи не ответила на "
+              f"«{w}»: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         return False

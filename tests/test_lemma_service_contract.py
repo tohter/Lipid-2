@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-КОНТРАКТ СЛУЖБЫ СВЕДЕНИЯ ФОРМ (шаг A2.2 границы языка)
+КОНТРАКТ ЯЗЫКОВЫХ СЛУЖБ ЯДРА (шаги A2.2 и A2.3 границы языка)
 
 Зачем этот файл существует. В A2.2 ядро перестало импортировать язык: из
 core/records.py убрали `import pymorphy3`, лемматизатор теперь ПРИНОСЯТ
-(core.records.set_lemma_service, носитель — lang/ru/lemma.py). Это закрыло
-шов, но открыло новый, худший класс отказов: forgotten installer.
+(core.records.set_lemma_service, носитель — lang/ru/lemma.py). В A2.3 туда же
+ушла часть речи: из core/actions.py убрали `from core.morph import Morph`,
+распознаватель глаголов приносит тот же install(). Это закрыло швы, но открыло
+новый, худший класс отказов: forgotten installer.
 
 Почему этот класс хуже обычного бага. Функции records — свободные, их зовут 17
 мест (замер AST по вызовам same_word/strip_self_name/meaningful_categories/
@@ -16,13 +18,16 @@ is_empty_entity/merge_entity), из них 6 производственных. �
 весь набор тестов был зелёный (мутант «мозг не передал surface_forms» тогда
 прошёл). Здесь масштаб больше, потому что писем в мир шесть, а не одно.
 
-Поэтому этот файл проверяет ДВЕ разные вещи:
+Поэтому этот файл проверяет ТРИ разные вещи:
 
-  1. СПОСОБНОСТЬ СЛЫШАТЬ отказ (TestDegradationIsLoud) — деградация обязана
-     быть видна, но не должна орать на каждую фразу.
+  1. СПОСОБНОСТЬ СЛЫШАТЬ отказ (TestDegradationIsLoud, TestPosDegradationIsLoud)
+     — деградация обязана быть видна, но не должна орать на каждую фразу.
   2. НЕВОЗМОЖНОСТЬ ЗАБЫТЬ (TestNobodyForgets) — у КАЖДОГО производственного
      входа, сводящего формы слов, служба стоит. Это проверка не кода, а
      множества входов: она же ловит и новый вход, который появится завтра.
+  3. ЦЕЛОСТНОСТЬ ТОЧКИ УСТАНОВКИ (test_install_brings_BOTH_services_not_one) —
+     один install() обязан внедрять ВСЕ службы. Забыть вторую строку в общем
+     установщике молча нельзя: процесс с половиной языка выглядит рабочим.
 
 Отдельно: TestProviderIsEquivalent — замена pymorphy3 -> Morph.lemma обязана
 быть равной СТАРОМУ поведению, иначе «закрыли шов» означает «тихо уронили
@@ -38,6 +43,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import core.records as R
+import core.actions as A
 from lang.ru.lemma import install as install_service
 
 # Функции records, чьё решение ЗАВИСИТ от сведения форм. Без службы они
@@ -126,6 +132,80 @@ class TestNobodyForgets(unittest.TestCase):
         st = state_after_import("core.storage")
         self.assertFalse(st["installed"])
 
+    def test_install_brings_BOTH_services_not_one(self):
+        """
+        Точка установки обязана внедрять ВСЁ, что ядро разучилось знать сама.
+
+        Почему это отдельный замок, а не деталь. С A2.3 у lang/ru/lemma.py ДВЕ
+        службы: сведение форм (core/records) и часть речи (core/actions). Один
+        install() на обе выбран намеренно — но сам себя он не охраняет: строку
+        set_pos_service можно вычеркнуть, и набор про это МОЛЧИТ. Проверено
+        мутацией: без этой проверки вычёркивание проходило всем набором, кроме
+        двух тестов чистильщика, то есть сигнал зависел от файла, который про
+        службы вообще ничего не знает.
+
+        Цена половинчатого процесса измерена: леммы сведены, глаголы распознаются
+        справочником, «чинить»/«опылять»/«катиться» становятся сущностями с
+        неверным диагнозом. Выглядит как работающий мозг.
+        """
+        probe = (
+            "import json,sys;sys.path.insert(0,%r);"
+            "import core.records as R, core.actions as A;"
+            "import lang.ru.lemma as L;"
+            "L.install();"
+            "print('STATE'+json.dumps({'lemma': R.lemma_service_state(),"
+            "'pos': A.pos_service_state()}))" % ROOT)
+        env = dict(os.environ, LIPID2_STATUS="0")
+        res = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, env=env,
+                             capture_output=True, text=True, timeout=900)
+        for line in res.stdout.splitlines():
+            if line.startswith("STATE"):
+                st = __import__("json").loads(line[5:])
+                break
+        else:
+            self.fail(f"зонд install() не ответил (код {res.returncode})\n"
+                      f"stderr: {res.stderr[-800:]}")
+        for svc, name in (("lemma", "сведение форм (core/records)"),
+                          ("pos", "часть речи (core/actions)")):
+            self.assertTrue(st[svc]["installed"],
+                            f"install() не принёс службу «{name}»: процесс с "
+                            f"половиной языка работает и пишет в мир худшими "
+                            f"ответами. Починка: lang/ru/lemma.py обязан "
+                            f"внедрять обе службы одним вызовом.")
+            self.assertIn("lang.ru.lemma", st[svc]["name"],
+                          f"служба «{name}» внедрена не из lang/ru/lemma.py — "
+                          f"кто-то завёл вторую точку установки, и забыть про "
+                          f"неё снова станет возможно")
+
+    def test_pos_dependent_entry_has_pos_service(self):
+        """
+        Инструмент, решающий по части речи, обязан иметь распознаватель.
+
+        Список зависимых составлен НЕ на глаз: AST-обход всего дерева показал,
+        что из производственных входов looks_like_verb зовёт ровно один файл —
+        tools/clean_world.py. Требовать pos-службу от brain/, который её не
+        вызывает, значило бы сочинять требование (урок 22: цифра без замера).
+        """
+        probe = (
+            "import json,sys;sys.path.insert(0,%r);"
+            "import tools.clean_world;"
+            "import core.actions as A;"
+            "print('STATE'+json.dumps(A.pos_service_state()))" % ROOT)
+        env = dict(os.environ, LIPID2_STATUS="0")
+        res = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, env=env,
+                             capture_output=True, text=True, timeout=900)
+        for line in res.stdout.splitlines():
+            if line.startswith("STATE"):
+                st = __import__("json").loads(line[5:])
+                break
+        else:
+            self.fail(f"зонд pos-службы не ответил (код {res.returncode})\n"
+                      f"stderr: {res.stderr[-800:]}")
+        self.assertTrue(st["installed"],
+                        "tools/clean_world распознаёт глаголы без распознавателя "
+                        "— глаголы вне справочника получат неверный asked_empty "
+                        "и исчезнут из очереди вопросов навсегда")
+
 
 class TestDegradationIsLoud(unittest.TestCase):
     """Без службы — громко, но не на каждую фразу (сердце бьётся часто)."""
@@ -181,6 +261,77 @@ class TestDegradationIsLoud(unittest.TestCase):
         R.clear_lemma_service()
         self.assertFalse(R.lemma_service_state()["installed"])
         install_service()   # вернуть как было: состояние-то общее на процесс
+
+
+class TestPosDegradationIsLoud(unittest.TestCase):
+    """
+    То же требование к НОВОЙ службе (A2.2 запер его для сведения форм).
+
+    Без замка деградация могла оказаться либо молчаливой (главный страх A2),
+    либо вечно орущей — и то и другое стоит одинаково дорого: крик, который
+    звучит всегда, не отличает настоящий отказ от рабочего процесса.
+    """
+
+    def setUp(self):
+        self.saved = A.pos_service_state()["installed"]
+        A.clear_pos_service()
+
+    def tearDown(self):
+        # Состояние общее на процесс: не вернёшь — поедут все последующие
+        # файлы, позеленев на справочнике вместо морфологии (урок 32).
+        if self.saved:
+            install_service()
+        else:
+            A.clear_pos_service()
+
+    def _noise(self, fn):
+        import io
+        import contextlib
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            out = fn()
+        return out, err.getvalue()
+
+    def test_missing_service_is_announced_when_it_matters(self):
+        out, noise = self._noise(lambda: A.looks_like_verb("чинить"))
+        self.assertFalse(out, "без распознавателя слово вне справочника не "
+                              "должно называться глаголом — но обязан быть шум")
+        self.assertIn("НЕ ВНЕДРЕНА", noise)
+        self.assertIn("set_pos_service", noise,
+                      "предупреждение не говорит, как починить — значит его "
+                      "проигнорируют")
+
+    def test_reference_table_and_reflexive_do_NOT_noise(self):
+        """
+        Если справочника хватает — молчать.
+
+        «гасить» есть в ACTION_PROFILES, «катиться» узнаётся по -ся: ни там ни
+        там морфология не запрашивается. Шуметь на таких словах — обесценить
+        сигнал: отличить настоящий отказ от обычного вызова станет нельзя.
+        """
+        out, noise = self._noise(
+            lambda: (A.looks_like_verb("гасить"), A.looks_like_verb("катиться")))
+        self.assertEqual(out, (True, True),
+                         "без службы справочник и -ся обязаны работать — иначе "
+                         "отказ ловится раньше, чем начинается деградация")
+        self.assertEqual(noise, "", "шум там, где служба не нужна")
+
+    def test_warning_is_not_repeated(self):
+        _, noise = self._noise(
+            lambda: [A.looks_like_verb(w)
+                     for w in ("чинить", "опылять", "мнёт", "гасить")])
+        self.assertEqual(noise.count("НЕ ВНЕДРЕНА"), 1,
+                         "предупреждение на каждое слово — через минуту его "
+                         "не читают, а значит оно молчит")
+
+    def test_installation_silences_the_warning(self):
+        _, noise = self._noise(lambda: (install_service(),
+                                        A.looks_like_verb("чинить")))
+        self.assertEqual(noise, "",
+                         "после внедрения шум остался — он перестаёт отличать "
+                         "настоящий отказ от мнимого")
+        self.assertTrue(A.looks_like_verb("чинить"),
+                        "со службой остаточный глагол обязан стать глаголом")
 
 
 class TestProviderIsEquivalent(unittest.TestCase):

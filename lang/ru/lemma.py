@@ -61,18 +61,42 @@ def provider() -> Callable[[str], str]:
     return _provider
 
 
+def _lazy_pos(word: str) -> str:
+    """
+    Часть речи через Morph, pymorphy3 поднимается на СЛОВЕ, а не на импорте.
+
+    Та же отсрочка, что у _lazy_lemma: лёгкий канал знания обязан работать на
+    любом python3 без тяжёлого стека.
+    """
+    from core.morph import Morph
+
+    return Morph.pos(word)
+
+
+def pos_provider() -> Callable[[str], str]:
+    """Русский распознаватель части речи: слово -> «VERB»/«INFN»/«NOUN»/…"""
+    return _lazy_pos
+
+
 def install():
     """
-    Один раз на процесс: отдать ядру русский лемматизатор.
+    Один раз на процесс: отдать ядру русскую морфологию ЦЕЛИКОМ.
+
+    Внедряет ОБЕ службы — сведение форм (core.records, шаг A2.2) и часть речи
+    (core.actions, шаг A2.3). Одна точка входа намеренна: два отдельных
+    установщика — это два способа внедрить половину и получить процесс, где
+    леммы сведены, а глаголы распознаются справочником. Цена такой половины
+    измерена: неверный диагноз asked_empty на живых глаголах памяти.
 
     Возвращает True, если установка произошла СЕЙЧАС, False если уже стояла.
-    Повторный вызов безопасен — set_lemma_service идемпотентен по смыслу, но
-    число установок должно быть видно: это единственный способ отличить
-    «службу принесли» от «её никто не просил».
+    Повторный вызов безопасен, но число установок должно быть видно: это
+    единственный способ отличить «службу принесли» от «её никто не просил».
     """
     global _installed
     import core.records as R
+    import core.actions as A
     R.set_lemma_service(provider(), name="lang.ru.lemma:core.morph.Morph.lemma")
+    A.set_pos_service(pos_provider(), name="lang.ru.lemma:core.morph.Morph.pos")
     first = not _installed
     _installed = True
     return first

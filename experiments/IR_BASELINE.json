@@ -5,14 +5,6 @@
   "core/morph.py"
  ],
  "seams": {
-  "core/actions.py": [
-   {
-    "module": "core.morph",
-    "line": 24,
-    "nested": false,
-    "demo": false
-   }
-  ],
   "core/cortex.py": [
    {
     "module": "core.morph",
@@ -189,26 +181,26 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 561,
+  "checks_comparing_russian": 564,
   "files": 38,
-  "checks_with_russian_message_only": 478
+  "checks_with_russian_message_only": 499
  },
  "totals": {
   "D_debt_files": 3,
   "C_core_reaches_lang": 0,
   "L_lang_files": 4,
-  "S_seam_sites": 9,
+  "S_seam_sites": 8,
   "S_demo_seam_sites": 0,
-  "S_seam_files": 6,
+  "S_seam_files": 5,
   "S_demo_seams_inside_core": 0,
-  "S_seams_inside_core": 3,
+  "S_seams_inside_core": 2,
   "O_output_methods": 6,
   "R_core_ruslits": 169,
   "M_core_messages": 105,
   "X_core_demo": 117,
   "R_neutral_files": 9,
   "Z_language_ruslits": 630,
-  "P_ir_output_price": 561,
+  "P_ir_output_price": 564,
   "P_ir_output_files": 38,
   "U_outer_seam_sites": 3,
   "U_outer_seam_files": 3
