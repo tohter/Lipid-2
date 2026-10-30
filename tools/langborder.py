@@ -394,10 +394,43 @@ def core_reaches_lang(rel):
     return hits
 
 
+def lang_consumers(rel, script=False):
+    """
+    G: кто НЕ-языковой код импортирует lang/.
+
+    Зачем отдельная категория, а не «и так видно». A1 уже показывала этот класс
+    слепоты: пока язык лежал в core/morph.py, импорт ловила категория S; стоило
+    ему переехать в lang/, как шов стал невидим и закон остался бы только на
+    бумаге (для ядра это закрыто категорией C = 0). Но для brain/, tools/ и
+    teachers/ язык ИМЕЕТ право жить в lang/, значит их импорты туда не
+    нарушают ничего и не попадают ни в S, ни в C — то есть сегодня ни один
+    замер не показывает, СКОЛЬКО мест вообще способны принести язык в ядро.
+
+    Это ровно множество «кто может внедрить службу», а forgotten installer —
+    главный риск шагов A2.1–A2.3 (мутант «мозг не передал резолвер» и мутант
+    «install() забыл вторую службу»). Число без этой меры гнило бы молча:
+    новый производственный вход, не принёсший службу, выглядел бы как
+    существующий.
+
+    ПОТОЛКА НЕТ намеренно: импортировать lang/ разрешено. Число нужно, чтобы
+    переезд шва из ядра наружу не превратился в исчезновение работы.
+    """
+    tree = parse(rel)
+    spans = demo_spans(tree, script=script)
+    hits = []
+    for mod, lineno, nested in imports_of(tree):
+        full = module_root(mod, rel)
+        if full.split(".")[0] == LANGUAGE_PACKAGES[0]:
+            hits.append({"module": full, "line": lineno, "nested": nested,
+                         "demo": in_span(lineno, spans)})
+    return hits
+
+
 def measure():
     report = {
         "language_files": [],          # D: долговой язык внутри core
         "seams": {},                   # S: кто импортирует язык
+        "lang_consumers": {},          # G: кто импортирует lang/ (без потолка)
         "output_methods": {},          # O: кто отдаёт русскую строку
         "core_ruslits": {},            # R: русские литералы в НЕязыковом core
         "language_ruslits": {},        # справочно: кириллица в файлах-языках
@@ -417,6 +450,11 @@ def measure():
         # сам языковой модуль, знающий язык, — не нарушение
         if hits and not is_language_file(rel):
             report["seams"][rel] = hits
+        # G: НЕ нарушая ничего, импорты lang/ обязаны быть видны — иначе
+        # множество «кто способен принести язык в ядро» не знает никто
+        g = lang_consumers(rel)
+        if g:
+            report["lang_consumers"][rel] = g
         om = output_methods(rel)
         if om:
             report["output_methods"][rel] = om
@@ -450,6 +488,12 @@ def measure():
         hits = [h for h in hits if not h.get("demo")]
         if hits:
             report["outer_seams"][rel] = hits
+        try:
+            g = lang_consumers(rel, script=True)
+        except SyntaxError:                 # pragma: no cover
+            g = []
+        if g:
+            report["lang_consumers"][rel] = g
 
     checked, nfiles, msg_only = price_of_ir_output()
     report["tests_touching_russian"] = {
@@ -501,6 +545,12 @@ def measure():
         "U_outer_seam_sites": sum(len(v)
                                   for v in report["outer_seams"].values()),
         "U_outer_seam_files": len(report["outer_seams"]),
+        # G — СПРАВОЧНАЯ величина, потолка НЕТ (см. lang_consumers): импорт
+        # lang/ не-языковому коду разрешён. Но молча гнить он не обязан:
+        # это список мест, где можно ЗАБЫТЬ принести службу в ядро.
+        "G_lang_import_sites": sum(len(v)
+                                   for v in report["lang_consumers"].values()),
+        "G_lang_import_files": len(report["lang_consumers"]),
     }
     return report
 
@@ -584,6 +634,15 @@ def print_report(rep):
     print("   имеют право знать язык. Число нужно, чтобы шов, ВЫВЕЗЕННЫЙ из")
     print("   ядра в tools/, остался виден, а не исчез из меры — ровно так")
     print("   же A1 сделал невидимым импорт, переехав в lang/.")
+
+    print(f"\n[7. НОСИТЕЛИ ЯЗЫКА] не-языковой код импортирует lang/: "
+          f"{t['G_lang_import_sites']} в {t['G_lang_import_files']} файлах")
+    for f, hits in sorted(rep["lang_consumers"].items()):
+        print(f"   {f:34} x{len(hits)}  "
+              f"{','.join(h['module'] for h in hits)}")
+    print("   Разрешено и ПОТОЛКОМ НЕ ЗАКРЫТО. Это список мест, где обязан")
+    print("   стоять внедритель языковой службы: забыть его — значит оставить")
+    print("   ядро деградировать молча (шаги A2.1–A2.3 падали именно на этом).")
 
     print("\n" + "=" * 72)
     print("ИТОГО  ", "  ".join(f"{k}={v}" for k, v in sorted(t.items())))

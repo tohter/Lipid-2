@@ -76,6 +76,8 @@ REFERENCE_KEYS = (
     "S_demo_seams_inside_core",
     "U_outer_seam_sites",    # швы в tools/ и teachers/
     "U_outer_seam_files",
+    "G_lang_import_sites",   # не-языковой код, импортирующий lang/
+    "G_lang_import_files",
     "Z_language_ruslits",    # кириллица в файлах-языках
     "P_ir_output_price",     # цена шага A4
     "P_ir_output_files",
@@ -398,8 +400,39 @@ class TestMutationsAreCaught(unittest.TestCase):
                          "импорт lang/ посчитан швом S: категории наложились, "
                          "улучшение S можно спрятать за ростом C")
 
+    def test_measure_G_SEES_lang_import_that_category_S_is_blind_to(self):
+        """
+        G обязана ловить то, чего S не видит ФИЗИЧЕСКИ.
+
+        Ноль G неотличим от сломанной меры (тот же урок, что C: пока ядро
+        честно не импортирует lang/, битая функция молчала и показывала
+        правильный 0). Поэтому мутация, а не вера в код.
+
+        Якорь выбран НЕ случайно: brain/question.py импортирует core.morph, то
+        есть ЕЩЁ год назад его шов был виден категории S. Если теперь тот же
+        файл импортирует lang.ru.lemma, S остаётся прежним — имя lang.ru.* не
+        входит в LANGUAGE_MODULES. Без G работа просто исчезает из отчёта.
+        """
+        anchor = "from core.morph import analyze, split_sentences"
+        base = measure()["totals"]
+        rep = self._patched_measure(
+            "brain/question.py", anchor,
+            anchor + "\nfrom lang.ru.lemma import install  # переезд шва\n")
+        self.assertEqual(rep["totals"]["S_seam_sites"],
+                         base["S_seam_sites"],
+                         "S перестала быть слепой к lang/ — значит список "
+                         "LANGUAGE_MODULES тайно расширили и старые проверки "
+                         "стали другими по смыслу")
+        self.assertEqual(rep["totals"]["G_lang_import_sites"],
+                         base["G_lang_import_sites"] + 1,
+                         "шов уехал в lang/ и исчез из меры — ровно та дыра, "
+                         "которую A1 оставил бы, не придумай он категорию C")
+        self.assertEqual(rep["totals"]["G_lang_import_files"],
+                         base["G_lang_import_files"] + 1,
+                         "новый файл-носитель языка не проявился числом")
+
     def test_language_import_in_demo_is_counted_but_not_a_seam(self):
-        """ОБРАТНАЯ мутация, и она важна не меньше: импорт языка внутри
+        """ОБРАТНАЯ мутация (демо), и она важна не меньше: импорт языка внутри
         `if __name__ == "__main__"` не попадает в библиотечный путь, поэтому
         швом НЕ считается — но обязан всплыть числом S_demo_seam_sites. Без
         этой пары демо-блок становится лазейкой: перенёс импорт в самопроверку

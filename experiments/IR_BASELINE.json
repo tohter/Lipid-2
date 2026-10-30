@@ -64,6 +64,48 @@
    }
   ]
  },
+ "lang_consumers": {
+  "brain/learner.py": [
+   {
+    "module": "lang.ru.lemma",
+    "line": 66,
+    "nested": false,
+    "demo": false
+   }
+  ],
+  "brain/lipid2_brain.py": [
+   {
+    "module": "lang.ru.questions",
+    "line": 8,
+    "nested": false,
+    "demo": false
+   }
+  ],
+  "tools/clean_world.py": [
+   {
+    "module": "lang.ru.lemma",
+    "line": 46,
+    "nested": false,
+    "demo": false
+   }
+  ],
+  "teachers/teacher1.py": [
+   {
+    "module": "lang.ru.lemma",
+    "line": 36,
+    "nested": false,
+    "demo": false
+   }
+  ],
+  "teachers/teacher_wiki.py": [
+   {
+    "module": "lang.ru.lemma",
+    "line": 94,
+    "nested": false,
+    "demo": false
+   }
+  ]
+ },
  "output_methods": {
   "core/extract.py": [
    {
@@ -183,7 +225,7 @@
  "tests_touching_russian": {
   "checks_comparing_russian": 564,
   "files": 38,
-  "checks_with_russian_message_only": 499
+  "checks_with_russian_message_only": 502
  },
  "totals": {
   "D_debt_files": 3,
@@ -203,6 +245,8 @@
   "P_ir_output_price": 564,
   "P_ir_output_files": 38,
   "U_outer_seam_sites": 3,
-  "U_outer_seam_files": 3
+  "U_outer_seam_files": 3,
+  "G_lang_import_sites": 5,
+  "G_lang_import_files": 5
  }
 }
