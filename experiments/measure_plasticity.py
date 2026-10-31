@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.graph import GraphMemory
 from core.cortex import PredictiveCortex, Hormones, Homeostasis
 from core.transitions import TransitionTable
+from lang.ru.text import experience as ru_experience  # IR A2.4: разбор приносят ядру
 
 
 LESSON_TEXTS = [
@@ -72,7 +73,7 @@ def make_brain() -> tuple[GraphMemory, PredictiveCortex, Hormones, Homeostasis]:
     hormones = Hormones()
     homeostasis = Homeostasis()
     transitions = TransitionTable()
-    cortex = PredictiveCortex(graph, transitions=transitions, hormones=hormones)
+    cortex = PredictiveCortex(graph, transitions=transitions, hormones=hormones, segmenter=ru_experience)
     cortex.homeostasis = homeostasis
     return graph, cortex, hormones, homeostasis
 

@@ -49,18 +49,21 @@ CEILINGS = {
     # невидим, и закон остался бы только на бумаге.
     "C_core_reaches_lang": 0,
     "D_debt_files": 3,          # core/extract.py, core/morph.py, core/lemma.py
-    "S_seam_sites": 8,          # импортов языка не-языковым кодом. Было 12:
+    "S_seam_sites": 6,          # импортов языка не-языковым кодом. Было 12:
                                 # A1 убрал шов brain/ir.py -> pymorphy3,
                                 # A2.1 убрал core/graph.py -> core/lemma
                                 # (резолвер форм теперь ПРИХОДИТ в ядро извне),
                                 # A2.2 убрал core/records.py -> pymorphy3
                                 # (лемматизатор приносит lang/ru/lemma.py),
                                 # A2.3 убрал core/actions.py -> core.morph
-                                # (часть речи приносит та же точка установки).
-    "S_seams_inside_core": 2,   # из них ВНУТРИ ядра — это нарушения закона.
+                                # (часть речи приносит та же точка установки),
+                                # A2.4 убрал core/cortex.py -> core.morph (x2):
+                                # разбор текста приносит segmenter=.
+    "S_seams_inside_core": 0,   # из них ВНУТРИ ядра — это нарушения закона.
                                 # Было 5: A2.1 закрыл graph.py, A2.2 закрыл
-                                # records.py, A2.3 закрыл actions.py; остался
-                                # один cortex (x2).
+                                # records.py, A2.3 закрыл actions.py, A2.4 —
+                                # cortex.py. НОЛЬ впервые: у ядра не осталось
+                                # рабочих импортов языка.
     "O_output_methods": 6,      # публичных методов, отдающих русскую строку
     "R_core_ruslits": 163,      # русских ДАННЫХ в нейтральном core/
                                 # Было 169: до IR A2.4b предупреждения в
@@ -106,19 +109,49 @@ class TestLawIsMeasured(unittest.TestCase):
                       "измеритель не считает core/extract.py языком: он "
                       "объявляет границу там, где её нет")
 
-    def test_measurer_finds_core_seams(self):
+    def test_measure_can_SEE_core_seam_after_they_all_closed(self):
         """
-        Ядровые швы, ЕЩЁ НЕ ЗАКРЫТЫЕ, обязаны быть вмерены — именно их закрывает
-        A2. core/graph.py убран на A2.1, core/records.py на A2.2, core/actions.py
-        на A2.3: швов там больше нет, и требовать их впредь значило бы запретить
-        улучшение. Вместо требования «шить навсегда» — симметричная проверка
-        ниже: закрытый шов обязан ИСЧЕЗНУТЬ из меры, а не прятаться в нуле.
+        A2.4 закрыл ПОСЛЕДНИЙ ядровый шов: `seams` внутри core/ пуст, и
+        требовать «чтобы шов был» значило бы запретить улучшение — тот же
+        дефект, из-за которого тест на «не сгенерированные отношения» пришлось
+        переписывать на «мера обязана их видеть».
+
+        Поэтому требование перенесено с факта на способность: пустая мера
+        обязана уметь увидеть шов, если его вернут. Пустой тест, который
+        ничего не может поймать, — не замок, а декорация (урок 23).
         """
+        import tools.langborder as lb
         inside = {f: v for f, v in self.rep["seams"].items()
                   if f.startswith("core" + os.sep)}
-        for f in ("core/cortex.py",):
-            self.assertIn(f, inside,
-                          f"шва {f} в мере не видно — закон нечем проверять")
+        self.assertEqual(inside, {},
+                         f"ядро снова тянет язык: {inside} — при пустом потолке "
+                         f"это падение закона, а не теста")
+        # и теперь сама способность меры видеть ядровый шов
+        rel = "core/cortex.py"
+        with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+            src = fh.read()
+        anchor = "from core.transitions import TransitionTable"
+        self.assertIn(anchor, src, "якорь пропал — мутация стала эквивалентной")
+        fake = src.replace(anchor,
+                           "from core.morph import Morph  # шов назад\n"
+                           + anchor, 1)
+        self.assertNotEqual(fake, src, "мутация не изменила исходник")
+        self.assertGreater(len(fake), len(src))
+        real_parse = lb.parse
+
+        def parse2(r):
+            if r == rel:
+                return ast.parse(fake, filename=r)
+            with open(os.path.join(ROOT, r), encoding="utf-8") as fh2:
+                return ast.parse(fh2.read(), filename=r)
+        lb.parse = parse2
+        try:
+            rep = lb.measure()
+        finally:
+            lb.parse = real_parse
+        self.assertGreater(rep["totals"]["S_seams_inside_core"], 0,
+                           "ядро вернуло язык, а мера молчит: нуль без"
+                           " способности расти ничего не защищает")
 
     def test_closed_seam_actually_disappears_from_measure(self):
         """A2.1: у core/graph.py больше нет языкового импорта. Если шов
@@ -134,6 +167,9 @@ class TestLawIsMeasured(unittest.TestCase):
         self.assertNotIn("core/actions.py", inside,
                          "у ядра снова языковый импорт в actions.py — A2.3 "
                          "откатился: часть речи обязана приходить из lang/")
+        self.assertNotIn("core/cortex.py", inside,
+                         "у ядра снова языковый импорт в cortex.py — A2.4 "
+                         "откатился: разбор текста обязан приходить segmenter=")
         demo = [h for hits in inside.values() for h in hits if h.get("demo")]
         self.assertEqual(demo, [],
                          "демо-шов внутри core затерялся в общей мере — он обязан "
@@ -247,11 +283,14 @@ class TestPriceIsKnown(unittest.TestCase):
         # ровно тот же билет, что и остальные, а не идёт зайцем. 561 -> 564 на
         # шаге A2.3: в том же файле добавлены проверки части речи («чинить»
         # обязано остаться глаголом, «пчела» — нет), они тоже сравнивают
-        # русское слово с ответом системы.
+        # русское слово с ответом системы. 564 -> 571 на шаге A2.4: добавлен
+        # tests/test_segmenter_contract.py, и он тоже СРАВНИВАЕТ русские слова
+        # с выводом («кошка пить молоко» -> цепочка лемм) — платит тот же
+        # билет, а не едет зайцем.
         # Числа не подгоняются: сначала замер, потом цифра.
-        self.assertEqual((checked, files), (564, 38),
+        self.assertEqual((checked, files), (571, 39),
                          f"цена A4 = ({checked}, {files}), а в IR_BOUNDARY.md "
-                         f"написано (564, 38) — обнови документ СЕЙЧАС")
+                         f"написано (571, 39) — обнови документ СЕЙЧАС")
         self.assertGreater(msg_only, 0,
                            "проверки только-с-сообщением перестали считаться: "
                            "цена будет завышена")

@@ -5,20 +5,6 @@
   "core/morph.py"
  ],
  "seams": {
-  "core/cortex.py": [
-   {
-    "module": "core.morph",
-    "line": 384,
-    "nested": true,
-    "demo": false
-   },
-   {
-    "module": "core.morph",
-    "line": 531,
-    "nested": true,
-    "demo": false
-   }
-  ],
   "brain/learner.py": [
    {
     "module": "core.extract",
@@ -36,13 +22,13 @@
   "brain/lipid2_brain.py": [
    {
     "module": "core.lemma",
-    "line": 19,
+    "line": 20,
     "nested": false,
     "demo": false
    },
    {
     "module": "core.morph",
-    "line": 1030,
+    "line": 1035,
     "nested": true,
     "demo": false
    }
@@ -79,12 +65,26 @@
     "line": 8,
     "nested": false,
     "demo": false
+   },
+   {
+    "module": "lang.ru.text",
+    "line": 9,
+    "nested": false,
+    "demo": false
    }
   ],
   "tools/clean_world.py": [
    {
     "module": "lang.ru.lemma",
     "line": 46,
+    "nested": false,
+    "demo": false
+   }
+  ],
+  "tools/cortex_demo.py": [
+   {
+    "module": "lang.ru.text",
+    "line": 33,
     "nested": false,
     "demo": false
    }
@@ -130,12 +130,12 @@
    {
     "cls": "Lipid2Brain",
     "method": "sleep_now",
-    "line": 1217
+    "line": 1222
    },
    {
     "cls": "Lipid2Brain",
     "method": "process_input",
-    "line": 1234
+    "line": 1239
    }
   ],
   "brain/question.py": [
@@ -170,7 +170,7 @@
   "core/actions.py": 2,
   "core/adapter.py": 4,
   "core/bitsstore.py": 26,
-  "core/cortex.py": 31,
+  "core/cortex.py": 34,
   "core/encoder.py": 8,
   "core/graph.py": 11,
   "core/logchannel.py": 0,
@@ -183,7 +183,6 @@
  },
  "core_demo": {
   "core/adapter.py": 3,
-  "core/cortex.py": 19,
   "core/graph.py": 9,
   "core/sdr.py": 26,
   "core/storage.py": 11,
@@ -194,7 +193,8 @@
   "lang/__init__.py",
   "lang/ru/__init__.py",
   "lang/ru/lemma.py",
-  "lang/ru/questions.py"
+  "lang/ru/questions.py",
+  "lang/ru/text.py"
  ],
  "outer_seams": {
   "tools/golden_corpus.py": [
@@ -223,30 +223,30 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 564,
-  "files": 38,
-  "checks_with_russian_message_only": 505
+  "checks_comparing_russian": 571,
+  "files": 39,
+  "checks_with_russian_message_only": 520
  },
  "totals": {
   "D_debt_files": 3,
   "C_core_reaches_lang": 0,
-  "L_lang_files": 4,
-  "S_seam_sites": 8,
+  "L_lang_files": 5,
+  "S_seam_sites": 6,
   "S_demo_seam_sites": 0,
-  "S_seam_files": 5,
+  "S_seam_files": 4,
   "S_demo_seams_inside_core": 0,
-  "S_seams_inside_core": 2,
+  "S_seams_inside_core": 0,
   "O_output_methods": 6,
   "R_core_ruslits": 163,
-  "M_core_messages": 111,
-  "X_core_demo": 117,
+  "M_core_messages": 114,
+  "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 630,
-  "P_ir_output_price": 564,
-  "P_ir_output_files": 38,
+  "P_ir_output_price": 571,
+  "P_ir_output_files": 39,
   "U_outer_seam_sites": 3,
   "U_outer_seam_files": 3,
-  "G_lang_import_sites": 5,
-  "G_lang_import_files": 5
+  "G_lang_import_sites": 7,
+  "G_lang_import_files": 6
  }
 }

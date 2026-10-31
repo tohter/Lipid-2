@@ -40,6 +40,7 @@ from brain.sleep import (CONSOLIDATION_THRESHOLD, CONFLICT_STRENGTH_MAX,
                         SLEEP_TRIGGER_TICKS, consolidate, decay_transitions,
                         reconcile_saved, sleep, sleep_due, table_of_section)
 from core.transitions import MAX_STRENGTH, TransitionTable
+from lang.ru.text import experience as ru_experience  # IR A2.4: разбор приносят ядру
 
 # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -134,7 +135,7 @@ class TestWhenToSleep(unittest.TestCase):
         from core.graph import GraphMemory
         story = ("Кошка крадётся к мыши. Кошка ловит мышь. Кошка ест мышь. "
                  "Пёс лает на кошку. Пёс гоняет кошку. Кошка видит мышь.")
-        cortex = PredictiveCortex(GraphMemory(), teacher=None)
+        cortex = PredictiveCortex(GraphMemory(), teacher=None, segmenter=ru_experience)
         first = cortex.process_stream(story, verbose=False)["ticks"]
         second = cortex.process_stream(story, verbose=False)["ticks"]
         self.assertEqual(first, second,

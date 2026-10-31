@@ -41,6 +41,9 @@ os.environ.setdefault("LIPID2_STATUS", "0")
 
 from core.cortex import Hormones, PredictiveCortex
 from core.graph import GraphMemory
+# РАЗБОР ПРИНОСЯТ ЯДРУ (IR A2.4): цикл больше не знает языка, и тест
+# обязан передать сегментатор так же, как это делает мозг.
+from lang.ru.text import experience as ru_experience
 from core.lemma import LemmaResolver
 from core.storage import RelationType
 from core.transitions import (MAX_STRENGTH, TransitionTable, merge_json,
@@ -91,7 +94,7 @@ class TestCortexHasNoWriteRightsToOntology(unittest.TestCase):
         180 -> 116 за один промах ломало смысл уверенности факта. Цикл обязан
         иметь СВОЁ число и не иметь доступа к чужому.
         """
-        cortex = PredictiveCortex(self.graph)
+        cortex = PredictiveCortex(self.graph, segmenter=ru_experience)
         for _ in range(12):
             cortex.process_stream(TEXT, verbose=False)
             cortex.observe("кошка", "кошачьи")     # «попадание» в онтологию
@@ -105,7 +108,7 @@ class TestCortexHasNoWriteRightsToOntology(unittest.TestCase):
         Предсказание не должно зависеть от весов: 180-килограммовый IS_A больше
         не перетягивает ответ на «что идёт после кошки» (дефект A).
         """
-        cortex = PredictiveCortex(self.graph)
+        cortex = PredictiveCortex(self.graph, segmenter=ru_experience)
         self.assertIsNone(cortex.predict("кошка"),
                           "без опыта предсказания быть не должно — вместо него "
                           "возвращается самый тяжёлый синапс")
@@ -115,7 +118,7 @@ class TestCortexHasNoWriteRightsToOntology(unittest.TestCase):
     def test_graph_structure_is_not_mutated(self):
         nodes_before = set(self.graph.nodes)
         edges_before = sum(len(n.out_synapses_typed) for n in self.graph.nodes.values())
-        cortex = PredictiveCortex(self.graph)
+        cortex = PredictiveCortex(self.graph, segmenter=ru_experience)
         cortex.process_stream(TEXT, verbose=False)
         self.assertEqual(set(self.graph.nodes), nodes_before)
         self.assertEqual(sum(len(n.out_synapses_typed) for n in self.graph.nodes.values()),
@@ -131,7 +134,7 @@ class TestStopWordsNeverBecomeConcepts(unittest.TestCase):
     def test_no_stopword_nodes_and_no_new_nodes_at_all(self):
         graph = make_graph()
         before = set(graph.nodes)
-        cortex = PredictiveCortex(graph)
+        cortex = PredictiveCortex(graph, segmenter=ru_experience)
         cortex.process_stream(
             "Кошка, которая сидит на подоконнике, спит, а собака бегает и "
             "играет в мяч, когда ребёнок читает книгу про динозавра.",
@@ -146,13 +149,13 @@ class TestStopWordsNeverBecomeConcepts(unittest.TestCase):
         «кошка» и «кошки» — ОДИН концепт. Пока цикл учил сырые формы, переход
         «кошка -> кошки» и «кошки -> кошка» были разными строками памяти.
         """
-        cortex = PredictiveCortex(make_graph())
+        cortex = PredictiveCortex(make_graph(), segmenter=ru_experience)
         chain = cortex.experience_sentences("Кошка видит кошку. Кошки видят кошку.")
         flat = [w for sent in chain for w in sent]
         self.assertEqual(flat.count("кошка"), 4, f"лемматизации нет: {flat}")
 
     def test_function_words_do_not_produce_ticks(self):
-        cortex = PredictiveCortex(make_graph())
+        cortex = PredictiveCortex(make_graph(), segmenter=ru_experience)
         m = cortex.process_stream("и на в а у о", verbose=False)
         self.assertEqual(m["ticks"], 0)
 
@@ -184,7 +187,7 @@ class TestTwoMetricsStaySeparate(unittest.TestCase):
         self.assertEqual(lemmas, {"огонь", "пламя"},
                          "пара перестала быть двумя разными леммами: "
                          f"{lemmas} — тест проверяет уже не то")
-        cortex = PredictiveCortex(make_graph())
+        cortex = PredictiveCortex(make_graph(), segmenter=ru_experience)
         # Ожидание после «жар» — «огонь»; приходит «пламя».
         cortex.transitions.confirm("жар", "огонь", 4)
         tick = cortex.observe("жар", "пламя")
@@ -211,7 +214,7 @@ class TestTwoMetricsStaySeparate(unittest.TestCase):
                                 PredictiveCortex.SOFT_OVERLAP)
         self.assertLessEqual(PredictiveCortex.UNKNOWN_CEILING,
                              PredictiveCortex.KNOWN_FLOOR)
-        cortex = PredictiveCortex(make_graph())
+        cortex = PredictiveCortex(make_graph(), segmenter=ru_experience)
         cortex.recalibrate_floor()
         thr = cortex.unknown_threshold()
         self.assertLessEqual(thr, PredictiveCortex.KNOWN_FLOOR,
@@ -225,7 +228,7 @@ class TestTwoMetricsStaySeparate(unittest.TestCase):
         такое наблюдение вообще не тик: это НЕ «успех» и НЕ «ошибка», а
         отсутствие наблюдения.
         """
-        cortex = PredictiveCortex(make_graph())
+        cortex = PredictiveCortex(make_graph(), segmenter=ru_experience)
         cortex.transitions.confirm("кошка", "спать", 3)
         result = cortex.observe("кошка", "кошка")
         self.assertTrue(result.get("skipped"))
@@ -239,7 +242,7 @@ class TestTwoMetricsStaySeparate(unittest.TestCase):
         «имя == факт» давал 100% точности на неизвестном языке, потому что оба
         имени были сырыми токенами одного слова.
         """
-        cortex = PredictiveCortex(make_graph())
+        cortex = PredictiveCortex(make_graph(), segmenter=ru_experience)
         # Каждая голова встречается ОДИН раз -> ожиданий возникнуть не может.
         fresh = "Собака бегает во дворе. Ребёнок читает книгу."
         m = cortex.process_stream(fresh, verbose=False)
@@ -256,7 +259,7 @@ class TestTwoMetricsStaySeparate(unittest.TestCase):
         Обратная сторона: строгая мера НЕ должна быть недостижимой. Без этого
         теста «0% навсегда» выглядел бы как корректная работа.
         """
-        cortex = PredictiveCortex(make_graph())
+        cortex = PredictiveCortex(make_graph(), segmenter=ru_experience)
         for _ in range(4):
             cortex.process_stream("Кошка пьёт молоко. Кошка пьёт молоко.",
                                   verbose=False)
@@ -413,7 +416,7 @@ class TestSentenceBoundary(unittest.TestCase):
         спит.» рождало переход «подоконник -> кошка». Иначе цикл выучает порядок
         предложений документа вместо структуры мира.
         """
-        cortex = PredictiveCortex(make_graph())
+        cortex = PredictiveCortex(make_graph(), segmenter=ru_experience)
         m = cortex.process_stream("Кошка сидит на подоконнике. Кошка спит.",
                                   verbose=False)
         self.assertEqual(m["ticks"], 3, f"тик через границу предложения: {m}")
@@ -441,10 +444,10 @@ class TestSessionCounters(unittest.TestCase):
         разное число тиков); сравнивать надо с ЭТАЛОНОМ: тот же текст, тот же
         граф, но цикл ни чего не видел раньше. Разница = протёкший прошлый опыт.
         """
-        cortex = PredictiveCortex(make_graph())
+        cortex = PredictiveCortex(make_graph(), segmenter=ru_experience)
         first = cortex.process_stream(self.FIRST, verbose=False)
         second = cortex.process_stream(self.SECOND, verbose=False)
-        fresh = PredictiveCortex(make_graph())
+        fresh = PredictiveCortex(make_graph(), segmenter=ru_experience)
         alone = fresh.process_stream(self.SECOND, verbose=False)
         for key in ("ticks", "hits", "misses", "no_expectation", "skipped",
                     "unknown_input", "new_transitions", "soft_overlap_hits"):
@@ -457,7 +460,7 @@ class TestSessionCounters(unittest.TestCase):
 
     def test_lifetime_survives_session_reset(self):
         """lifetime — тоже публичное число и обязано РАСТИ, а не обнуляться."""
-        cortex = PredictiveCortex(make_graph())
+        cortex = PredictiveCortex(make_graph(), segmenter=ru_experience)
         first = cortex.process_stream(self.FIRST, verbose=False)
         second = cortex.process_stream(self.SECOND, verbose=False)
         self.assertEqual(first["lifetime"]["ticks"], first["ticks"])
@@ -472,7 +475,7 @@ class TestSessionCounters(unittest.TestCase):
         Счётчики правятся в двух ветках; если одна ветка забывает обнуление или
         удваивает, сумма расходится и ВСЕ проценты в отчёте врут.
         """
-        cortex = PredictiveCortex(make_graph())
+        cortex = PredictiveCortex(make_graph(), segmenter=ru_experience)
         for text in (self.FIRST, self.SECOND, self.FIRST, self.SECOND):
             m = cortex.process_stream(text, verbose=False)
             self.assertEqual(m["hits"] + m["misses"] + m["no_expectation"],
@@ -483,12 +486,12 @@ class TestSessionCounters(unittest.TestCase):
 
     def test_unknown_counter_fails_loud(self):
         """Опечатка в имени счётчика обязана упасть, а не завести новую корзину."""
-        cortex = PredictiveCortex(make_graph())
+        cortex = PredictiveCortex(make_graph(), segmenter=ru_experience)
         with self.assertRaises(KeyError):
             cortex._bump("hits_with_a_typo")
 
     def test_both_counter_sets_have_identical_keys(self):
-        cortex = PredictiveCortex(make_graph())
+        cortex = PredictiveCortex(make_graph(), segmenter=ru_experience)
         self.assertEqual(set(cortex.stats), set(cortex.lifetime),
                          "наборы счётчиков разошлись по полям — сравнивать их "
                          "станет нельзя, а расхождение не увидит никто")
@@ -514,7 +517,7 @@ class TestCortexDoesNotTeachItself(unittest.TestCase):
         graph = make_graph()
         stderr_save, sys.stderr = sys.stderr, open(os.devnull, "w")
         try:
-            cortex = PredictiveCortex(graph, teacher=FakeTeacher())
+            cortex = PredictiveCortex(graph, teacher=FakeTeacher(), segmenter=ru_experience)
             cortex.process_stream(TEXT, verbose=False)
         finally:
             sys.stderr.close()
@@ -529,12 +532,12 @@ class TestCortexDoesNotTeachItself(unittest.TestCase):
         """
         hormones = Hormones()
         hormones.dopamine = 200
-        cortex = PredictiveCortex(make_graph(), hormones=hormones)
+        cortex = PredictiveCortex(make_graph(), hormones=hormones, segmenter=ru_experience)
         self.assertTrue(cortex.metrics()["hormones_shared_with_brain"])
         cortex.process_stream(TEXT, verbose=False)
         self.assertGreaterEqual(hormones.dopamine, 200,
                                 "цикл погасил гормоны владельца шкалы")
-        owner = PredictiveCortex(make_graph())
+        owner = PredictiveCortex(make_graph(), segmenter=ru_experience)
         owner.hormones.dopamine = 200
         owner.process_stream("кошка молоко. кошка спать.", verbose=False)
         self.assertLess(owner.hormones.dopamine, 200,

@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.graph import GraphMemory
 from core.cortex import PredictiveCortex, Hormones, Homeostasis
 from core.transitions import TransitionTable
+from lang.ru.text import experience as ru_experience  # IR A2.4: разбор приносят ядру
 
 
 LESSON_TEXTS = [
@@ -68,7 +69,7 @@ def make_brain(cfg: Config) -> tuple[GraphMemory, PredictiveCortex, Hormones, Ho
         hormone_decay_cort=cfg.hormone_decay_cort,
         soft_overlap_threshold=cfg.soft_overlap,
     )
-    cortex = PredictiveCortex(graph, transitions=transitions, hormones=hormones, plasticity=plasticity)
+    cortex = PredictiveCortex(graph, transitions=transitions, hormones=hormones, plasticity=plasticity, segmenter=ru_experience)
     cortex.homeostasis = homeostasis
     return graph, cortex, hormones, homeostasis
 

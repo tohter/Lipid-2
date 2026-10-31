@@ -31,8 +31,9 @@ tests/test_cortex_experience_contract.py)
     get_or_create_node(actual): после 20 предложений из 14 узлов стало 43,
     включая сущности «а», «и», «на», «когда», «что», а «кошка» и «кошки»
     стали ДВУМЯ узлами (дубли). Ныне: вход лемматизируется и фильтруется тем же
-    стоп-листом core/morph, что и экстрактор; цикл НЕ имеет права создавать
-    узлы графа — он читает и считает.
+    стоп-листом, что и экстрактор, НО делает это НЕ ядро: разбор приходит из
+    lang/ru/text.py (IR A2.4, 2026-10-30) — см. пункт Ж ниже. Цикл НЕ имеет
+    права создавать узлы графа — он читает и считает.
 
  D. ОПЫТ ИСЧЕЗАЛ ПРИ ПЕРЕЗАПУСКЕ.
     _on_hit/_on_miss писали в out_synapses_typed, persist для них был
@@ -50,6 +51,16 @@ tests/test_cortex_experience_contract.py)
     редко угадывали». Ныне у цикла ЕСТЬ СВОЁ ЧИСЛО (сила перехода 0..15), и к
     weight у него ДОСТУПА НЕТ — ни на чтение в предсказании, ни на запись.
 
+ F. ЦИКЛ ЗНАЛ РУССКИЙ ЯЗЫК (исправлено в IR A2.4, 2026-10-30).
+    experience_sentences сам резал текст split_sentences, сам звал морфологию и
+    сам решал, какое слово служебное. Ядро хранило язык — см.
+    experiments/IR_BOUNDARY.md. Ныне разбор ПРИНОСЯТ: цикл принимает `segmenter`
+    (текст -> цепочки лемм), а русская часть живёт в lang/ru/text.py. Цена шва
+    была измерена ДО переноса (мутация: граница предложения = 2 падения,
+    разбор в пустышку = 13), поэтому перенос сверен побайтно,
+    а не «на глаз»: tests/test_segmenter_contract.py. Без сегментатора цикл
+    молчит ГРОМКО (один warning в stderr) и не делает вид, что опыта не было.
+
  ЧЕМ ЦИКЛ ПОСЛЕ ЭТОГО ЯВЛЯЕТСЯ: наблюдателем за последовательностью опыта,
  который считает ожидания и ошибается вслух числами. Он НЕ добывает знания:
  bootstrap неизвестного — работа Learner'а и трёх каналов с бюджетами,
@@ -65,7 +76,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import sys
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 # Та же конвенция, что в core/graph.py: модуль можно запустить как скрипт
 # (python core/cortex.py) — ниже self-check, полезный без тестового раннера.
@@ -75,6 +86,12 @@ if __package__ in (None, ""):
 from core.sdr import SDR1024
 from core.graph import GraphMemory, Node
 from core.transitions import TransitionTable
+
+# текст -> список цепочек лемм. Ядро знает ФОРМУ этого договора, но не знает,
+# как выглядит русское предложение: разбор приносит языковая сторона
+# (IR A2.4). Тип назван, а не оставлен Callable, чтобы договор было видно
+# глазами: контракт «текст -> цепочки лемм» есть часть интерфейса цикла.
+Segmenter = Callable[[str], List[List[str]]]
 
 
 def _complain(text: str) -> None:
@@ -186,14 +203,25 @@ class PredictiveCortex:
     def __init__(self, graph: GraphMemory, teacher=None,
                  transitions: Optional[TransitionTable] = None,
                  hormones: Optional[Hormones] = None,
-                 plasticity: Optional[PlasticityConfig] = None):
+                 plasticity: Optional[PlasticityConfig] = None,
+                 segmenter: Optional[Segmenter] = None):
         """
         teacher: параметр оставлен ТОЛЬКО чтобы не молчать. У цикла нет права
         добывать знания — у Learner'а для этого есть бюджеты, лимиты и статусы.
         Передать учителя = получить предупреждение в stderr, а не тихий обход
         правил записи.
+
+        segmenter: текст -> список цепочек лемм. Ядро не умеет резать русский
+        текст и разбирать слова (IR A2.4, experiments/IR_BOUNDARY.md): их
+        приносят с языковой стороны — lang/ru/text.py::experience. Без него
+        цикл остаётся собой на любом языке, НО русский текст ему не прочитать:
+        experience_sentences предупреждает ОДИН раз и возвращает пусто, а не
+        тихонько считает переходы по пословному мусору. Предупреждение при
+        создании не раздаётся: цикл без текста легален и безопасен.
         """
         self.graph = graph
+        self.segmenter = segmenter
+        self._no_segmenter_warned = False
         self.transitions = transitions if transitions is not None else TransitionTable()
         self.homeostasis = Homeostasis()
         # Мозг передаёт СВОИ гормоны: две независимые шкалы «дофамина» в одном
@@ -347,8 +375,11 @@ class PredictiveCortex:
         трёх предложениях). Иначе цикл выучал бы порядок предложений документа,
         а не структуру мира.
 
-        Лемматизация и стоп-фильтр — здесь (это вход цикла), а не в observe():
-        без них цикл плодил узлы и считал предлог «на» концептом (дефект C).
+        Лемматизация и стоп-фильтр обязаны случиться ДО observe() — иначе
+        цикл плодит узлы и считает предлог «на» концептом (дефект C). ГДЕ они
+        лежат — изменилось на A2.4: не внутри ядра, а в принесённом segmenter
+        (lang/ru/text.py). Инвариант прежний: в observe() обязаны прийти уже
+        леммы без служебных слов, а не сырая фраза.
 
         СЧЁТЧИКИ СЕАНСА ОБНУЛЯЮТСЯ ЗДЕСЬ: возвращаемые метрики описывают
         ИМЕННО этот текст. До этого они копились с запуска процесса, и отчёт
@@ -374,27 +405,44 @@ class PredictiveCortex:
 
     def experience_sentences(self, text: str) -> List[List[str]]:
         """
-        Текст -> по предложениям: цепочки лемм значимых слов.
+        Текст -> цепочки лемм. Разбор НЕ здесь: он приходит в `segmenter`.
 
-        Служебные слова (предлоги, союзы, местоимения, глаголы-паразиты)
-        выбрасываются ТЕМ ЖЕ стоп-листом, что у экстрактора: цикл и экстрактор
-        обязаны видеть ОДИН и тот же лексикон, иначе их отчёты про один текст не
-        сходятся, а сравнить их — единственный способ проверить оба.
+        Раньше метод сам резал текст `split_sentences` и сам звал морфологию
+        (ЗАМЕРЕНО мутацией: заглушить границу предложения = 2 падения тестов,
+        выбросить из разбора всё = 13). Теперь это `lang/ru/text.py::experience` —
+        тот же код, та же лексика, то же поведение, но по ту сторону границы.
+        Равенство поведения проверяет tests/test_segmenter_contract.py.
         """
-        from core.morph import Morph, split_sentences
-        out: List[List[str]] = []
-        for sentence in split_sentences(text):
-            chain: List[str] = []
-            for tok in _analyze(sentence):
-                if not tok["content"]:
-                    continue
-                lem = (tok["lemma"] or tok["word"]).lower().strip()
-                if not lem or Morph.is_stop(lem):
-                    continue
-                chain.append(lem)
-            if chain:
-                out.append(chain)
-        return out
+        if self.segmenter is None:
+            self._warn_no_segmenter()
+            return []
+        try:
+            return self.segmenter(text)
+        except Exception as exc:          # noqa: BLE001 — щит широк НАМЕРЕННО
+            # политика та же, что у pos-службы (A2.3): сломанная служба НЕ
+            # роняет обучение. Исключение морфологии внутри GUI означало бы
+            # закрытое окно вместо урока; здесь — пропущенную фразу и крик.
+            _complain(f"[cortex] ⚠ сегментатор ИСКЛЮЧИЛСЯ ({type(exc).__name__}: "
+                      f"{exc}); фраза пропущена. Опыт по ней НЕ накоплен — это"
+                      " не «в тексте нечего было брать», это сломанный разбор.")
+            return []
+
+    def _warn_no_segmenter(self) -> None:
+        """
+        Одинокий громкий крик вместо тихой деградации.
+
+        Без разбора цикл не видит НИ ОДНОГО слова, и молча вернуть [] означало
+        бы «опыта не было» там, где «опыт не дошёл». Отличить одно от другого
+        обязан тот, кто смотрит в отчёт, — поэтому в stderr, а не в молчание.
+        """
+        if self._no_segmenter_warned:
+            return
+        self._no_segmenter_warned = True
+        _complain("[cortex] ⚠ цикл БЕЗ СЕГМЕНТАТЕРА: текст не читается, цепочек "
+                  "лемм нет. Это не «в тексте нечего было брать», это «разбор не "
+                  "принесли». Языковую сторону передают аргументом segmenter= "
+                  "(для русского — lang.ru.text.experience). Дальше по этому "
+                  "поводу тихо.")
 
     def experience_stream(self, text: str) -> List[str]:
         """
@@ -520,35 +568,3 @@ class PredictiveCortex:
         """Пол шума + запас, зажатый между 13 и 17. Вывод — в experiments/."""
         return max(self.UNKNOWN_CEILING,
                    min(self.KNOWN_FLOOR, self._noise_floor + 4))
-
-
-def _analyze(sentence: str) -> List[dict]:
-    """
-    Разбор предложения. Импорт локальный и один на все вызовы: цикл обязан
-    запускаться там, где нет pymorphy3 (эвристика + available=False), а не
-    падать на импорте.
-    """
-    from core.morph import analyze
-    return analyze(sentence)
-
-
-if __name__ == "__main__":
-    # Быстрая самопроверка без тестового раннера: python core/cortex.py
-    graph = GraphMemory()
-    for w in ("кошка", "собака", "вода", "пламя", "огонь", "подоконник",
-              "спать", "молоко"):
-        graph.get_or_create_node(w)
-    graph.sync_lemmas()
-    nodes_before = set(graph.nodes)
-    loop = PredictiveCortex(graph)
-    text = ("Кошка сидит на подоконнике. Кошка пьёт молоко. "
-            "Собака бегает во дворе. Кошка пьёт молоко.")
-    loop.process_stream(text, verbose=True)
-    m = loop.metrics()
-    print("\nПосле цикла узел «пить» создан?", "пить" in graph.nodes,
-          "| новых узлов:", set(graph.nodes) - nodes_before)
-    print("ожидаемое продолжение после «кошка»:", loop.predict("кошка"))
-    loop.query("кошка")
-    print("\n⚠  ТИКИ:", m["ticks"], "СТРОГАЯ ТОЧНОСТЬ:",
-          f"{m['accuracy_strict']:.0%}", "ПОКРЫТИЕ:", f"{m['coverage']:.0%}",
-          "ПЕРЕХОДОВ:", m["transitions"])

@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional
 
 # Импортируем вынесенный IR-парсер
 from lang.ru.questions import IRParser
+from lang.ru.text import experience as ru_experience
 # Импортируем Учителей (3 канала знаний)
 from teachers.teacher1 import AgentTeacherV2       # Канал 1: локальная LLM (Gemma/llama.cpp)
 from teachers.teacher_wiki import WikiTeacher      # Канал 2: интернет (Википедия)
@@ -135,9 +136,13 @@ class Lipid2Brain:
         # Гормоны ПЕРЕДАЮТСЯ, а не создаются заново: иначе GUI рисует шкалу
         # мозга, а цикл живёт со своей, и «дофамин 255» в окне ничего не
         # говорит о том, что происходило в цикле.
+        # РАЗБОР ПРИНОСЯТ СЮДА (IR A2.4): ядро не умеет резать русский текст,
+        # segmenter — его единственный способ увидеть опыт. Без него цикл
+        # предупреждает в stderr и не учится, а не считает переходы по мусору.
         self.cortex = PredictiveCortex(self.core,
                                       transitions=self.transitions,
-                                      hormones=self.hormones)
+                                      hormones=self.hormones,
+                                      segmenter=ru_experience)
         # ── СЧЁТЧИК СНА (очередь п.23-доработка) ───────────────────────
         # Считать надо ЗДЕСЬ, а не внутри sleep_now: вопрос «пора ли спать»
         # задаёт вызывающий, а не сам сон.
