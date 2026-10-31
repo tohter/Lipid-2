@@ -19,7 +19,7 @@ C (потолок 0) — иначе после переезда языка за�
 """
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 try:
     import pymorphy3
@@ -151,6 +151,45 @@ class IRParser:
             words.pop()
         return " ".join(words)
 
+    # ГОЛОВА фразы. Узел мира называется СУЩЕСТВИТЕЛЬНЫМ, а не словосочетанием:
+    # это не моё решение, а то, как ПИШЕТ ядро (замер 31.10, SimpleExtractor):
+    #   «Летучая мышь спит на дереве»  -> мышь|CAN_DO|спать
+    #                                      мышь|HAS_PROPERTY|летучий
+    #   «Красивая кошка ловит мышь»    -> кошка|CAN_DO|ловить
+    #                                      кошка|HAS_PROPERTY|красивый
+    #   «Бегущий человек дышит часто»  -> человек|CAN_DO|дышать
+    # То есть определение и причастие уезжают в СВОЙСТВА, а имя узла — голое
+    # существительное. Чтение обязано сводить вопрос к ТОМУ ЖЕ, иначе вопрос
+    # про «красивую кошку» ищет узел, которого писавшая сторона создать не
+    # могла в принципе (очередь, пункт F2: 'у красивой кошки признаки' ->
+    # ['красивый кошка'], и мозг честно шёл создавать узел «красивый кошка»).
+    HEAD_POS = "NOUN"
+    # Союз внутри фразы — НЕ трогаем: выбрать одну голову из «кошки и собаки»
+    # значит СОКРАТИТЬ вопрос пользователя, а это ложь по умолчанию. Поведение
+    # на союзах оставлено как есть и заперто как измеренное (см. тест).
+    _CONJUNCTIONS = (" и ", " или ", " &, ", ",")
+
+    def _head_noun(self, phrase: str) -> Optional[str]:
+        """Первое существительное фразы; None — если его в фразе нет.
+
+        None — это ЗНАЧЕНИЕ, а не неудача: без существительного сводить не к
+        чему, и выдумывать голову опаснее, чем промахнуться (промах честен:
+        мозг скажет «не знаю», а не спросит не про то).
+        """
+        if not self._morph:
+            return None
+        padded = f" {phrase} "
+        if any(c in padded for c in self._CONJUNCTIONS):
+            return None
+        for word in phrase.split():
+            clean = word.strip(".,?!:;\"'()[]{}")
+            if not clean:
+                continue
+            parsed = self._morph.parse(clean)
+            if parsed and parsed[0].tag.POS == self.HEAD_POS:
+                return clean
+        return None
+
     def _extract_subjects(self, match: re.Match) -> List[str]:
         """Извлекает и лемматизирует субъекты из групп захвата."""
         subjects = []
@@ -158,7 +197,8 @@ class IRParser:
             if g:
                 clean = self._clean_phrase(g)
                 if clean:
-                    lemma = self._lemmatize(clean)
+                    head = self._head_noun(clean)
+                    lemma = self._lemmatize(head if head else clean)
                     if lemma and lemma not in self.STOPWORDS:
                         subjects.append(lemma)
         return subjects
