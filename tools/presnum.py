@@ -134,13 +134,12 @@ def relations():
     а порождалось 14.
     """
     import tools.relcov as relcov
-    from core.extract import SimpleExtractor
-    ex = SimpleExtractor()
-    got = set()
-    for s in relcov.CASES:
-        for f in ex.extract(s, 1).facts:
-            got.add(f.relation)
-    return len(relation_names()), len(got)
+    # Вызывается МЕРА relcov, а не пересказывается здесь. Второй цикл по тем
+    # же CASES был бы вторым измерителем одной границы — а две правды в этом
+    # проекте уже были (документ «13 отношений», реестр 17). Мера уточнена
+    # 31.10: ABOUT рождается, SYNONYM_OF приезжает каналом aliases, и обоим
+    # presnum обязан поверить, а не сохранить прежние 14.
+    return len(relation_names()), len(relcov.produced_relations())
 
 
 @memo
