@@ -42,7 +42,6 @@ tests/test_presentation_numbers_contract.py требует, чтобы у каж
 """
 import os
 import re
-import subprocess
 import sys
 import unittest
 from datetime import date
@@ -118,13 +117,6 @@ def n_tests(pattern="test_*.py"):
 def n_contract_files():
     return len([f for f in sorted(os.listdir(os.path.join(ROOT, "tests")))
                 if f.startswith("test_") and f.endswith("_contract.py")])
-
-
-@memo
-def n_commits():
-    return int(subprocess.run(["git", "rev-list", "--count", "HEAD"],
-                              cwd=ROOT, capture_output=True, text=True,
-                              check=True).stdout)
 
 
 @memo
