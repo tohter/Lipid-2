@@ -205,6 +205,14 @@
     "demo": false
    }
   ],
+  "tools/presnum.py": [
+   {
+    "module": "core.extract",
+    "line": 145,
+    "nested": true,
+    "demo": false
+   }
+  ],
   "tools/relcov.py": [
    {
     "module": "core.extract",
@@ -223,9 +231,9 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 571,
-  "files": 39,
-  "checks_with_russian_message_only": 520
+  "checks_comparing_russian": 578,
+  "files": 40,
+  "checks_with_russian_message_only": 535
  },
  "totals": {
   "D_debt_files": 3,
@@ -242,10 +250,10 @@
   "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 630,
-  "P_ir_output_price": 571,
-  "P_ir_output_files": 39,
-  "U_outer_seam_sites": 3,
-  "U_outer_seam_files": 3,
+  "P_ir_output_price": 578,
+  "P_ir_output_files": 40,
+  "U_outer_seam_sites": 4,
+  "U_outer_seam_files": 4,
   "G_lang_import_sites": 7,
   "G_lang_import_files": 6
  }
