@@ -340,19 +340,62 @@ class TestLevelDifferenceIsMeasured(unittest.TestCase):
             self.assertGreater(run["recall"], 0.0)
             self.assertGreater(run["precision_triaj"], 0.0)
 
-    def test_alias_relation_is_recognized_on_world_level(self):
+    def test_role_name_survives_to_world_level(self):
         """
-        IS_ROLE -> IS_A: мозг переписывает ИМЯ отношения, смысл тот же. Если
-        expect_world перестанет читаться, уровень мира увидит здесь потерю и
-        recall просядет — тест обязан это поймать.
+        ИМЯ отношения доезжает до мира БЕЗ ПЕРЕИМЕНОВАНИЯ (замер 01.11).
+
+        ПРЕЖНИЙ ТЕСТ ПИНИЛ ОБРАТНОЕ: что learner переписывает IS_ROLE -> IS_A
+        (REL_ALIAS) и что expect_world при этом читается. Переписан вместе с
+        удалением REL_ALIAS, а не оставлен «на всякий случай»: тест, который
+        требует слияния роли с категорией, охраняет ложь.
+
+        ЗДЕСЬ ДВЕ ПРОВЕРКИ, и обе были в прежней версии — убрать любую
+        означало бы ослабить замок:
+          (1) мир хранит ТО ЖЕ имя, что назвал экстрактор (было: IS_A);
+          (2) уровневые подстановки МЕХАНИЧЕСКИ читаются — иначе скорер мог
+              тихо перестать смотреть в *_world, и метрика мира стала бы
+              судить по эталону экстрактора, называя дырой то, чего дырой нет
+              (урок про SYNONYM_OF: пара «X, или Y» приезжает каналом
+              aliases и на уровне экстрактора её нет вовсе).
+        Проверка (2) сделана СИНТЕТИЧЕСКИМ кейсом, а не живым: она обязана
+        работать даже если в корпусе не останется ни одного *_world, иначе
+        механизм можно удалить, а замок останется зелёным.
         """
         case = next(c for c in load_cases(DEV_PATH) if c["id"] == "d08")
-        self.assertIn("expect_world", case)
+        self.assertNotIn("expect_world", case,
+                         "в d08 вернулась уровневая подстановка: это значит, "
+                         "что в мир снова льётся IS_A вместо IS_ROLE")
         world_rows = produce_world(case["text"], self.work, "lock_d08")
-        self.assertIn(("кошка", "IS_A", "млекопитающее"), [t for t, _ in world_rows])
+        self.assertIn(("кошка", "IS_ROLE", "млекопитающее"), [t for t, _ in world_rows])
+        self.assertNotIn(("кошка", "IS_A", "млекопитающее"), [t for t, _ in world_rows],
+                         "роль снова стала категорией: REL_ALIAS вернулся или "
+                         "факт переименован в другом месте пути")
         r = score_case(case, world_rows, "world")
         self.assertEqual(r["misses"], [],
-                         "expect_world не применён: уровневая метрика врёт")
+                         f"эталон мира не покрыт: {r['misses']}")
+
+        synth = {"id": "lock_level", "text": "X, или Y, живёт.",
+                 "expect": [["x", "IS_ROLE", "y"]], "neg": [], "forbid": [],
+                 "basket": "any",
+                 # Та же форма, что у настоящих кейсов d24/h34: пару имён
+                 # каналом aliases в мир несёт learner, поэтому на уровне
+                 # мира появляется связь, которой на уровне экстрактора нет.
+                 "also_ok_world": [["x", "SYNONYM_OF", "y"]]}
+        produced = [(("x", "IS_ROLE", "y"), False),
+                    (("x", "SYNONYM_OF", "y"), False)]
+        hit_extract = score_case(synth, produced, "extract")
+        hit_world = score_case(synth, produced, "world")
+        self.assertEqual(hit_extract["also_ok"], [],
+                         "синтетический кейс построен неверно: also_ok_world "
+                         "просочился в уровень экстрактора")
+        self.assertIn(("x", "SYNONYM_OF", "y"), hit_extract["extra"],
+                      "на уровне экстрактора мировая связь обязана быть видна "
+                      "как НЕРАЗМЕЧЕННАЯ, иначе потеря уровня неизмерима")
+        self.assertEqual(hit_world["also_ok"], [("x", "SYNONYM_OF", "y")],
+                         "_world-подстановка не читается: уровневая метрика "
+                         "ослепла и будет звать дырой то, чего дырой нет")
+        self.assertEqual(hit_world["misses"], [],
+                         "эталон экстрактора потерялся на уровне мира")
 
     def test_event_role_loss_is_counted_not_hidden(self):
         """

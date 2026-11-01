@@ -200,7 +200,7 @@
   "tools/golden_corpus.py": [
    {
     "module": "core.extract",
-    "line": 299,
+    "line": 305,
     "nested": true,
     "demo": false
    }
@@ -208,7 +208,7 @@
   "tools/relcov.py": [
    {
     "module": "core.extract",
-    "line": 19,
+    "line": 40,
     "nested": false,
     "demo": false
    }
@@ -223,9 +223,9 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 609,
-  "files": 42,
-  "checks_with_russian_message_only": 551
+  "checks_comparing_russian": 616,
+  "files": 43,
+  "checks_with_russian_message_only": 568
  },
  "totals": {
   "D_debt_files": 3,
@@ -242,9 +242,9 @@
   "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 630,
-  "P_ir_output_price": 609,
-  "P_ir_output_files": 42,
-  "P_msg_only_checks": 551,
+  "P_ir_output_price": 616,
+  "P_ir_output_files": 43,
+  "P_msg_only_checks": 568,
   "U_outer_seam_sites": 3,
   "U_outer_seam_files": 3,
   "G_lang_import_sites": 7,

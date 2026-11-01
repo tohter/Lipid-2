@@ -114,13 +114,25 @@ class TestNumbersMatchMeasure(unittest.TestCase):
     # Граница сознательная: experiments/ARCHIVE_SESSIONS.md содержит CJK
     # СОЗНАТЕЛЬНО (там иероглифы обсуждаются как пример мусора), и гонять
     # правило на весь проект нельзя — оно начинало бы краснеть на правду.
+    # СОСТАВ РАСШИРЕН 01.11. Прежний список ловил только витрину и её замок,
+    # а CJK уже лежал в experiments/corpus_heldout.json (фраза про контаминацию
+    # held-out) и никто его не видел: замок проверял три файла, а текст,
+    # который читает человек, в проекте не три. Правило то же: любой файл,
+    # который человек читает как прозу, обязан быть чистым.
     OWNED = ("tools/presnum.py", "tests/test_presentation_numbers_contract.py",
-             "PRESENTATION.md")
+             "PRESENTATION.md", "README_ЭКСПЕРТУ.md",
+             "experiments/corpus_dev.json", "experiments/corpus_heldout.json",
+             "experiments/CORPUS_QUALITY.md", "tests/test_role_category_contract.py",
+             "tests/test_relcov_contract.py", "tools/relcov.py",
+             "memory.txt")
     CJK = __import__("re").compile(
         "[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
 
     def test_no_stray_cjk_in_showcase_and_lock(self):
         for rel in self.OWNED:
+            self.assertTrue(os.path.exists(os.path.join(ROOT, rel)),
+                            f"замок потерял покрытие: файла {rel} нет — "
+                            "список OWNED протух, а зелёный цвет этого не скажет")
             path = os.path.join(ROOT, rel)
             with open(path, encoding="utf-8") as fh:
                 for n, line in enumerate(fh, 1):
