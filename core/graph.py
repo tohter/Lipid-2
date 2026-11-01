@@ -214,17 +214,17 @@ class GraphMemory:
             print(f"[Graph]: SDR прогрев {n} имён пачкой.")
         return n
 
-    def add_synonym(self, word: str, canonical_word: str):
-        """
-        Привязывает узел-синоним к каноническому концепту.
-        Пример: add_synonym("гиппопотам", "бегемот")
-        """
-        canon_node = self.get_or_create_node(canonical_word, NodeType.ENTITY)
-        syn_node = self.get_or_create_node(word, NodeType.ENTITY)
-        
-        syn_node.canonical_id = canon_node.id
-        syn_node.connect_to(canon_node, rel_type=RelationType.SYNONYM_OF, weight=255)
-        print(f"[Graph]: Узел '{word}' зарегистрирован как СИНОНИМ для '{canonical_word}'.")
+    # add_synonym УДАЛЁН 01.11.2026 (решение по A3, подтверждено боссом
+    # 3.8-max после замера). Долгое время здесь жил ВТОРОЙ механизм
+    # идентичности: canonical_id + связь SYNONYM_OF, заведомо работающий
+    # только из самопроверки ниже (из рабочего кода — ни одного вызова, см.
+    # замер в experiments/ARCHIVE_SESSIONS.md). Два механизма на один вопрос
+    # «это та же сущность?» означали два ответа, и второй никогда не
+    # проверялся первым. Единственный источник истины теперь: ключ entities +
+    # поле aliases, а SYNONYM_OF как наблюдение записывает brain/learner.py
+    # (_record_aliases) и только меряет tools/relcov.py.
+    # Поле canonical_id остаётся в БИНАРНОМ формате (.lipid) как зарезерви-
+    # рованное: правило append-only не даёт вынимать его из живых миров.
 
     def integrate_knowledge(self, knowledge: dict, weight: int = 255):
         """Интегрирует данные от Учителя с расстановкой типов связей."""
@@ -293,6 +293,19 @@ class GraphMemory:
 if __name__ == "__main__":
     print("--- ТЕСТИРОВАНИЕ РАБОТЫ ГРАФА И СИНОНИМОВ (ЛИПИД-2) ---\n")
 
+    # НИКАКОЙ ЗАПИСИ В ЖИВУЮ ПАМЯТЬ. Раньше эта самопроверка писала
+    # lipid_db.{json,lipid} в data/memory по умолчанию. Файл лежит в
+    # .gitignore, и один запуск `python core/graph.py` безвозвратно стёр
+    # накопленный там граф (восстанавливать пришлось пересозданием).
+    # Самопроверка ядра обязана жить во временном каталоге; в живую память
+    # она пишет, только если каталог задан ЯВНО через LIPID2_MEMORY_DIR.
+    import os as _os
+    import tempfile as _tempfile
+    if not _os.environ.get("LIPID2_MEMORY_DIR"):
+        _tmp = _tempfile.mkdtemp(prefix="l2_graph_selfcheck_")
+        _os.environ["LIPID2_MEMORY_DIR"] = _tmp
+        print(f"(самопроверка пишет во временный каталог: {_tmp})")
+
     g = GraphMemory()
 
     # Имитируем добавление знаний
@@ -303,11 +316,13 @@ if __name__ == "__main__":
         "actions": ["плавать"]
     })
 
-    # Добавляем синоним
-    g.add_synonym("гиппопотам", "бегемот")
-
-    # Проверяем резолв: при запросе гиппопотама выведутся связи бегемота
-    g.print_node_associations("гиппопотам")
+    # Проверяем резолв и печать ассоциаций. РАНЬШЕ здесь вызывался
+    # add_synonym("гиппопотам", "бегемот"), но этот метод удалён как ВТОРОЙ
+    # (никогда не работавший из боевого пути) механизм идентичности —
+    # см. комментарий над этим блоком. Самопроверка осталась: она и
+    # нужна здесь как smoke-тест ядра (интеграция знаний, печать ассоциаций,
+    # сохранение и компиляция .lipid).
+    g.print_node_associations("бегемот")
 
     # Сохраняем и компилируем
     g.save_to_disk()

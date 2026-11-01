@@ -562,6 +562,60 @@ class TestCoreDemoWritesOnlyIntoIsolatedDir(_LiveGraphFileGuard, unittest.TestCa
             self.assertEqual(now, blob,
                              f"демотест перезаписал живой {os.path.basename(p)}")
 
+class TestSelfCheckWithoutEnvDoesNotTouchLive(_LiveGraphFileGuard, unittest.TestCase):
+    """
+    САМОПРОВЕРКА БЕЗ ПЕРЕМЕННОЙ ОКРУЖЕНИЯ — самый опасный случай, и он был слеп.
+
+    WHY. Класс выше запускает демо С LIPID2_MEMORY_DIR=/tmp и потому проверяет
+    только «переменную уважают». Дыра — запуск ВООБЩЕ без переменной: обычный
+    `python core/graph.py` из любопытства. ЗАМЕРЕНО НА СЕБЕ 31.10: такой запуск
+    перезаписал data/memory/lipid_db.json своим учебным графом, а файл лежит в
+    .gitignore — восстановить его из истории невозможно. Прошлый замок про это
+    молчал: он всегда ставил переменную, поэтому «голый» запуск не проверял.
+
+    Здесь переменная ОСОЗНАННО снята. Требование: живой каталог не меняется,
+    а артефакты самопроверки где-то всё-таки появляются (иначе проверка
+    вырождалась бы в «модуль ничего не делает» — зелёный на сломанном коде).
+    """
+
+    MODULES = (os.path.join("core", "graph.py"),
+               os.path.join("core", "storage.py"))
+
+    def test_bare_selfcheck_leaves_live_memory_alone(self):
+        live_dir = os.path.join(ROOT, "data", "memory")
+        before = self._read(self.LIVE_JSON), self._read(self.LIVE_BIN)
+        for rel in self.MODULES:
+            with self.subTest(module=rel):
+                env = {k: v for k, v in os.environ.items()
+                       if k != "LIPID2_MEMORY_DIR"}
+                env["LIPID2_STATUS"] = "0"
+                # отдельный HOME-независимый TEMP: артефакты самопроверки не
+                # должны разъезжаться по /tmp и не должны попадать в live_dir
+                env["TMPDIR"] = tempfile.mkdtemp(prefix="l2bare-")
+                proc = subprocess.run(
+                    [sys.executable, "-c",
+                     "import runpy, sys; sys.argv[0] = %r; "
+                     "runpy.run_path(sys.argv[0], run_name='__main__')" %
+                     os.path.join(ROOT, rel)],
+                    cwd=ROOT, env=env, capture_output=True, text=True,
+                    timeout=300)
+                self.assertEqual(proc.returncode, 0,
+                                 f"{rel} упал без LIPID2_MEMORY_DIR:\n"
+                                 f"{proc.stderr[-900:]}")
+                self.assertEqual(
+                    (self._read(self.LIVE_JSON), self._read(self.LIVE_BIN)),
+                    before,
+                    f"{rel} без переменной окружения перезаписал живую память; "
+                    f"живой каталог {live_dir} неотвосстановим из git")
+                # и обратная сторона: самопроверка обязана ЧТО-ТО писать, а не
+                # молча ничего не делать
+                wrote = [f for f in os.listdir(env["TMPDIR"])
+                         if os.path.isdir(os.path.join(env["TMPDIR"], f))]
+                self.assertTrue(wrote,
+                                f"{rel} вообще ничего не записал — проверка "
+                                f"проходит на пустоте и ничего не гарантирует")
+
+
 class TestHardcodedMemoryPathsAreFenced(unittest.TestCase):
     """
     Трещотка: в core/ зашивать data/memory имеют право ТРИ файла.

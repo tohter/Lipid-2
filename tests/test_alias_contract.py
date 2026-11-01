@@ -31,6 +31,7 @@ tests/test_alias_contract.py — ВАРИАНТ ИМЕНИ НЕ ЗАВОДИТ �
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import tempfile
@@ -393,6 +394,102 @@ class TestKnownDefectsMeasuredNotHidden(unittest.TestCase):
                                                     "Кот, или собака, спит тут."))
         self.assertEqual(apposition_aliases(toks3, "Кот, или собака, спит тут."),
                          [("кот", "собака")])
+
+
+class TestSecondIdentityMechanismRemoved(unittest.TestCase):
+    """
+    A3 (31.10): ВТОРОГО механизма идентичности в ядре быть не должно.
+
+    В `core/graph.py` жил `add_synonym`: назначал `canonical_id` и вешал
+    SYNONYM_OF. Замер: из рабочего кода НИ ОДНОГО вызова — только из
+    `__main__`-самопроверки того же файла. Два механизма на вопрос «это та же
+    сущность?» означают два ответа, и второй никогда не проверялся первым.
+    Единственный источник истины — ключ entities + aliases (этот файл выше).
+
+    Замок СТАТИЧЕСКИЙ (AST, без импорта ядра и модели): краснеет, если
+    * в `core/` вне `__main__` снова объявят add_synonym/set_canonical/
+      merge_nodes или запишут `что-то.canonical_id = ...`;
+    * ИНАЧЕ скажут, что поле убрали совсем: `canonical_id` обязан ОСТАТЬСЯ
+      инициализированным полем Node — он сидит в бинарном формате `.lipid`
+      (`struct.pack("<IBI", ...)`, core/storage.py), живые миры Append-only,
+      и удаление поля ломает формат, а не механизм.
+
+    На коде ДО правки замок краснеет (замер `git show HEAD~:core/graph.py`):
+    `def add_synonym` и `syn_node.canonical_id = canon_node.id`.
+    """
+
+    # единственная легальная запись canonical_id: инициализация поля в Node.
+    # МНОЖЕСТВО ПАРОК (файл, метод) — при кортеже строк проверка `in` сверяла
+    # бы элементы по одному и замок краснел на собственном разрешённом коде.
+    ALLOWED_CANONICAL_WRITES = {("graph.py", "__init__")}
+    FORBIDDEN_DEFS = ("add_synonym", "set_canonical", "merge_nodes")
+
+    def _core_scan(self):
+        core_dir = os.path.join(ROOT, "core")
+        offenders, legit = [], []
+        for f in sorted(os.listdir(core_dir)):
+            if not f.endswith(".py"):
+                continue
+            path = os.path.join(core_dir, f)
+            with open(path, encoding="utf-8") as fh:
+                src = fh.read()
+            tree = ast.parse(src)
+            demo = [(n.lineno, n.end_lineno) for n in ast.walk(tree)
+                    if isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+                    and isinstance(n.test.left, ast.Name)
+                    and n.test.left.id == "__name__"]
+            inside_demo = lambda n: any(a <= n.lineno <= b for a, b in demo)
+            # имя окружающего метода для разрешённой инициализации
+            parents = {}
+            for nd in ast.walk(tree):
+                if isinstance(nd, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for ch in ast.walk(nd):
+                        parents[id(ch)] = nd.name
+            for n in ast.walk(tree):
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                   and n.name in self.FORBIDDEN_DEFS and not inside_demo(n):
+                    offenders.append(f"{f}:{n.lineno} def {n.name}")
+                if isinstance(n, ast.Assign) and not inside_demo(n):
+                    for t in n.targets:
+                        if isinstance(t, ast.Attribute) \
+                           and t.attr == "canonical_id":
+                            entry = (f, parents.get(id(n), "?"))
+                            if entry in self.ALLOWED_CANONICAL_WRITES:
+                                legit.append(entry)
+                            else:
+                                offenders.append(
+                                    f"{f}:{n.lineno} {ast.unparse(n)[:60]}")
+        return offenders, legit
+
+    def test_no_second_identity_writer_in_core(self):
+        offenders, legit = self._core_scan()
+        self.assertEqual([], offenders,
+                         f"в ядре завёлся второй механизм идентичности "
+                         f"{offenders}: единственный источник истины — ключ "
+                         f"entities + aliases (шапка этого файла)")
+        self.assertTrue(legit,
+                        "разрешённая инициализация Node.canonical_id пропала "
+                        "из core/graph.py: поле нужно бинарному формату "
+                        ".lipid (struct.pack <IBI) — удалять его нельзя, "
+                        "список ALLOWED_CANONICAL_WRITES пора пересчитывать")
+
+    def test_canonical_channel_is_still_explicitly_unresolved(self):
+        """
+        Живой мир обязан ЧЕСТНО говорить «слияний не было»: canonical_id у
+        всех узлов = 0. Если кто-то начнёт его заполнять в обход aliases —
+        замок выше его поймает, а эта проверка не даст замеру протухнуть.
+        """
+        path = os.path.join(ROOT, "data", "memory", "lipid_db.json")
+        if not os.path.exists(path):
+            self.skipTest("живого графа нет — проверять нечего")
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        bad = [n["label"] for n in data.get("nodes", [])
+               if n.get("canonical_id")]
+        self.assertEqual([], bad,
+                         f"узлы с ненулевым canonical_id {bad}: второй канал "
+                         f"идентичности ожил в данных — слияния обязаны идти "
+                         f"через aliases и быть измеримыми этим файлом")
 
 
 if __name__ == "__main__":

@@ -241,6 +241,17 @@ class StorageManager:
 if __name__ == "__main__":
     print("--- ТЕСТИРОВАНИЕ STORAGE MANAGER & СКОМПИЛИРОВАННОГО .LIPID ---\n")
 
+    # НИКАКОЙ ЗАПИСИ В ЖИВУЮ ПАМЯТЬ — та же защита, что в core/graph.py.
+    # Ниже компилируется DummyNode-граф («кошка», «гиппопотам», «бегемот»),
+    # и без этого он уезжал в data/memory/lipid_db.{json,lipid} — файл, которого
+    # нет в git (.gitignore), поэтому испорченный граф неотвосстановим.
+    import os as _os
+    import tempfile as _tempfile
+    if not _os.environ.get("LIPID2_MEMORY_DIR"):
+        _tmp = _tempfile.mkdtemp(prefix="l2_storage_selfcheck_")
+        _os.environ["LIPID2_MEMORY_DIR"] = _tmp
+        print(f"(самопроверка пишет во временный каталог: {_tmp})")
+
     storage = StorageManager()
 
     # Имитация тестового графа для проверки компилятора

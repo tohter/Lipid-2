@@ -172,7 +172,7 @@
   "core/bitsstore.py": 26,
   "core/cortex.py": 34,
   "core/encoder.py": 8,
-  "core/graph.py": 11,
+  "core/graph.py": 9,
   "core/logchannel.py": 0,
   "core/records.py": 4,
   "core/schemes.py": 0,
@@ -183,9 +183,9 @@
  },
  "core_demo": {
   "core/adapter.py": 3,
-  "core/graph.py": 9,
+  "core/graph.py": 8,
   "core/sdr.py": 26,
-  "core/storage.py": 11,
+  "core/storage.py": 12,
   "core/transitions.py": 49
  },
  "core_reaches_lang": {},
@@ -225,7 +225,7 @@
  "tests_touching_russian": {
   "checks_comparing_russian": 609,
   "files": 42,
-  "checks_with_russian_message_only": 545
+  "checks_with_russian_message_only": 551
  },
  "totals": {
   "D_debt_files": 3,
@@ -238,13 +238,13 @@
   "S_seams_inside_core": 0,
   "O_output_methods": 6,
   "R_core_ruslits": 163,
-  "M_core_messages": 114,
+  "M_core_messages": 112,
   "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 630,
   "P_ir_output_price": 609,
   "P_ir_output_files": 42,
-  "P_msg_only_checks": 545,
+  "P_msg_only_checks": 551,
   "U_outer_seam_sites": 3,
   "U_outer_seam_files": 3,
   "G_lang_import_sites": 7,
