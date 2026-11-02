@@ -456,6 +456,69 @@ def is_subordinate_marker(tok: dict) -> bool:
         and tok.get("pos") in ("CONJ", "ADVB"))
 
 
+# Противительные/соединительные союзы, дающие границу ОДНОРОДНОЙ части.
+# ЗАМЕР (П3а, батарея experiments/P3A_BEFORE.txt): «Егор любит жену, но боится
+# мамы» приходил в разбор ОДНОЙ частью, второе сказуемое терялось.
+# «или» сюда НЕ включён: для него замера нет, а «он читает или пишет» — это
+# уже не утверждение двух фактов. Список коротенек намеренно: длинный список
+# союзов помнит только то, что автор списка вспомнил (см. комментарий к SUBORD_CONJ).
+COORD_CONJ = ("и", "а", "но")
+
+# Финитный (личный) глагол: у него есть лицо И время. Причастие/деепричастие/
+# инфинитив лицом не обладают — на этом различии держится всё правило:
+# «не рыба, а млекопитающее» после «а» НЕ глагол, поэтому и не разрезается
+# (иначе умерло бы запертое test_negation_contract отрицание по области).
+def is_finite_verb(tok: dict) -> bool:
+    """
+    Токен — личный (финитный) глагол: Настоящее/будущее с лицом ИЛИ прошедшее.
+
+    ПРОШЕДШЕЕ ВРЕМЯ ПЕРЕКОВЫВАЕТСЯ ОТДЕЛЬНО не из вежливости к правилу: у
+    русского прошедшего времени лица НЕТ ВОВСЕ, у него род («читал» =
+    past+masc, person пустой). Требовать лицо у всех времён — значит молча
+    потерять все прошедшие: «Жена затаила обиду, но не показала вида»
+    осталось бы одной частью (замер). Причастие и деепричастие отсечены
+    проверкой pos: лицо у них тоже бывает, но сказуемым оно не делает."""
+    if tok.get("pos") != "VERB":
+        return False
+    for v in tok.get("variants") or []:
+        if v.get("tense") == "past":
+            return True
+        if (v.get("person") in ("1per", "2per", "3per")
+                and v.get("tense") in ("pres", "fut")):
+            return True
+    return False
+
+
+def _split_coordination(toks: List[dict], a: int, b: int) -> List[tuple]:
+    """
+    Отрезок [a,b) глобальных токенов -> список подотрезков, разделённых по
+    союзу, ЗА КОТОРЫМ стоит второй личный глагол.
+
+    Граница ставится ТОЛЬКО если личный глагол есть и слева, и справа от
+    союза. Это не осторожность ради осторожности: без проверки справа
+    резались бы однородные дополнения («ловит мышь | и птицу»), без проверки
+    слева — начало с союзом. Один союз «и» о двух глаголах и союз «и» о двух
+    существительных различаются именно лицом и временем глагола.
+    """
+    finites = [i for i in range(a, b) if is_finite_verb(toks[i])]
+    if len(finites) < 2:
+        return [(a, b)]
+    out, start = [], a
+    for i in range(a, b):
+        if str(toks[i].get("word", "")).lower() not in COORD_CONJ:
+            continue
+        if not any(start <= v < i for v in finites):
+            continue                     # слева нет своего сказуемого
+        if not any(i < v < b for v in finites):
+            continue                     # справа нет второго сказуемого
+        if i <= start:
+            continue                     # часть не бывает пустой
+        out.append((start, i))           # союз в левую часть НЕ попадает
+        start = i + 1                    # и в правую не попадает: он служебный
+    out.append((start, b))
+    return [(x, y) for x, y in out if y > x]
+
+
 def split_clauses(sentence: str) -> List[dict]:
     """
     Предложение -> части в ПОРЯДКЕ ТЕКСТА: [{"text":..., "sub": bool}].
@@ -483,8 +546,6 @@ def split_clauses(sentence: str) -> List[dict]:
     if not toks:
         return []
     marks = [i for i, t in enumerate(toks) if is_subordinate_marker(t)]
-    if not marks:
-        return [{"text": sentence.strip(), "sub": False}]
     # Запятые/точка с запятой МЕЖДУ словами: граница части = позиция слова,
     # за которым такая запятая стоит.
     def comma_before(i: int) -> bool:
@@ -511,18 +572,25 @@ def split_clauses(sentence: str) -> List[dict]:
         else:
             merged.append((s, e))
 
+    def text_of(x: int, y: int) -> str:
+        return sentence[toks[x]["start"]:toks[y - 1]["end"]].strip()
+
     out, pos = [], 0
-    for idx, (s, e) in enumerate(merged):
-        if s > pos:
-            out.append({"text": sentence[toks[pos]["start"]:toks[s]["start"]].strip(),
-                        "sub": False})
-        out.append({"text": sentence[toks[s]["start"]:toks[e - 1]["end"]].strip(),
-                    "sub": True})
+    for (s, e) in merged:                    # придаточные вырезаны, промежутки
+        if s > pos:                          # между ними — однородные части,
+            for x, y in _split_coordination(toks, pos, s):
+                out.append({"text": text_of(x, y), "sub": False})
+        out.append({"text": text_of(s, e), "sub": True})
         pos = e
     if pos < len(toks):
-        out.append({"text": sentence[toks[pos]["start"]:toks[-1]["end"]].strip(),
-                    "sub": False})
-    return [c for c in out if c["text"]]
+        for x, y in _split_coordination(toks, pos, len(toks)):
+            out.append({"text": text_of(x, y), "sub": False})
+    out = [c for c in out if c["text"]]
+    if len(out) == 1 and not out[0]["sub"]:
+        # Границы нет: прежний текст целиком, со знаками препинания включительно
+        # (снимать точку — менять строку, которую видел вызывающий).
+        return [{"text": sentence.strip(), "sub": False}]
+    return out
 
 
 if __name__ == "__main__":

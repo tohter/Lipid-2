@@ -1,261 +1,261 @@
 {
-  "language_files": [
-    "core/extract.py",
-    "core/lemma.py",
-    "core/morph.py"
+ "language_files": [
+  "core/extract.py",
+  "core/lemma.py",
+  "core/morph.py"
+ ],
+ "seams": {
+  "brain/learner.py": [
+   {
+    "module": "core.extract",
+    "line": 52,
+    "nested": false,
+    "demo": false
+   },
+   {
+    "module": "core.morph",
+    "line": 54,
+    "nested": false,
+    "demo": false
+   }
   ],
-  "seams": {
-    "brain/learner.py": [
-      {
-        "module": "core.extract",
-        "line": 52,
-        "nested": false,
-        "demo": false
-      },
-      {
-        "module": "core.morph",
-        "line": 54,
-        "nested": false,
-        "demo": false
-      }
-    ],
-    "brain/lipid2_brain.py": [
-      {
-        "module": "core.lemma",
-        "line": 20,
-        "nested": false,
-        "demo": false
-      },
-      {
-        "module": "core.morph",
-        "line": 1035,
-        "nested": true,
-        "demo": false
-      }
-    ],
-    "brain/question.py": [
-      {
-        "module": "core.morph",
-        "line": 33,
-        "nested": false,
-        "demo": false
-      }
-    ],
-    "brain/social_sim.py": [
-      {
-        "module": "core.extract",
-        "line": 42,
-        "nested": false,
-        "demo": false
-      }
-    ]
-  },
-  "lang_consumers": {
-    "brain/learner.py": [
-      {
-        "module": "lang.ru.lemma",
-        "line": 66,
-        "nested": false,
-        "demo": false
-      }
-    ],
-    "brain/lipid2_brain.py": [
-      {
-        "module": "lang.ru.questions",
-        "line": 8,
-        "nested": false,
-        "demo": false
-      },
-      {
-        "module": "lang.ru.text",
-        "line": 9,
-        "nested": false,
-        "demo": false
-      }
-    ],
-    "tools/clean_world.py": [
-      {
-        "module": "lang.ru.lemma",
-        "line": 46,
-        "nested": false,
-        "demo": false
-      }
-    ],
-    "tools/cortex_demo.py": [
-      {
-        "module": "lang.ru.text",
-        "line": 33,
-        "nested": false,
-        "demo": false
-      }
-    ],
-    "teachers/teacher1.py": [
-      {
-        "module": "lang.ru.lemma",
-        "line": 36,
-        "nested": false,
-        "demo": false
-      }
-    ],
-    "teachers/teacher_wiki.py": [
-      {
-        "module": "lang.ru.lemma",
-        "line": 94,
-        "nested": false,
-        "demo": false
-      }
-    ]
-  },
-  "output_methods": {
-    "core/extract.py": [
-      {
-        "cls": "NegationScope",
-        "method": "note",
-        "line": 396
-      },
-      {
-        "cls": "ExpectationRecord",
-        "method": "describe",
-        "line": 553
-      }
-    ],
-    "core/schemes.py": [
-      {
-        "cls": "SchemeInterpreter",
-        "method": "finitive",
-        "line": 374
-      }
-    ],
-    "brain/lipid2_brain.py": [
-      {
-        "cls": "Lipid2Brain",
-        "method": "sleep_now",
-        "line": 1222
-      },
-      {
-        "cls": "Lipid2Brain",
-        "method": "process_input",
-        "line": 1239
-      }
-    ],
-    "brain/question.py": [
-      {
-        "cls": "Question",
-        "method": "as_text",
-        "line": 65
-      }
-    ]
-  },
-  "core_ruslits": {
-    "core/actions.py": 27,
-    "core/adapter.py": 0,
-    "core/bitsstore.py": 4,
-    "core/cortex.py": 4,
-    "core/encoder.py": 8,
-    "core/graph.py": 0,
-    "core/logchannel.py": 7,
-    "core/records.py": 46,
-    "core/schemes.py": 32,
-    "core/sdr.py": 0,
-    "core/storage.py": 0,
-    "core/transitions.py": 31,
-    "core/worldfile.py": 4
-  },
-  "language_ruslits": {
-    "core/extract.py": 261,
-    "core/lemma.py": 49,
-    "core/morph.py": 320
-  },
-  "core_messages": {
-    "core/actions.py": 2,
-    "core/adapter.py": 4,
-    "core/bitsstore.py": 26,
-    "core/cortex.py": 34,
-    "core/encoder.py": 8,
-    "core/graph.py": 9,
-    "core/logchannel.py": 0,
-    "core/records.py": 4,
-    "core/schemes.py": 0,
-    "core/sdr.py": 2,
-    "core/storage.py": 17,
-    "core/transitions.py": 4,
-    "core/worldfile.py": 2
-  },
-  "core_demo": {
-    "core/adapter.py": 3,
-    "core/graph.py": 8,
-    "core/sdr.py": 26,
-    "core/storage.py": 12,
-    "core/transitions.py": 49
-  },
-  "core_reaches_lang": {},
-  "lang_files": [
-    "lang/__init__.py",
-    "lang/ru/__init__.py",
-    "lang/ru/lemma.py",
-    "lang/ru/questions.py",
-    "lang/ru/text.py"
+  "brain/lipid2_brain.py": [
+   {
+    "module": "core.lemma",
+    "line": 20,
+    "nested": false,
+    "demo": false
+   },
+   {
+    "module": "core.morph",
+    "line": 1035,
+    "nested": true,
+    "demo": false
+   }
   ],
-  "outer_seams": {
-    "tools/golden_corpus.py": [
-      {
-        "module": "core.extract",
-        "line": 305,
-        "nested": true,
-        "demo": false
-      }
-    ],
-    "tools/pilot_story.py": [
-      {
-        "module": "pymorphy3",
-        "line": 200,
-        "nested": false,
-        "demo": false
-      }
-    ],
-    "tools/relcov.py": [
-      {
-        "module": "core.extract",
-        "line": 40,
-        "nested": false,
-        "demo": false
-      }
-    ],
-    "teachers/teacher_wiki.py": [
-      {
-        "module": "pymorphy3",
-        "line": 35,
-        "nested": true,
-        "demo": false
-      }
-    ]
-  },
-  "tests_touching_russian": {
-    "checks_comparing_russian": 616,
-    "files": 43,
-    "checks_with_russian_message_only": 574
-  },
-  "totals": {
-    "D_debt_files": 3,
-    "C_core_reaches_lang": 0,
-    "L_lang_files": 5,
-    "S_seam_sites": 6,
-    "S_demo_seam_sites": 0,
-    "S_seam_files": 4,
-    "S_demo_seams_inside_core": 0,
-    "S_seams_inside_core": 0,
-    "O_output_methods": 6,
-    "R_core_ruslits": 163,
-    "M_core_messages": 112,
-    "X_core_demo": 98,
-    "R_neutral_files": 9,
-    "Z_language_ruslits": 630,
-    "P_ir_output_price": 616,
-    "P_ir_output_files": 43,
-    "P_msg_only_checks": 574,
-    "U_outer_seam_sites": 4,
-    "U_outer_seam_files": 4,
-    "G_lang_import_sites": 7,
-    "G_lang_import_files": 6
-  }
+  "brain/question.py": [
+   {
+    "module": "core.morph",
+    "line": 33,
+    "nested": false,
+    "demo": false
+   }
+  ],
+  "brain/social_sim.py": [
+   {
+    "module": "core.extract",
+    "line": 42,
+    "nested": false,
+    "demo": false
+   }
+  ]
+ },
+ "lang_consumers": {
+  "brain/learner.py": [
+   {
+    "module": "lang.ru.lemma",
+    "line": 66,
+    "nested": false,
+    "demo": false
+   }
+  ],
+  "brain/lipid2_brain.py": [
+   {
+    "module": "lang.ru.questions",
+    "line": 8,
+    "nested": false,
+    "demo": false
+   },
+   {
+    "module": "lang.ru.text",
+    "line": 9,
+    "nested": false,
+    "demo": false
+   }
+  ],
+  "tools/clean_world.py": [
+   {
+    "module": "lang.ru.lemma",
+    "line": 46,
+    "nested": false,
+    "demo": false
+   }
+  ],
+  "tools/cortex_demo.py": [
+   {
+    "module": "lang.ru.text",
+    "line": 33,
+    "nested": false,
+    "demo": false
+   }
+  ],
+  "teachers/teacher1.py": [
+   {
+    "module": "lang.ru.lemma",
+    "line": 36,
+    "nested": false,
+    "demo": false
+   }
+  ],
+  "teachers/teacher_wiki.py": [
+   {
+    "module": "lang.ru.lemma",
+    "line": 94,
+    "nested": false,
+    "demo": false
+   }
+  ]
+ },
+ "output_methods": {
+  "core/extract.py": [
+   {
+    "cls": "NegationScope",
+    "method": "note",
+    "line": 396
+   },
+   {
+    "cls": "ExpectationRecord",
+    "method": "describe",
+    "line": 553
+   }
+  ],
+  "core/schemes.py": [
+   {
+    "cls": "SchemeInterpreter",
+    "method": "finitive",
+    "line": 374
+   }
+  ],
+  "brain/lipid2_brain.py": [
+   {
+    "cls": "Lipid2Brain",
+    "method": "sleep_now",
+    "line": 1222
+   },
+   {
+    "cls": "Lipid2Brain",
+    "method": "process_input",
+    "line": 1239
+   }
+  ],
+  "brain/question.py": [
+   {
+    "cls": "Question",
+    "method": "as_text",
+    "line": 65
+   }
+  ]
+ },
+ "core_ruslits": {
+  "core/actions.py": 27,
+  "core/adapter.py": 0,
+  "core/bitsstore.py": 4,
+  "core/cortex.py": 4,
+  "core/encoder.py": 8,
+  "core/graph.py": 0,
+  "core/logchannel.py": 7,
+  "core/records.py": 46,
+  "core/schemes.py": 32,
+  "core/sdr.py": 0,
+  "core/storage.py": 0,
+  "core/transitions.py": 31,
+  "core/worldfile.py": 4
+ },
+ "language_ruslits": {
+  "core/extract.py": 261,
+  "core/lemma.py": 49,
+  "core/morph.py": 323
+ },
+ "core_messages": {
+  "core/actions.py": 2,
+  "core/adapter.py": 4,
+  "core/bitsstore.py": 26,
+  "core/cortex.py": 34,
+  "core/encoder.py": 8,
+  "core/graph.py": 9,
+  "core/logchannel.py": 0,
+  "core/records.py": 4,
+  "core/schemes.py": 0,
+  "core/sdr.py": 2,
+  "core/storage.py": 17,
+  "core/transitions.py": 4,
+  "core/worldfile.py": 2
+ },
+ "core_demo": {
+  "core/adapter.py": 3,
+  "core/graph.py": 8,
+  "core/sdr.py": 26,
+  "core/storage.py": 12,
+  "core/transitions.py": 49
+ },
+ "core_reaches_lang": {},
+ "lang_files": [
+  "lang/__init__.py",
+  "lang/ru/__init__.py",
+  "lang/ru/lemma.py",
+  "lang/ru/questions.py",
+  "lang/ru/text.py"
+ ],
+ "outer_seams": {
+  "tools/golden_corpus.py": [
+   {
+    "module": "core.extract",
+    "line": 305,
+    "nested": true,
+    "demo": false
+   }
+  ],
+  "tools/pilot_story.py": [
+   {
+    "module": "pymorphy3",
+    "line": 200,
+    "nested": false,
+    "demo": false
+   }
+  ],
+  "tools/relcov.py": [
+   {
+    "module": "core.extract",
+    "line": 40,
+    "nested": false,
+    "demo": false
+   }
+  ],
+  "teachers/teacher_wiki.py": [
+   {
+    "module": "pymorphy3",
+    "line": 35,
+    "nested": true,
+    "demo": false
+   }
+  ]
+ },
+ "tests_touching_russian": {
+  "checks_comparing_russian": 643,
+  "files": 44,
+  "checks_with_russian_message_only": 581
+ },
+ "totals": {
+  "D_debt_files": 3,
+  "C_core_reaches_lang": 0,
+  "L_lang_files": 5,
+  "S_seam_sites": 6,
+  "S_demo_seam_sites": 0,
+  "S_seam_files": 4,
+  "S_demo_seams_inside_core": 0,
+  "S_seams_inside_core": 0,
+  "O_output_methods": 6,
+  "R_core_ruslits": 163,
+  "M_core_messages": 112,
+  "X_core_demo": 98,
+  "R_neutral_files": 9,
+  "Z_language_ruslits": 633,
+  "P_ir_output_price": 643,
+  "P_ir_output_files": 44,
+  "P_msg_only_checks": 581,
+  "U_outer_seam_sites": 4,
+  "U_outer_seam_files": 4,
+  "G_lang_import_sites": 7,
+  "G_lang_import_files": 6
+ }
 }
