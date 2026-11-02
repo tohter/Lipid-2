@@ -183,21 +183,98 @@ class TestSchemeCanAskAnyRelation(unittest.TestCase):
                          f"схема не прочитала IS_ROLE; missing={res.missing}")
 
     def test_silent_zero_is_not_an_answer(self):
-        """САМЫЙ ВАЖНЫЙ ТЕСТ ФАЙЛА. Нечитаемое отношение НЕ имеет права
-        отчитываться как «нет ребра». Если отношение нельзя прочитать, в
-        missing обязано слово, отличающее НЕВОЗМОЖНОСТЬ прочесть от
-        ОТСУТСТВИЯ связи: «нет ребра IS_ROLE» при живом ребре — это враньё
-        в отчёте вывода, и по нему нельзя чинить базу знаний."""
-        res = self._run(RIDDLE, "IS_ROLE")
-        self.assertTrue(res.ok or res.missing)
-        if not res.ok:
-            text = " ".join(res.missing)
-            self.assertTrue(
-                ("не читается" in text) or ("не поддерживается" in text)
-                or ("не умею" in text),
-                f"отчёт враньё: {text!r} — при живом ребре «невестка IS_ROLE "
-                f"жена» написано «ребра нет». Отказ обязан быть ОТЛИЧИМ от "
-                f"отсутствия связи")
+        """САМЫЙ ВАЖНЫЙ ТЕСТ ФАЙЛА, и он переписан ПОСЛЕ починки — специально,
+        чтобы не остаться мёртвым (урок 74). До правки он проверял «при
+        живом IS_ROLE не писать «ребра нет»». После правки IS_ROLE читается,
+        res.ok=True, и та же проверка зелёная НИЧЕГО НЕ МЕРЯ.
+        Проверяемое состояние перенесено туда, где оно ЖИВЁТ и теперь:
+        нечитаемое отношение. Обязано называться нечитаемым, а не пустотой."""
+        walk = self._run(RIDDLE, "IS_ROL")   # опечатка в имени отношения
+        self.assertFalse(walk.ok,
+                         "схема «прошла» с отношением, которого нет ни в "
+                         "реестре, ни в мире — значит нечитаемое отношение "
+                         "считается пустотой")
+
+        # ЯДРО: отказ — структура (роль, отношение), а не сочинённая фраза.
+        self.assertTrue(walk.unreadable,
+                        msg=f"ядро потеряло отказ: unreadable="
+                            f"{walk.unreadable} missing={walk.missing}")
+        self.assertEqual([], list(walk.missing),
+                          msg=f"ядро сочиняет текст вместо структуры: "
+                              f"{walk.missing}")
+
+        # МОЗГ: ту же структуру он называет человеку ОТДЕЛЬНО от «не хватило».
+        # Проверка на двух концах, а не на строке: смена формулировки не
+        # должна делать проверку мёртвой, а удаление отказа — ловиться.
+        from brain.simulator import SimulationResult, absorb_walk
+        res = SimulationResult("в")
+        absorb_walk(res, walk)
+        text = " ".join(res.missing).lower()
+        self.assertIn("не читается", text,
+                      msg=f"отчёт враньё: {text!r} — отношение нельзя "
+                          f"прочитать, а написано как будто связью обделено")
+        self.assertNotIn("нет ребра", text,
+                         f"нечитаемое отношение не имеет права называться "
+                         f"отсутствием ребра: {text!r}")
+
+    def test_brain_names_refusal_for_both_worlds(self):
+        """
+        ОДИН поглощатель на ДВА мира, и это ПРОВЕРКА, а не пожелание.
+
+        brain/simulator.py и brain/social_sim.py сводят ход схемы в ответ
+        РАЗНЫМИ кодами. Если второй скажет своими строками «walk.missing»,
+        social-мир потеряет различие «прибор сломан» / «связи нет», и ни
+        одна проверка про статику этого не увидит — она про другой модуль.
+
+        ИЩЕМ ВЫЗОВ В АСТ, а не вхождение слова: имя живёт и в import, и
+        поиск по тексту файла остаётся зелёным при удалённом вызове (это
+        было измерено мутацией — урок 74).
+        """
+        import ast as _ast
+        import brain.social_sim as ss
+        tree = _ast.parse(open(ss.__file__, encoding="utf-8").read())
+        calls = [n for n in _ast.walk(tree)
+                 if isinstance(n, _ast.Call)
+                 and getattr(n.func, "id", None) == "absorb_walk"]
+        self.assertTrue(calls,
+                        msg="social_sim не вызывает absorb_walk:social-мир "
+                            "сводит отказ схемы своими строками")
+        # и не сводит его по-старому руками
+        hand = [n for n in _ast.walk(tree)
+                if isinstance(n, _ast.Attribute) and n.attr == "missing"
+                and isinstance(n.value, _ast.Attribute)
+                and n.value.attr == "chain"]
+        self.assertEqual([], hand,
+                         msg="social_sim кладёт walk.missing руками — "
+                             "unreadable туда не попадёт")
+
+    def test_table_of_six_names_is_gone(self):
+        """Схема обязана уметь прочитать ЛЮБОЕ имя реестра, а не шесть
+        записанных в Python. Это и есть форма доступа: иначе следующее
+        отношение (INSTRUMENT, RECIPIENT, ABOUT, VALUE) снова станет невидимым
+        при полностью рабочих тестах на старых шести.
+
+        ПОСТРОЕНО НАПРЯМУЮ, а не «пройди по реестру и посмотри, что не
+        сломалось»: первая моя версия этого теста кидала в пустой мир и
+        злилась на «нет ребра IS_A» — а это ЧЕСТНЫЙ ответ об отсутствии
+        связи, не дефект. Мера обязана давать каждому имени РЕБРО, иначе
+        она измеряет пустоту мира, а не силу читателя."""
+        from core.storage import RelationType
+        names = [e.name for e in RelationType]
+        edges = [("невестка", rel, f"метка_{i}")
+                 for i, rel in enumerate(names)]
+        sk = StaticKnowledge(world_of(edges))
+        blind = []
+        for rel in names:
+            sch = Scheme(name="п", question="?",
+                         steps=[Step(kind="edge", role="кто",
+                                     frm="$subject", relation=rel)])
+            got = SchemeInterpreter(sk).run(sch, {"subject": "невестка"})
+            if got.bindings.get("кто") != [f"метка_{names.index(rel)}"]:
+                blind.append(f"{rel}: ok={got.ok} missing={' '.join(got.missing)}")
+        self.assertEqual(blind, [],
+                         "схема не прочитала (и не отвергла честно) эти "
+                         "имена реестра:\n  " + "\n  ".join(blind))
 
     def test_working_relation_still_reads(self):
         """РЕГРЕССИЯ. CAN_DO читался и обязан читаться: правка формы

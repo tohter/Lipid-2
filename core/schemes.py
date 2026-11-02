@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 
 # ─────────────────────────────────────────────────────────────
@@ -171,12 +171,42 @@ class SchemeResult:
         self.bindings: Dict[str, object] = {}
         self.chain: List[str] = []
         self.missing: List[str] = []
+        # ЧТО НЕЧТИМО, а не чего не хватило: [(роль, отношение)].
+        # СТРУКТУРА, а не текст — см. RelationUnreadable.
+        self.unreadable: List[Tuple[str, str]] = []
         self.ok = False
 
 
 # ─────────────────────────────────────────────────────────────
 # ИНТЕРПРЕТАТОР
 # ─────────────────────────────────────────────────────────────
+
+class RelationUnreadable(Exception):
+    """
+    Отношение НЕВОЗМОЖНО прочитать (нет читателя / имени нет в реестре).
+
+    СУЩЕСТВУЕТ, ЧТОБЫ ОТКАЗ НЕ ПУТАЛСЯ С ОТСУТСТВИЕМ СВЯЗИ. Молчаливый
+    [] означал бы «ребра нет», и схема отчиталась бы «не хватило знания»
+    там, где не хватило ПРИБОРА. По такому отчёту хозяин пошёл бы доучивать
+    слова, а починить надо было вопрос (замер — experiments/F_SEMANTICS.txt).
+
+    ТЕКСТА ОБ ОТКАЗЕ ЗДЕСЬ НЕТ НАМЕРЕННО. Ядро (core/) обязано держать
+    СТРУКТУРУ — роль и имя отношения; русскую фразу сочиняет мозг, когда
+    печатает «чего не хватило». Закон границы A0 п.7 разрешает русское
+    сообщение человеку, но трещотка меры различает print/raise и append в
+    список, и отчёт вывода, собранный в ядре, ложился в «русские ДАННЫЕ
+    ядра» (замер: 163 -> 166). Правильный ответ не «двинуть потолок», а не
+    порождать текст в ядре вовсе: отказ становится фактом, а не строкой, и
+    контракт перестаёт зависеть от формулировки (урок 74: проверка по
+    совпадению слов зеленеет от смены формулировки).
+    """
+
+    def __init__(self, relation: str, role: str = "", why: str = ""):
+        self.relation = relation
+        self.role = role
+        self.why = why
+        super().__init__(relation)
+
 
 class SchemeInterpreter:
     """
@@ -200,6 +230,9 @@ class SchemeInterpreter:
         """
         Все соседи узла по ребру relation. mode=transitive — вглубь
         (для IS_A: дождь -> вода -> вещество). Только чтение.
+        RelationUnreadable ПРОХОДИТ насквозь: обход не имеет права решить,
+        что нечитаемое отношение — это «внизу пусто», иначе транзитивный шаг
+        оборвётся молча и вывод назовёт причиной отсутствие связи.
         """
         rel = (relation or "").upper()
         if mode == "transitive":
@@ -217,16 +250,36 @@ class SchemeInterpreter:
         return self._direct(node, rel)
 
     def _direct(self, node: str, rel: str) -> List[str]:
-        table = {
-            "IS_A": self.static.is_a,
-            "CAN_DO": self.static.can_do,
-            "OBJECT_OF": self.static.object_of,
-            "HAS_PART": self.static.parts,
-            "CAUSES": self.static.causes,
-            "PURPOSE": self.static.action_purpose,
-        }
-        fn = table.get(rel)
-        return list(fn(node)) if fn else []
+        """
+        Все соседи узла по отношению rel — через ЕДИНЫЙ читатель статики.
+
+        РАНЬШЕ ЗДЕСЬ БЫЛА ТАБЛИЦА ИЗ ШЕСТИ ИМЁН:
+            {"IS_A": is_a, "CAN_DO": can_do, "OBJECT_OF": object_of,
+             "HAS_PART": parts, "CAUSES": causes, "PURPOSE": action_purpose}
+        и всё, что вне таблицы, возвращало []. ЗАМЕРЕНО (experiments/
+        F_SEMANTICS.txt): реестр даёт 17 имён, мир рассказа пишет 6, а
+        спрашивать схема умела 6 — то есть 40% рёбер рассказа были для неё
+        НЕВИДИМЫ, и шаг с relation="IS_ROLE" на ЖИВОМ ребре отчитывался
+        «нет ребра IS_ROLE». Это не «не хватило знания», это ПРИБОР не умел
+        спросить, а отчёт врал.
+
+        Таблицы больше нет. Отношение вне реестра — НЕ пустой список, а
+        RelationUnreadable: «не умею прочитать» и «связи нет» обязаны
+        различаться, иначе по отчёту вывода чинят базу знаний, где её трогать
+        не надо.
+
+        Если у переданной статики нет related (самодельный утёк, не
+        brain.simulator.StaticKnowledge) — отношение считается НЕЧИТАЕМЫМ, а
+        не пустым. Тихо проглотить чужую статику значило бы вернуть дыру F
+        тем же путём: молчанием.
+        """
+        reader = getattr(self.static, "related", None)
+        if reader is None:
+            raise RelationUnreadable(rel, why="static has no reader")
+        try:
+            return list(reader(node, rel))
+        except KeyError:
+            raise RelationUnreadable(rel) from None
 
     # ── значение ссылки "$role" / литерал ──────────────────
     def _resolve(self, spec: str, bindings: Dict[str, object]) -> List[str]:
@@ -246,14 +299,14 @@ class SchemeInterpreter:
         res = SchemeResult(scheme.name, scheme.question)
         res.bindings.update(bindings or {})
         for idx, step in enumerate(scheme.steps):
-            before = len(res.missing)
+            before = len(res.missing) + len(res.unreadable)
             if step.kind == "edge":
                 self._run_edge(step, res)
             elif step.kind == "threshold":
                 self._run_threshold(step, res)
             else:
                 res.missing.append(f"шаг {idx}: неизвестный kind «{step.kind}»")
-            if len(res.missing) > before and not step.optional:
+            if len(res.missing) + len(res.unreadable) > before and not step.optional:
                 return res
         res.ok = True
         return res
@@ -261,10 +314,17 @@ class SchemeInterpreter:
     def _run_edge(self, step: Step, res: SchemeResult) -> None:
         sources = self._resolve(step.frm, res.bindings)
         found: List[str] = []
-        for src in sources:
-            for nxt in self._neighbors(src, step.relation, step.mode):
-                if nxt not in found:
-                    found.append(nxt)
+        try:
+            for src in sources:
+                for nxt in self._neighbors(src, step.relation, step.mode):
+                    if nxt not in found:
+                        found.append(nxt)
+        except RelationUnreadable as exc:
+            # НЕ русская строка, а пара (роль, отношение): ядро не знает,
+            # как это назвать человеку. Фразу сочиняет мозг:
+            # brain/simulator.py::unreadable_to_text через absorb_walk.
+            res.unreadable.append((step.role, exc.relation))
+            return
         if step.match:
             allowed = self._resolve(step.match, res.bindings)
             found = [f for f in found if self._matches(f, allowed)]

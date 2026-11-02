@@ -255,6 +255,43 @@ class StaticKnowledge:
         return self._tails(x, "PURPOSE")
 
 
+def unreadable_to_text(pairs: List[Tuple[str, str]]) -> List[str]:
+    """
+    Как мозГ называет человеку нечитаемое отношение.
+
+    ЖИВЁТ ЗДЕСЬ, А НЕ В core/schemes.py, и это не перенос строк ради
+    зелёных тестов. Ядро обязано уметь говорить о мире без русского (закон
+    границы A0): оно возвращает ПАРУ (роль, отношение) — факт о том, что
+    прибор не смог спросить. Фраза — свойство ЧЕЛОВЕКА, а не знания, поэтому
+    она в мозге, где граница языка разрешает русский.
+
+    ЗАПРЕТ, ВАЖНЫЙ ДЛЯ ВЫВОДА: не путать с «не хватило». Пустой список
+    здесь означает «прибор работал», непустой — «половина вывода не была
+    проверена вообще»; по первому чинят базу знаний, по второму — код.
+    """
+    out = []
+    for role, rel in pairs:
+        out.append(f"роль «{role}»: отношение «{rel}» НЕ ЧИТАЕТСЯ прибором — "
+                   f"это не «связи нет», а сломанный вопрос; починка — "
+                   f"brain/simulator.py::related, а не база знаний")
+    return out
+
+
+def absorb_walk(res, walk) -> None:
+    """
+    Единственная точка, где мозг перекладывает ход схемы в свой результат:
+    путь + чего не хватило + чего НЕ ПРОЧИТАЛИ.
+
+    ОДНА точка, а не две строки в двух модулях: brain/simulator.py и
+    brain/social_sim.py оба сводят схему в ответ, и если второй забудет про
+    unreadable, вывод social-мира молча потеряет различение «прибор сломан»
+    / «связи нет» — ровно та дыра F, из-за которой всё это затевалось.
+    """
+    res.chain.extend(walk.chain)
+    res.missing.extend(walk.missing)
+    res.missing.extend(unreadable_to_text(walk.unreadable))
+
+
 # ─────────────────────────────────────────────────────────────
 # СИМУЛЯТОР
 # ─────────────────────────────────────────────────────────────
@@ -418,9 +455,10 @@ class Simulator:
         interp = SchemeInterpreter(self.knowledge)
         walk = interp.run(scheme, {"subject": subject.lower().strip(),
                                    "cause_subject": before.subject})
-        res.chain.extend(walk.chain)
+        # ОДИН вызов: absorb_walk кладёт и путь, и отказ. Раньше стояло
+        # res.chain.extend(...) плюс absorb_walk — путь печатался ДВАЖДЫ.
+        absorb_walk(res, walk)
         if not walk.ok:
-            res.missing.extend(walk.missing)
             return res
 
         res.answer = interp.render(scheme.answer, walk.bindings)

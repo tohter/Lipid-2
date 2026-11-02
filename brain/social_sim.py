@@ -41,7 +41,8 @@ if _ROOT not in sys.path:
 from core.schemes import SchemeInterpreter
 from core.extract import SimpleExtractor
 from brain.emotions import MAX_EMOTION, EmotionSystem
-from brain.simulator import Event, SimulationResult, Simulator, StaticKnowledge
+from brain.simulator import (Event, SimulationResult, Simulator,
+                            StaticKnowledge, absorb_walk)
 
 
 _EXTRACTOR: SimpleExtractor = None
@@ -517,14 +518,16 @@ class SocialSimulator(Simulator):
         walk = interp.run(scheme, {"agent": agent,
                                    "target": viol.expectation.target,
                                    "action": action})
-        res.chain.extend(walk.chain)
+        # ОДИН поглощатель на два мира: путь + «не хватило» + «нечитаемо».
+        # Без него social-мир молча потерял бы различение «прибор сломан» /
+        # «связи нет» — ровно ту дыру, из-за которой её и чинят.
+        absorb_walk(res, walk)
         if not walk.ok:
             # Сначала честный вопрос: а мог бы порог пройти вообще? Отказ,
             # который этого не различает, лечит не то (см. _unreachable_threshold).
             why = self._unreachable_threshold(agent, scheme)
             if why:
                 res.missing.insert(0, why)
-            res.missing.extend(walk.missing)
             return res
 
         # Насыщение шкалы НЕ выдаём за измерение силы (замер F/M4): заряд 294
