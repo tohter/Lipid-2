@@ -100,15 +100,13 @@ class TestReverseQueryMissing(unittest.TestCase):
         # «егор IS_ROLE сын» значит: у слова «сын» есть тот, кто на него
         # ссылается. Спросить об этом нечем — метода нет вовсе.
         self.assertTrue(
-            hasattr(sk, "holders") or hasattr(sk, "sources_of")
-            or hasattr(sk, "by_tail"),
+            hasattr(sk, "referenced_by"),
             "у StaticKnowledge нет ни одного способа узнать, кто ссылается "
             "на узел: обход только вперёд, цепочка загадки нерешаема")
 
     def test_reverse_step_of_the_riddle_is_answerable(self):
         sk = StaticKnowledge(world_of(RIDDLE))
-        fn = getattr(sk, "holders", None) or getattr(sk, "sources_of", None) \
-            or getattr(sk, "by_tail", None)
+        fn = sk.referenced_by
         got = {h for h, r in fn("сын", "IS_ROLE")}
         self.assertIn("егор", got,
                       f"обратный шаг «кто сын?» не отдаёт Егора: {got}")
@@ -118,8 +116,7 @@ class TestReverseQueryMissing(unittest.TestCase):
         «жена PART_OF сын» и «егор IS_ROLE сын» — разные причины встретиться,
         смешать их = потерять смысл связи."""
         sk = StaticKnowledge(world_of(RIDDLE))
-        fn = getattr(sk, "holders", None) or getattr(sk, "sources_of", None) \
-            or getattr(sk, "by_tail", None)
+        fn = sk.referenced_by
         role = {h for h, r in fn("сын", "IS_ROLE")}
         part = {h for h, r in fn("сын", "PART_OF")}
         self.assertEqual(role, {"егор"}, f"в ролях кто попало: {role}")
@@ -145,8 +142,7 @@ class TestReverseMirrorsForward(unittest.TestCase):
 
     def test_every_forward_edge_is_readable_backwards(self):
         sk = StaticKnowledge(world_of(RIDDLE))
-        fn = getattr(sk, "holders", None) or getattr(sk, "sources_of", None) \
-            or getattr(sk, "by_tail", None)
+        fn = sk.referenced_by
         back = set()
         for node in ("невестка", "жена", "сын", "егор", "зинаида"):
             for rel in ("IS_A", "IS_ROLE", "PART_OF", "HAS_PROPERTY",
@@ -165,12 +161,15 @@ class TestReverseMirrorsForward(unittest.TestCase):
         real = {(o["head"], o["relation"], o["tail"])
                 for o in world["observations"].values()}
         sk = StaticKnowledge(world)
-        fn = getattr(sk, "holders", None) or getattr(sk, "sources_of", None) \
-            or getattr(sk, "by_tail", None)
+        fn = sk.referenced_by
         invented = []
         for node in ("невестка", "жена", "сын", "егор", "зинаида", "чужак"):
             for rel in ("IS_A", "IS_ROLE", "PART_OF", "OBJECT_OF", "CAN_DO"):
-                for h, r in fn(node, rel):
+                try:
+                    hits = fn(node, rel)
+                except KeyError:
+                    continue          # отказ по незнакомому узлу — это не связь
+                for h, r in hits:
                     if (h, r, node) not in real:
                         invented.append((h, r, node))
         self.assertEqual(invented, [],
@@ -184,8 +183,8 @@ class TestRefusalIsNotSilent(unittest.TestCase):
 
     def _ask(self, fn, node, rel):
         """ФОРМА отказа не важна, важна ОТЛИЧИМОСТЬ: возвращает «вернуло»
-        со списком либо «отказ» с именем исключения. Иначе замок диктовал бы
-        конкретной сигнатуры, а не свойство."""
+        со списком либо «отказ» с именем исключения. Замок намеренно НЕ
+        диктует класс исключения — он диктует, что два ответа различимы."""
         try:
             return ("вернуло", list(fn(node, rel)))
         except Exception as exc:                       # noqa: BLE001
@@ -193,8 +192,7 @@ class TestRefusalIsNotSilent(unittest.TestCase):
 
     def test_absent_node_refuses_explicitly(self):
         sk = StaticKnowledge(world_of(RIDDLE))
-        fn = getattr(sk, "holders", None) or getattr(sk, "sources_of", None) \
-            or getattr(sk, "by_tail", None)
+        fn = sk.referenced_by
         known_empty = self._ask(fn, "зинаида", "IS_ROLE")   # узел есть, ссылок нет
         nowhere = self._ask(fn, "пельмень", "IS_ROLE")      # узла нет в мире
         self.assertEqual(known_empty[1], [],
@@ -208,14 +206,24 @@ class TestRefusalIsNotSilent(unittest.TestCase):
     def test_negated_edge_stays_out_of_reverse_index(self):
         """«Невестка НЕ жена сына» не имеет права читаться обратным ходом как
         настоящая связь: обратный индекс обязан уважать отрицание ровно так
-        же, как прямой (прямой — уважает: negated отбрасывается в __init__)."""
-        sk = StaticKnowledge(world_of([], negated=[("невестка", "IS_ROLE",
-                                                    "жена")]))
-        fn = getattr(sk, "holders", None) or getattr(sk, "sources_of", None) \
-            or getattr(sk, "by_tail", None)
-        self.assertEqual(list(fn("жена", "IS_ROLE")), [],
+        же, как прямой (прямой — уважает: negated отбрасывается в __init__).
+
+        Слова в мире ЕСТЬ (так и делает обучение: отрицанное предложение всё
+        равно называет участников). Иначе тест мерил бы «узла нет», а не
+        «отрицание учтено» — я так и написала сначала, и падение это
+        обличило: при пустом списке узлов метод кричал «нет такого слова»,
+        что к отрицанию отношения не имело."""
+        world = world_of([], negated=[("невестка", "IS_ROLE", "жена")])
+        world["entities"] = {"жена": {}, "невестка": {}}
+        sk = StaticKnowledge(world)
+        self.assertTrue(sk.knows("жена"), "слова мира потерялись — тест "
+                                          "спрашивает не про отрицание")
+        self.assertEqual(list(sk.referenced_by("жена", "IS_ROLE")), [],
                          "отрицанная связь читается обратным ходом — "
                          "отрицание потерялось на одном из двух ходов")
+        self.assertEqual(sk._tails("невестка", "IS_ROLE"), [],
+                         "тот же дефект на прямом ходе — значит он не в "
+                         "обратном индексе, а в самом чтении мира")
 
 
 class TestMeetingIsNotIdentity(unittest.TestCase):
@@ -237,8 +245,7 @@ class TestMeetingIsNotIdentity(unittest.TestCase):
         sk = StaticKnowledge(world_of(RIDDLE + FALSE_MEETS))
         # у брата два носителя роли. Это НЕ значит, что деверь и шурин —
         # один человек: оба могут быть правы и быть разными людьми.
-        fn = getattr(sk, "holders", None) or getattr(sk, "sources_of", None) \
-            or getattr(sk, "by_tail", None)
+        fn = sk.referenced_by
         brothers = {h for h, r in fn("брат", "IS_ROLE")}
         self.assertEqual(brothers, {"деверь", "шурин"},
                          f"носители роли «брат» потерялись: {brothers}")
@@ -274,8 +281,7 @@ class TestWorldOfTheStory(unittest.TestCase):
                     edges.append(k)
         world = world_of([(h, r, t) for h, r, t in edges])
         sk = StaticKnowledge(world)
-        fn = getattr(sk, "holders", None) or getattr(sk, "sources_of", None) \
-            or getattr(sk, "by_tail", None)
+        fn = sk.referenced_by
         got = sorted({h for h, r in fn("сын", "IS_ROLE")})
         self.assertEqual(got, ["егор"],
                          f"обратный шаг не найден на живом разборе "

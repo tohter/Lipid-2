@@ -72,9 +72,26 @@ class StaticKnowledge:
         can_do(x)        -> [умения...]       (CAN_DO: x умеет <умение>)
         object_of(x)     -> [объекты...]      (OBJECT_OF: x направлено на <объект>)
         causes(x)        -> [следствия...]    (CAUSES)
+        referenced_by(x, rel) -> [(кто, rel)]  ОБРАТНЫЙ вопрос: кто ссылается
 
     Только чтение: у симулятора нет прав менять базу (та же дисциплина, что у
     предиктивного цикла).
+
+    ЗАЧЕМ ОБРАТНЫЙ ВОПРОС (П2, замер experiments/P2_BEFORE.txt). Кирпичи
+    загадки «невестка Зинаиды = жена Егора» в мире есть:
+        невестка IS_ROLE жена   жена PART_OF сын
+        егор     IS_ROLE сын    сын  PART_OF зинаида
+    а пути нет: все вопросы выше спрашивают «КУДА ссылается x». Шаг
+    «КТО называет «сын» своей ролью» (он же егор IS_ROLE сын) был НЕЧЕМ,
+    и цепочка обрывалась на середине — при полном знании. Замер на ОДНОМ
+    и том же мире: вперёд — «нет пути», в обе стороны — путь есть.
+    Значит дыра была в приборе, а не в знании.
+
+    ОБРАТНЫЙ ИНДЕКС СТРОИТСЯ КАК ТРАНСПОЗИЦИЯ _by_head, а не вторым проходом
+    по миру. Это не лень, а требование: два независимых прохода по одним и
+    тем же наблюдениям расходятся при любом будущем изменении источника
+    ( поля hierarchy уже исключение, и оно обязано быть видно в обе
+    стороны). Транспозиция делает расхождение невозможным по построению.
     """
 
     def __init__(self, world: Dict):
@@ -108,6 +125,51 @@ class StaticKnowledge:
                 act = str(act).lower().strip()
                 if act:
                     self._by_head.setdefault(low, []).append(("CAN_DO", act))
+        # Обратный индекс — ПОСЛЕ того как _by_head собран целиком, включая
+        # поля hierarchy/actions: иначе обратный ход видел бы наблюдения, но
+        # не знал бы про предков, и два хода разошлись бы тихо.
+        self._build_reverse()
+
+    def _build_reverse(self) -> None:
+        """_by_tail: хвост -> [(голова, отношение)]. Строится ИЗ _by_head."""
+        self._by_tail: Dict[str, List[Tuple[str, str]]] = {}
+        for head, pairs in self._by_head.items():
+            for rel, tail in pairs:
+                self._by_tail.setdefault(tail, []).append((head, rel))
+        # Узлы, о которых миру что-то известно. Нужны НЕ для красоты: пустой
+        # ответ про знакомый узел означает «ссылок нет», а про незнакомый —
+        # «такого слова в мире нет». Свалить это в один ноль значит однажды
+        # прочитать «у невестки нет хозяина» там, где невестки не существует.
+        self._known = set(self._by_head) | set(self._by_tail)
+        self._known.update(str(n).lower().strip()
+                           for n in (self.world.get("entities") or {}))
+
+    def knows(self, x: str) -> bool:
+        return (x or "").lower().strip() in self._known
+
+    def referenced_by(self, x: str, rel: str = "") -> List[Tuple[str, str]]:
+        """
+        ОБРАТНЫЙ ЗАПРОС: кто и каким отношением ссылается на x.
+
+            referenced_by("сын", "IS_ROLE")  -> [("егор", "IS_ROLE")]
+            referenced_by("сын", "PART_OF")  -> [("жена", "PART_OF")]
+
+       rel пустой -> все входящие ссылки сразу. Ничего нового метод не
+        выводит: он ОТДАЁТ РОВНО рёбра мира (замок
+        test_reverse_invents_nothing). Неизвестный узел — KeyError, а не
+        пустой список: отказ обязан быть ОТЛИЧИМ от «ссылок нет».
+        """
+        key = (x or "").lower().strip()
+        if key not in self._known:
+            raise KeyError(f"в мире нет узла «{x}» — это НЕ то же самое, "
+                           f"что «на него никто не ссылается»")
+        out = []
+        for head, r in self._by_tail.get(key, []):
+            if rel and r != (rel or "").upper().strip():
+                continue
+            if (head, r) not in out:
+                out.append((head, r))
+        return out
 
     def _tails(self, x: str, rel: str) -> List[str]:
         out = []

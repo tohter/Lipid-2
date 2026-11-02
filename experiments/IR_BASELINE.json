@@ -231,7 +231,7 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 690,
+  "checks_comparing_russian": 692,
   "files": 47,
   "checks_with_russian_message_only": 598
  },
@@ -250,7 +250,7 @@
   "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 642,
-  "P_ir_output_price": 690,
+  "P_ir_output_price": 692,
   "P_ir_output_files": 47,
   "P_msg_only_checks": 598,
   "U_outer_seam_sites": 4,
