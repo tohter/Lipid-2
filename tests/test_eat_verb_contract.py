@@ -205,7 +205,7 @@ class TestGovernedByWhom(unittest.TestCase):
 class TestCopulaAndPossessionPreserved(unittest.TestCase):
     """
     Обратная сторона: «есть» ОСТАЁТСЯ связкой и там, где он связка. Правка
-    стоп-листа наивным removal'ом это ломает (замерено, докstring сверху).
+    стоп-листа наивным removal'ом это ломает (замерено, док-строка сверху).
     """
 
     def test_copula_stays_identity_not_eating(self):

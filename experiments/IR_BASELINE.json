@@ -233,7 +233,7 @@
  "tests_touching_russian": {
   "checks_comparing_russian": 683,
   "files": 46,
-  "checks_with_russian_message_only": 586
+  "checks_with_russian_message_only": 592
  },
  "totals": {
   "D_debt_files": 3,
@@ -252,7 +252,7 @@
   "Z_language_ruslits": 642,
   "P_ir_output_price": 683,
   "P_ir_output_files": 46,
-  "P_msg_only_checks": 586,
+  "P_msg_only_checks": 592,
   "U_outer_seam_sites": 4,
   "U_outer_seam_files": 4,
   "G_lang_import_sites": 7,

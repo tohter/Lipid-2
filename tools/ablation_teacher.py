@@ -11,7 +11,7 @@
   3. description поля content в схеме инструмента перечисляет схему ответа.
 ВСЁ ОСТАЛЬНОЕ ИДЕНТИЧНО БОЮ: те же max_steps=6, temperature=0.1,
 reasoning_effort=none, tool_choice НЕ выставлен, max_tokens заводской.
-Прошлые мои пробы mixesали правки (tool_choice=required + max_tokens=600 +
+Прошлые мои пробы миксовали правки (tool_choice=required + max_tokens=600 +
 один шаг) и дали 2.6 с — та цифра к production-пути отношения НЕ имеет и в
 этом файле не используется.
 

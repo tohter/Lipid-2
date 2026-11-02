@@ -23,6 +23,7 @@ break был недостижим). Значит проверка должна �
 """
 import ast
 import os
+import re
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -185,6 +186,146 @@ class TestNoDeadCode(unittest.TestCase):
             dead, {},
             "атрибуты пишутся и никогда не читаются:\n  "
             + "\n  ".join(f"{a}: {v[:3]}" for a, v in sorted(dead.items())))
+
+
+# --------------------------------------------------------------------------
+# Чужие письма в русском тексте
+# --------------------------------------------------------------------------
+# За работу эпизод повторялся трижды (experiments/ARCHIVE_SESSIONS.md): в
+# русский файл попадали иероглифы и кана. Разовая команда grep не спасла,
+# потому что она не входит в прогон тестов. Проверка живёт здесь.
+
+# Дальневосточные письма и полноширинные формы. Кириллица, обычная латиница,
+# CJK-пунктуация в диапазоны НЕ входят.
+FOREIGN_RANGES = (
+    (0x3040, 0x30FF),   # хирагана, катакана
+    (0x3400, 0x4DBF),   # иероглифы, расширение A
+    (0x4E00, 0x9FFF),   # иероглифы CJK
+    (0xAC00, 0xD7AF),   # корейские слоги
+    (0xF900, 0xFAFF),   # иероглифы совместимости
+    (0xFF01, 0xFF60),   # полноширинные знаки и буквы
+    (0xFFE0, 0xFFE6),   # полноширинные символы валют
+)
+
+# Сцепление кириллицы и латиницы БЕЗ пробела внутри одного слова. Дефект того
+# же класса, что и иероглиф: в русское слово врезался латинский фрагмент
+# живые примеры таких врезок ловит test_scanner_is_not_blind. Дефис НЕ
+# считается: «UI-поток» и
+# «top-вариант» — нормальные термины, а не порча.
+GLUED = re.compile(r"[а-яёА-ЯЁ][A-Za-z]{2,}|[A-Za-z]{2,}[а-яёА-ЯЁ]")
+
+# Чем оправдан исключений. КЛЮЧ — файл, ЗНАЧЕНИЕ — список тех и только тех
+# чужих фрагментов, которые там имеют право жить. Сам файл с исключениями
+# записан escape-последовательностями, иначе проверка краснела бы на собственном
+# тексте (в этом и смысл исключений: они цитируют дефект, а не допускают его).
+FOREIGN_ALLOWED = {
+    "experiments/ARCHIVE_SESSIONS.md": ["\u7c7b\u76ee",
+                                        "\u30cd\u30c3\u30c8\u30ef\u30fc\u30af"],
+}
+
+
+def text_files():
+    """Все текстовые файлы проекта (не только .py): порча ловится в .md и .txt."""
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [d for d in dirnames
+                       if d not in SKIP_DIRS and not d.startswith(".")]
+        for name in sorted(filenames):
+            if name.endswith((".py", ".md", ".txt", ".json", ".toml", ".cfg")):
+                yield os.path.join(dirpath, name)
+
+
+def read(path) -> str:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except (UnicodeDecodeError, OSError):
+        return ""
+
+
+class TestNoForeignScript(unittest.TestCase):
+    """Чужие письма и врезанная латиница в русском тексте."""
+
+    def scan(self):
+        """[(файл, строка, тип, фрагмент)] — всё подозрительное, без исключений."""
+        found = []
+        for path in text_files():
+            rel = os.path.relpath(path, ROOT)
+            for num, line in enumerate(read(path).splitlines(), 1):
+                for ch in line:
+                    if any(a <= ord(ch) <= b for a, b in FOREIGN_RANGES):
+                        found.append((rel, num, "письмо", line.strip()[:60]))
+                        break
+                for m in GLUED.finditer(line):
+                    found.append((rel, num, "сцепка", m.group()))
+        return found
+
+    def allowed_for(self, rel):
+        """Символы чужих писем и строки-сцепки, которым тут разрешено жить."""
+        chars, glued = set(), set()
+        for tok in FOREIGN_ALLOWED.get(rel, []):
+            if GLUED.fullmatch(tok):
+                glued.add(tok)
+            else:
+                chars.update(ord(c) for c in tok
+                             if any(a <= ord(c) <= b
+                                    for a, b in FOREIGN_RANGES))
+        return chars, glued
+
+    def test_no_foreign_script(self):
+        offenders = []
+        for rel, num, kind, frag in self.scan():
+            chars, glued = self.allowed_for(rel)
+            if kind == "письмо":
+                if all(ord(c) in chars for c in frag if any(
+                        a <= ord(c) <= b for a, b in FOREIGN_RANGES)):
+                    continue
+            elif frag in glued:
+                continue
+            offenders.append(f"{rel}:{num} [{kind}] {frag}")
+        self.assertEqual(offenders, [],
+                         "чужие письма / врезанная латиница в русском тексте. "
+                         "Исправлять текстом, а не списком исключений:\n  "
+                         + "\n  ".join(offenders[:40])
+                         + ("" if len(offenders) <= 40
+                            else f"\n  ... и ещё {len(offenders) - 40}"))
+
+    def test_exceptions_are_still_used(self):
+        """
+        Исключение обязано быть ЖИВЫМ. Сцитированный дефект убрали из файла, а
+        запись оставили — и проверка молча расширяется: следующий иероглиф в том
+        же файла уже не заметят. Поэтому каждое разрешение обязано по-прежнему
+        находить то, ради чего записано.
+        """
+        scanned = {}
+        for rel, num, kind, frag in self.scan():
+            scanned.setdefault(rel, []).append((kind, frag))
+        stale = []
+        for rel, tokens in FOREIGN_ALLOWED.items():
+            path = os.path.join(ROOT, rel)
+            self.assertTrue(os.path.exists(path), f"исключение в несуществующем {rel}")
+            src = read(path)
+            for tok in tokens:
+                if tok not in src:
+                    stale.append(f"{rel}: «{tok}» больше нет в файле")
+        self.assertEqual(stale, [],
+                         "устаревшие исключения (снять, иначе проверка слепнет):\n  "
+                         + "\n  ".join(stale))
+
+    def test_scanner_is_not_blind(self):
+        """
+        Собственная самопроверка: проверка обязана видеть и иероглиф, и врезанную
+        латиницу, и НЕ реагировать на нормальный русский текст. Без этого теста
+        сломанный шаблон дал бы вечный зелёный — ровно так сломанный порог
+        деградировал незаметно (см. docstring модуля).
+        """
+        bad_cjk = "невестка " + chr(0x501F)   # собрано: сканер видит и этот
+        bad_glue = "фоновый" + "job"   # собрано: в исходнике дефекта быть не должно
+        good = "невестка ждёт ответа: job-очередь UI-поток 5 \u00d7 3"
+        self.assertTrue(any(any(a <= ord(c) <= b for a, b in FOREIGN_RANGES)
+                            for c in bad_cjk), "шаблон не видит иероглиф")
+        self.assertTrue(GLUED.search(bad_glue), "шаблон не видит врезанную латиницу")
+        self.assertIsNone(GLUED.search(good),
+                          "шаблон ловит нормальный текст (дефис обязан быть цел)")
 
 
 if __name__ == "__main__":

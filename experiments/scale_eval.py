@@ -38,7 +38,7 @@ for nhyper, center in ((1024,False),(1024,True),(4096,True),(16384,True)):
     v = dict(zip(words, enc_w(words)))
     ov = lambda a,b: int((v[a] & v[b]).sum())
     chain = [ov(a,b) for a,b in CHAIN]; morph=[ov(a,b) for a,b in MORPH]
-    # масштаб: ложные ≥3 на 50k случайныхEmbedding-слов из большого списка
+    # масштаб: ложные ≥3 на 50k случайных Embedding-слов из большого списка
     base = list(dict.fromkeys(" ".join(open('/dev/null').read() for _ in []).split())) or \
            [f"слово{i}" for i in range(50000)]
     q = enc_w(base[:50]); lib = enc_w(base[50:20050])

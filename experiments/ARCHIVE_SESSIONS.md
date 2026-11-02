@@ -470,7 +470,7 @@ transitions.py/index.py.
 ОТВЕТ НА ВОПРОС ОЧЕРЕДИ: НЕ ВЛИЯЕТ НИ ОДНИМ ЧИСЛОМ. Карта (полный обход):
 observation_weight/fact_weight зовутся из пяти мест и НИ ОДНО не выбирает
 ответ: learner строит граф (663) и пишет вес (716/845/850/1016/1030),
-lipid2_brain:1076 — DIAGNOЗ experience_conflicts, sleep правит weight/strength,
+lipid2_brain:1076 — ДИАГНОЗ experience_conflicts, sleep правит weight/strength,
 core/graph.py:215 — ЕДИНСТВЕННОЕ чтение веса ребра во всём проекте, и это
 print_node_associations, то есть ПЕЧАТЬ. cortex.py:51 фиксирует как контракт:
 у предиктивного цикла доступа к weight нет. Ответ собирается в
