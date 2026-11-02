@@ -328,5 +328,142 @@ class TestNoForeignScript(unittest.TestCase):
                           "шаблон ловит нормальный текст (дефис обязан быть цел)")
 
 
+
+
+# ─────────────────────────────────────────────────────────────
+# СООБЩЕНИЯ КОММИТОВ. Тот же сканер, что для файлов (FOREIGN_RANGES +
+# GLUED), тот же список исключений — ВТОРОГО списка нет по требованию
+# владелицы. Проверка файлов порчу не ловит: текст коммита лежит в .git,
+# а не в рабочем дереве. За сессию чужие буквы трижды попадали в МОИ
+# собственные сообщения коммитов, и поймать их было нечем.
+# ─────────────────────────────────────────────────────────────
+
+# Коммит, с которого история обязана быть чистой. ВСЁ ДО НЕГО не проверяется
+# (историю не переписываем) и не заносится в белый список: анкор — ОДНА
+# точка, а не список прощений, который можно бесконечно пополнять.
+#
+# ВАЖНО: анкор выбран НЕ по принципу «последний чистый на глаз», а потому
+# что с этого дня проверка существует. Если его удалить или переписать
+# историю так, что его не станет, тест обязан покраснить, а не просканировать
+# молча всё (см. test_anchor_commit_exists).
+MSG_ANCHOR = "7e2b269"
+
+
+def git(*args):
+    import subprocess
+    return subprocess.run(("git",) + args, cwd=ROOT, capture_output=True,
+                          text=True, check=True).stdout
+
+
+def commit_messages(since=None):
+    """[(хэш, сообщение)] — от newest к oldest. since:exclusive (сам не входит)."""
+    rev = f"{since}..HEAD" if since else "HEAD"
+    raw = git("log", "--format=%H\x01%s\x01%b\x02", rev)
+    out = []
+    for rec in raw.split("\x02"):
+        if not rec.strip():
+            continue
+        h, subj, body = rec.split("\x01")
+        out.append((h, subj + "\n" + body))
+    return out
+
+
+def dirty_before_anchor():
+    """Коммиты ДО anchor с чужими буквами. Живой материал для самопроверки."""
+    return [h for h, msg in commit_messages()
+            if MSG_ANCHOR not in (h, ) and scan_message(msg)]
+
+
+def scan_message(text):
+    """Те же правила, что для файлов: чужое письмо и сцепка кириллицы с латиницей."""
+    hits = []
+    for ch in text:
+        if any(a <= ord(ch) <= b for a, b in FOREIGN_RANGES):
+            hits.append(("письмо", ch))
+            break
+    for m in GLUED.finditer(text):
+        hits.append(("сцепка", m.group()))
+    return hits
+
+
+class TestCommitMessagesClean(unittest.TestCase):
+
+    def test_anchor_commit_exists(self):
+        """
+        Без этого теста проверка дырявая по построению: если анкор удалить или
+        историю переписать так, что `git log ANCHOR..HEAD` станет пустым,
+        следующий тест пройдёт молча на НУЛЕ коммитов и отчитается зелёным.
+        """
+        try:
+            git("cat-file", "-e", MSG_ANCHOR + "^{commit}")
+        except Exception:
+            self.fail(f"анкор {MSG_ANCHOR} не найден: историю переписали или "
+                      f"проверка потеряла точку отсчёта — пересмотреть, а не "
+                      f"подобрать новый анкор потише")
+
+    def test_anchor_is_clean_and_scope_is_not_empty(self):
+        """
+        Анкор обязан (1) существовать, (2) быть чистым и (3) оставлять за собой
+        НЕПУСТОЙ диапазон. Иначе подбор точки отсчёта превращается в подгонку:
+        «последний чистый» всегда найдётся, и проверка ничего не обещает.
+        """
+        anchor_msg = git("show", "-s", "--format=%B", MSG_ANCHOR)
+        self.assertEqual([], scan_message(anchor_msg),
+                         "анкор грязный — с него нельзя считать историю чистой")
+        # Под катой ОСТАЮТСЯ грязные коммиты: значит мы что-то исключаем, а не
+        # выставили анкор в самый хвост пустой истории.
+        self.assertGreater(len(dirty_before_anchor()), 0,
+                           "до анкора грязных коммитов нет: либо историю "
+                           "зачистили, либо анкор подобран в самое начало — "
+                           "проверка тогда ничего не обещает")
+
+    def test_new_commit_messages_have_no_foreign_script(self):
+        """
+        От anchor и включая его — ни чужих писем, ни врезанной латиницы.
+        Исключения общие (FOREIGN_ALLOWED) и здесь НЕ применяются: они про
+        цитаты в файлах, а сообщение коммита цитатой не является.
+        """
+        offenders = []
+        h_anchor = git("rev-parse", MSG_ANCHOR).strip()
+        for h, msg in commit_messages(h_anchor):
+            for kind, frag in scan_message(msg):
+                offenders.append(f"{h[:8]} [{kind}] {frag}")
+        if h_anchor not in [h for h, _ in commit_messages()]:
+            self.fail("анкор не является предком HEAD — диапазон проверки пуст")
+        for h, msg in [(h_anchor, git("show", "-s", "--format=%B", h_anchor))]:
+            for kind, frag in scan_message(msg):
+                offenders.append(f"{h[:8]} [{kind}] {frag}")
+        self.assertEqual(offenders, [],
+                         "чужие письма / врезанная латиница в сообщении "
+                         "коммита. Исправлять текстом коммита (amend), а не "
+                         "списком исключений:\n  " + "\n  ".join(offenders[:20]))
+
+    def test_message_scanner_is_not_blind(self):
+        """
+        Сканер сообщений обязан видеть дефект. Без самопроверки пустой
+        FOREIGN_RANGES/сломанный GLUED дали бы вечный зелёный на всём — тот же
+        урок, что и с проверкой файлов (урок 71).
+        """
+        self.assertTrue(scan_message("невестка " + chr(0x501F)),
+                        "сканер сообщений не видит иероглиф")
+        self.assertTrue(scan_message("фоновый" + "job"),
+                        "сканер сообщений не видит врезанную латиницу")
+        self.assertEqual([], scan_message("Дыра F: потолок 163 не тронут, "
+                                          "job-очередь UI-поток"),
+                         "сканер сообщений ловит нормальный текст")
+
+    def test_scanner_is_not_trivially_green_on_history(self):
+        """
+        Проверка обязана уметь краснеть НА ЖИВОМ МАТЕРИАЛЕ. В истории ДО anchor
+        грязные коммиты ЕСТЬ (замерено: 6 из 121) — значит сканер, запущенный
+        на всю историю, обязан найти ненулевое число. Если он найдёт ноль,
+        сломан сканер, а не история стала чище.
+        """
+        dirty = [h for h, msg in commit_messages() if scan_message(msg)]
+        self.assertGreater(len(dirty), 0,
+                           "на всей истории чистых коммитов ноль — сканер "
+                           "сообщений ослеп, проверка зелёная по болезни")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
