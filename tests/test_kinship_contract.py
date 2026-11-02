@@ -112,6 +112,15 @@ class TestNestedKinshipChain(unittest.TestCase):
     «жена сына»: определяемое слово связано со своим определением, а
     определение связано с владельцем. Сейчас механизм даёт ЛОЖЬ.
 
+    ЭТИ ТРЕБОВАНИЯ БОЛЬШЕ НЕ КРАСНЫЕ (02.11, та же сессия). Всю эту секцию
+    я писала как expectedFailure, когда «жена сына» превращало Машу в СЫНА.
+    После правки naming-ветки все четыре теста позеленели — декораторы
+    СНЯТЫ, а не оставлены «на всякий случай»: оставленный expectedFailure
+    стал бы машиной, которая ТОРАМЕТ регресс (тест снова упадёт как
+    «unexpected success», и это единственный способ заметить откат).
+    Что получилось замерить: «жена сына» даёт ЖЕНА->СЫН->ВЛАДЕЛЕЦ, то есть
+    цепочка, без которой загадка нерешаема.
+
     ЗАМЕЧАНИЕ О СОБСТВЕННОЙ ЗАМЕРКЕ. Первой версией это требование было
     ЗЕЛЁНЫМ: я решила, что «Зинаида — мать Егора» механизм переваривает
     правильно. Первый же запуск теста это опроверг — связь
@@ -119,13 +128,11 @@ class TestNestedKinshipChain(unittest.TestCase):
     в красный класс, а НЕ ослаблено (урок 60: не подгонять измерение
     под ожидание)."""
 
-    @unittest.expectedFailure
     def test_wife_of_son_does_not_make_the_woman_a_son(self):
         t = tripes("Маша — жена сына Зинаиды.")
         self.assertNotIn(("маша", "IS_ROLE", "сын"), t,
                          f"Маша записана СЫНОМ (ложь): {t}")
 
-    @unittest.expectedFailure
     def test_definition_keeps_its_own_owner(self):
         """Цель правки: связь «жена -> сын» существует ОТДЕЛЬНО от «Маша ->
         жена». Пока её нет вовсе: оба родительных прилипают к Маше."""
@@ -133,7 +140,6 @@ class TestNestedKinshipChain(unittest.TestCase):
         self.assertIn(("жена", "PART_OF", "сын"), t,
                       f"нет связи определения с владельцем: {t}")
 
-    @unittest.expectedFailure
     def test_two_names_do_not_become_the_same_role(self):
         """ЛОЖЬ ИЗМЕРЕНА, а не предположена: «Зинаида — мать Егора» даёт
         зинаида IS_ROLE егор. Механизм НЕ справляется — зелёным это быть
@@ -142,7 +148,6 @@ class TestNestedKinshipChain(unittest.TestCase):
         self.assertNotIn(("зинаида", "IS_ROLE", "егор"), t,
                          f"мать Егора записана ролью «Егор»: {t}")
 
-    @unittest.expectedFailure
     def test_brother_of_husband_keeps_both_links(self):
         t = tripes("Брат мужа — это деверь.")
         self.assertIn(("брат", "PART_OF", "муж"), t,

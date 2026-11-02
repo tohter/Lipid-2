@@ -162,7 +162,7 @@
   "core/worldfile.py": 4
  },
  "language_ruslits": {
-  "core/extract.py": 269,
+  "core/extract.py": 270,
   "core/lemma.py": 49,
   "core/morph.py": 323
  },
@@ -249,7 +249,7 @@
   "M_core_messages": 112,
   "X_core_demo": 98,
   "R_neutral_files": 9,
-  "Z_language_ruslits": 641,
+  "Z_language_ruslits": 642,
   "P_ir_output_price": 673,
   "P_ir_output_files": 46,
   "P_msg_only_checks": 584,

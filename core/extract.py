@@ -1567,6 +1567,10 @@ class SimpleExtractor:
             return res
 
         for t, rel, variant in resolved:
+            # Голова владельца сбрасывается КАЖДЫЙ раз: владение одного
+            # зависимого не имеет права переехать на следующее слово.
+            owner_head = ""
+            owned_here = False
             # «кошка это животное» и «кит не рыба»: именная часть стоит в
             # ИМ./Вин.п., но НИКАКОГО действия в предложении нет — называть её
             # OBJECT_OF значит изобрести действие, которого не было.
@@ -1575,13 +1579,69 @@ class SimpleExtractor:
             if (naming and not verbs_present
                     and variant.get("case") in ("nom", "acc")
                     and rel in ("OBJECT_OF", "IS_ROLE")):
-                rel = "IS_ROLE"
-            if (variant.get("case") == "gen" and not t.get("prep")
-                    and (nominal or acc_assigned)):
+                # ── ГДЕ ЖИВЁТ ЛОЖЬ И ПОЧЕМУ ЛЕЧИТЬ ИМЕННО ЗДЕСЬ ──
+                # «Маша — жена сына Зинаиды» давало маша IS_ROLE СЫН. Слова
+                # «сына», «Егора» — омонимы [род.ед., вин.ед.], проб берёт
+                # acc раньше, и ниже acc превращался в IS_ROLE: Маша
+                # записывалась сыном. Первое лечение было ШИРЕ: я убрала acc
+                # из пробa вовсе при nominal=True. Полный набор тестов
+                # показал цену — сломался запертый контраст «Столица Франции —
+                # не Париж, а Лион»: у слова «Лион» родовой вариант даёт
+                # лемму «лиона», и хвост связи сменился с «лион» на «лиона».
+                # То есть широкий отказ от acc задел слова, где винительный
+                # БЫЛ правильным. Поэтому лечение перенесено сюда, на место
+                # лжи: родовой вариант подставляется ТОЛЬКО когда у слова он
+                # есть И перед словом стоит существительное-владелец, И
+                # родовая форма принадлежит ТОЙ ЖЕ лексеме.
+                # Последнее условие — не косметика, оно поймано тестом.
+                # У слова «Лион» вариантов четыре, и среди них есть
+                # родственный с lemma='лиона' (другое слово!) — подставив
+                # его, я получила «париж PART_OF лиона» вместо честного
+                # «столица IS_ROLE Лион». У «сына» и «Егора» родовая и
+                # винительная формы — ОДНА лексема, там омонимия настоящая.
+                gvar = self._pick(t, ("NOUN", "ADJF"), case="gen")
                 owner = next((n for n in reversed(noun_chain)
-                              if content.index(n) < content.index(t)), None)
+                              if content.index(n) < content.index(t)
+                              # Владельцем бывает СУЩЕСТВИТЕЛЬНОЕ. Без этого
+                              # ограничения «температура тридцать девять
+                              # градусов» давало «девять PART_OF градус»:
+                              # головой связи становилось числительное.
+                              # Мусор оставался мусором, но с другим
+                              # именем, и разметка золота расходилась.
+                              and self._pick(n, ("NOUN", "ADJF")) is not None),
+                             None)
+                if gvar is not None and owner is not None \
+                        and gvar["lemma"] == variant["lemma"]:
+                    variant, rel = gvar, "PART_OF"
+                    t = owner
+                    owner_head = owner["variants"][0]["lemma"]
+                    owned_here = True
+                    res.notes.append(
+                        "родительный при определяемом слове: %s отнесено к «%s»"
+                        % (gvar["lemma"], owner_head))
+                else:
+                    rel = "IS_ROLE"
+            if (not owned_here and variant.get("case") == "gen"
+                    and not t.get("prep")
+                    and (nominal or acc_assigned)):
+                # ВЛАДЕЛЕЦ — ТОЛЬКО существительное, то же правило, что и в
+                # naming-ветке выше. Без него «температура тридцать девять
+                # градусов» теряло прежнюю (уже триажированную) связь
+                # температура->градус и получало «девять PART_OF
+                # градус»:
+                # числительное стало бы головой связи.
+                owner = next((n for n in reversed(noun_chain)
+                              if content.index(n) < content.index(t)
+                              and self._pick(n, ("NOUN", "ADJF")) is not None),
+                             None)
                 if owner is not None:
+                    # Головой связи обязан СТАТЬ ВЛАДЕЛЕЦ, а не подлежащее.
+                    # До этой правки владелец вычислялся и выкидывался
+                    # (переприсваивался только t, а голову брал subj), поэтому
+                    # «жена сына Зинаиды» теряло связь жена->сын вовсе, а
+                    # «зинаида» прилипало к Маше.
                     rel, t = "PART_OF", owner
+                    owner_head = owner["variants"][0]["lemma"]
             # ── ПРИЧИНА (очередь G): направление ПЕРЕВОРАЧИВАЕТ обычную
             # запись. Головой CAUSES обязан БЫТЬ причина, хвостом — следствие
             # (в ручных данных мира: предательство --CAUSES--> обида, а
@@ -1605,7 +1665,7 @@ class SimpleExtractor:
                     "причина «%s» названа, а следствия нет — CAUSES не записан"
                     % variant["lemma"])
             res.facts.append(self._fact_from_variant(
-                verb_head(content.index(t)) or head or subj_lemma,
+                owner_head or verb_head(content.index(t)) or head or subj_lemma,
                 t, rel, res.sentence, negs, variant))
 
         # Инфинитив после личного глагола = ЦЕЛЬ, а не второе умение:
