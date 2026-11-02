@@ -595,6 +595,11 @@ class SentenceFacts:
     # Подлежащее ГЛАВНОЙ части (лемма). Нужно ОДНОРОДНОЙ части без своего
     # актёра — см. extract() и TestSecondPredicateIsLost.
     main_subject: str = ""
+    # ТОКЕН подлежащего (не только лемма): следующий за ним разбор обязан
+    # видеть НАСТОЯЩЕЕ слово с его родом, числом и падежом, а не строку.
+    # Нужно местоимению из СЛЕДУЮЩЕГО предложения (П3б) и однородной части
+    # (П3а) — оба берут актёра, и обоим нужен признак, а не угадка.
+    main_subject_token: Optional[dict] = None
 
     @property
     def content_lemmas(self) -> List[str]:
@@ -649,18 +654,31 @@ class SimpleExtractor:
 
     def extract_text(self, text: str) -> List[SentenceFacts]:
         out = []
+        # АНТЕЦЕДЕНТ ЖИВЁТ ЗДЕСЬ, а не внутри extract(): состояние «кто сейчас
+        # действующий» относится к РАССКАЗУ, а не к предложению. Поле у
+        # экстрактора для этого не заводится: оно пережило бы и следующий
+        # рассказ, и чужой текст, и молча подставляло бы актёра туда, где его
+        # нет (тот же класс дефекта, что кэш не по тому ключу).
+        prev_actor: Optional[dict] = None
         # ПОРЯДОК ВО ВРЕМЕНИ = ПОРЯДОК ПРЕДЛОЖЕНИЙ. Рассказ читается слева
         # направо; событию присваивается индекс предложения. Это единственный
         # доступный признак времени без разметки дат (см. EVENTS_TASK.md).
         for idx, s in enumerate(split_sentences(text)):
-            sf = self.extract(s, order=idx)
+            sf = self.extract(s, order=idx, antecedent=prev_actor)
+            prev_actor = sf.main_subject_token
             if sf.facts or sf.content_lemmas or sf.events:
                 out.append(sf)
         return out
 
-    def extract(self, sentence: str, order: int = 0) -> SentenceFacts:
+    def extract(self, sentence: str, order: int = 0,
+                antecedent: Optional[dict] = None) -> SentenceFacts:
         """
         Разбор предложения. Сложноподчинённое разбирается ПО ЧАСТЯМ.
+
+        antecedent — подлежащее ПРЕДЫДУЩЕГО предложения (токен). Нужно одному:
+        местоимению-актору («Она недолюбливает невестку» после «Зинаида
+        гостит…»). Без него такое предложение даёт ноль фактов (замер), то
+        есть из рассказа выпадает ВСЁ после первого предложения.
 
         ЗАЧЕМ (замер, п.18). Плоский разбор ищет ОДИН субъект и ОДНО сказуемое
         на весь текст, и второе сказуемое остаётся без пары:
@@ -675,7 +693,7 @@ class SimpleExtractor:
         """
         sentence = (sentence or "").strip()
         if not sentence:
-            return self._extract_flat(sentence, order)
+            return self._extract_flat(sentence, order, antecedent=antecedent)
         parts = split_clauses(sentence)
         if len(parts) <= 1 or not any(p["sub"] for p in parts):
             # ОДНОРОДНЫЕ части («Егор любит жену, но боится мамы»): придаточных
@@ -685,15 +703,16 @@ class SimpleExtractor:
             # вместо 0 — правка прошла бы незамеченной.
             coords = [p for p in parts if not p["sub"]]
             if len(coords) > 1:
-                return self._coord_parts(coords, sentence, order)
-            return self._extract_flat(sentence, order)
+                return self._coord_parts(coords, sentence, order,
+                                         antecedent=antecedent)
+            return self._extract_flat(sentence, order, antecedent=antecedent)
 
         subs = [p for p in parts if p["sub"]]
         # СКЕЛЕТ главного предложения: части придаточного ВЫРЕЗАНЫ целиком, а не
         # заменены пустотой — иначе «Дом, где жил пёс, сгорел» несло бы «жила»
         # и в главном.
         skeleton = " ".join(p["text"] for p in parts if not p["sub"]).strip()
-        res = self._extract_flat(skeleton, order)
+        res = self._extract_flat(skeleton, order, antecedent=antecedent)
         # evidence обязано остаться ИСХОДНЫМ предложением: по evidence ищут,
         # откуда взялась связь, а скелет — служебная строка, которой в тексте нет.
         for f in res.facts:
@@ -742,7 +761,8 @@ class SimpleExtractor:
     # ── ОДНОРОДНЫЕ ЧАСТИ С ОБЩИМ АКТЁРОМ (П3а) ────────────────
 
     def _coord_parts(self, coords: List[dict], sentence: str,
-                     order: int) -> SentenceFacts:
+                     order: int,
+                     antecedent: Optional[dict] = None) -> SentenceFacts:
         """
         Части, разделённые союзом, в котором у каждой свой личный глагол:
         «Егор любит жену | боится мамы». Разбираются СЛЕВА НАПРАВО, и часть
@@ -762,7 +782,8 @@ class SimpleExtractor:
         res = SentenceFacts(sentence=sentence)
         actor: Optional[dict] = None
         for part in coords:
-            sub = self._extract_flat(part["text"], order, actor_hint=actor)
+            sub = self._extract_flat(part["text"], order, actor_hint=actor,
+                                     antecedent=antecedent)
             for f in sub.facts:
                 f.evidence = sentence
                 res.facts.append(f)
@@ -775,22 +796,22 @@ class SimpleExtractor:
                 res.expectations.append(x)
             res.notes.extend(n for n in sub.notes
                              if "связи могут быть разорваны" not in n)
-            # Актёром следующей части становится ТОЛЬКО существительное, названное
-            # СВОЕЙ частью (ищется в её собственных токенах, не в токенах всего
-            # предложения: там оно могло бы относиться к другой части).
-            own = next((t for t in sub.tokens
-                        if t["lemma"] == sub.main_subject
-                        and t["role"] == "subject"), None)
+            # Актёром следующей части становится ТОТ токен, который часть
+            # РЕАЛЬНО использовала как подлежащее (main_subject_token), а не
+            # тот, что ищется по лемме среди её токенов. Разница не
+            # косметическая: при разрешённом местоимении («Она недолюбливает
+            # невестку и постоянно придирается») актёр первой части живёт НЕ в
+            # её токенах — он пришёл из ПРЕДЫДУЩЕГО предложения, и поиск по
+            # токенам его не находил (замер между правками: вторая часть
+            # давала ноль с заметкой «нет ни подлежащего, ни сказуемого»).
+            own = sub.main_subject_token
             if own is not None and own["lemma"] not in PRONOUN_ACTORS:
-                actor = own                       # часть назвала своего актёра
-            elif actor is not None and sub.main_subject == actor["lemma"]:
-                pass                              # часть унаследовала — каскад
+                actor = own
             else:
-                # Часть осталась без НАЗВАННОГО актёра (актёр — местоимение или его
-                # нет вовсе). Наследовать дальше нечего, и прошлый актёр обязан
-                # быть ЗАБЫТ: в «Егор любит жену, но она боится мамы» подставить
-                # Егора значило бы записать ложную связь — разрешение местоимения
-                # (антецедент) это дыра П3б, не эта правка.
+                # Часть осталась БЕЗ актёра (актёр — неразрешённое местоимение
+                # или его нет вовсе). Прошлый актёр обязан БЫТЬ ЗАБЫТ: в
+                # «Егор любит жену, но она боится мамы» подставить Егора
+                # значило бы записать ложную связь.
                 actor = None
             if not res.main_action and sub.main_action:
                 res.main_action = sub.main_action
@@ -1216,7 +1237,8 @@ class SimpleExtractor:
         return ""
 
     def _extract_flat(self, sentence: str, order: int = 0,
-                      actor_hint: Optional[dict] = None) -> SentenceFacts:
+                      actor_hint: Optional[dict] = None,
+                      antecedent: Optional[dict] = None) -> SentenceFacts:
         """
         actor_hint — ТОКЕН подлежащего из ПРЕДЫДУЩЕЙ ОДНОРОДНОЙ ЧАСТИ того же
         предложения ("боится мамы" после "Егор любит жену"). По умолчанию нет —
@@ -1225,6 +1247,11 @@ class SimpleExtractor:
         ровно те признаки, что дала морфология, а не те, что ей приписали.
         Пустой разбор подсказанного актёра НЕ ОТМЕНЯЕТСЯ: если связь не
         построилась, актёр не выдумывается.
+
+        antecedent — подлежащее ПРЕДЫДУЩЕГО предложения, годное только для
+        МЕСТОИМЕНИЯ-актора и только после проверки рода и числа. Порядок
+        важен: своей однородной части (actor_hint) верим больше, чем
+        соседу по тексту.
         """
         res = SentenceFacts(sentence=sentence.strip())
         toks = self._tag_prepositions(analyze(sentence))
@@ -1265,18 +1292,45 @@ class SimpleExtractor:
         pred = self._predicate(content, None)
         subj = self._subject(content, pred)
         pred = self._predicate(content, subj) or pred
-        if subj is None and actor_hint is not None and pred is not None \
-                and pred["role"] != "property":
-            # Актёр из предыдущей ОДНОРОДНОЙ части. Подстановка обязательна
-            # ДО проверки «подлежащего нет -> сказуемого нет»: без неё часть
-            # «боится мамы» теряла сказуемое ещё до всякого разбора (замер),
-            # и правка дала бы ноль.
-            # Берётся ТОЛЬКО когда своего подлежащего в части нет: в
-            # «но мама боится его» актёр свой, и чужого здесь быть не может.
+        # МЕСТОИМЕНИЕ-АКТОР счёта НЕ ВЫИГРЫВАЕТ у собственного подлежащего,
+        # но БЛОКИРУЕТ подсказку от соседней части: «Егор любит жену, но она
+        # боится мамы» не имеет права получить Егора — «она» здесь скорее про
+        # жену, а она в винительном. Замерено до правки: часть давала
+        # бояться--OBJECT_OF-->мама без субъекта, и это честнее подставного
+        # Егора. Разрешить местоимение может только антецедент (ниже).
+        pa = self._pronoun_actor(toks, pred)
+        by_antecedent = False
+        if subj is None and pa is None and actor_hint is not None \
+                and pred is not None and pred["role"] != "property":
+            # Актёр из предыдущей ОДНОРОДНОЙ части (П3а). Подстановка
+            # обязательна ДО проверки «подлежащего нет -> сказуемого нет»: без
+            # неё часть «боится мамы» теряла сказуемое ещё до всякого разбора
+            # (замер), и правка дала бы ноль.
             subj = actor_hint
             content.insert(0, subj)
             res.notes.append("актёр унаследован от предыдущей однородной части: "
                              f"{subj['lemma']}")
+        if subj is None and pa is not None and antecedent is not None \
+                and pred is not None and pred["role"] != "property":
+            # МЕСТОИМЕНИЕ-АКТОР И ЕГО АНТЕЦЕДЕНТ (П3б). Замер до правки: «Она
+            # недолюбливает невестку» после «Зинаида гостит…» давало НОЛЬ
+            # фактов — из рассказа выпадало ВСЁ после первого предложения.
+            # Кандидат берётся НЕ из любого существительного предыдущего
+            # предложения, а из его НАЗВАННОГО подлежащего: в «Она мыла пол»
+            # морфология ставит существительное «мыло» ВЫШЕ глагола «мыть», и
+            # поиск по «любому им.п.» записал бы, что МЫЛО что-то делает.
+            if self._agrees_with_pronoun(pa, antecedent):
+                subj = antecedent
+                by_antecedent = True
+                content.insert(0, subj)
+                res.notes.append(f"актор — местоимение «{pa['word']}», "
+                                 f"антецедент: {subj['lemma']}")
+            else:
+                # Отказ обязан быть НАЗВАН: пустой разбор неотличим от
+                # «в предложении нечего брать» (урок про заметки, п.B).
+                res.notes.append(
+                    f"местоимение «{pa['word']}» НЕ разрешено: предшественник "
+                    f"«{antecedent['lemma']}» не согласуется в роде/числе")
         if subj is None and pred is not None and pred["role"] != "property":
             # подлежащего нет, а сказуемое — личный глагол: актор неизвестен,
             # приписывать действие первому существительному нельзя
@@ -1339,7 +1393,7 @@ class SimpleExtractor:
         # и стал бы субъектом — то есть мы записали бы, что автомобиль умеет
         # покупать. Инверсия агент/объект — самый дорогой тип ошибки: она
         # воспроизводится во всех последующих ответах.
-        pronoun_actor = self._pronoun_actor(toks, pred)
+        pronoun_actor = pa if not by_antecedent else None
         if pronoun_actor is not None:
             subj = None
             res.notes.append("актор — местоимение: действие записано без субъекта")
@@ -1617,6 +1671,9 @@ class SimpleExtractor:
             res.main_action = pred["lemma"]
         if subj is not None:
             res.main_subject = subj["lemma"]
+            # Токен, а не только лемма: следующий разбор обязан проверить род и
+            # число, а в лемме их нет.
+            res.main_subject_token = subj
         return res
 
     # ── СТАТИКА / ДИНАМИКА ─────────────────────────────────
@@ -1898,6 +1955,35 @@ class SimpleExtractor:
         return None
 
     # ── актёр и владение ───────────────────────────────────
+
+    @staticmethod
+    def _agrees_with_pronoun(pron: dict, ante: dict) -> bool:
+        """
+        Согласование местоимения с антецедентом в РОДЕ и ЧИСЛЕ.
+
+        РОД берётся из местоимения, а не из сказуемого: у глагола настоящего
+        времени рода нет вовсе («боится» gender='', замер), так что по
+        сказуемому род восстановить нельзя. Число у местоимения своё
+        («они» number='pl', род пуст — множественному он не нужен).
+
+        Пустой род антецедента НЕ считается совпадением: лучше пропущенная
+        связь, чем приписанное действие чужому лицу (правило «ложная связь
+        дороже отсутствующей»). Род пустой у «они» — не незнание, а
+        грамматика, там достаточно совпадения по числу.
+        """
+        pg = next((v.get("gender") for v in pron.get("variants") or []
+                   if v.get("gender")), "")
+        pn = next((v.get("number") for v in pron.get("variants") or []
+                   if v.get("number")), "")
+        ag = next((v.get("gender") for v in ante.get("variants") or []
+                   if v.get("gender")), "")
+        an = next((v.get("number") for v in ante.get("variants") or []
+                   if v.get("number")), "")
+        if pn and an and pn != an:
+            return False
+        if pg:
+            return bool(ag) and ag == pg
+        return True
 
     @staticmethod
     def _pronoun_actor(toks: List[dict], pred: Optional[dict]) -> Optional[dict]:
