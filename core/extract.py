@@ -121,6 +121,13 @@ AMBIGUOUS_CAUSE_PREPS = frozenset({"из-за", "от"})
 # «кошка есть животное» — это IS_A, а не действие «есть».
 COPULAS = {"быть", "являться", "представлять", "казаться", "стать", "становиться",
            "называться", "считаться", "иметь", "иметься", "статься", "нравиться"}
+# Личные местоимения в ИМ.п. (и вопросительные слова, ведущие себя так же).
+# ОДНА константа на два места: _pronoun_actor (актёр — местоимение, субъект
+# не выдумывается) и _coord_parts (такое слово НЕ имеет права становиться
+# актёром следующей однородной части — антецедент это дыра П3б). Два списка
+# разъехались бы молча: в одном месте местоимение узнали, в другом нет.
+PRONOUN_ACTORS = ("он", "она", "оно", "они", "я", "ты", "мы", "вы",
+                  "кто", "кто-то", "кто-нибудь")
 # Нулевая связка: «Кит не рыба» — сказуемого нет, именованная часть держится
 # без него. Относится к связкам ТЕХНИЧЕСКИ (именное предложение, не действие),
 # а не по смыслу: это способ сказать «сказуемого нет», не вводя в граф узел
@@ -585,6 +592,9 @@ class SentenceFacts:
     # ЗАМЕРЕНО до правки: часть «чтобы не ловить её» не давала НИ ОДНОЙ связи,
     # потому что личный глагол в ней один — главный, а он в другой части.
     main_action: str = ""
+    # Подлежащее ГЛАВНОЙ части (лемма). Нужно ОДНОРОДНОЙ части без своего
+    # актёра — см. extract() и TestSecondPredicateIsLost.
+    main_subject: str = ""
 
     @property
     def content_lemmas(self) -> List[str]:
@@ -668,6 +678,14 @@ class SimpleExtractor:
             return self._extract_flat(sentence, order)
         parts = split_clauses(sentence)
         if len(parts) <= 1 or not any(p["sub"] for p in parts):
+            # ОДНОРОДНЫЕ части («Егор любит жену, но боится мамы»): придаточных
+            # нет, но частей две — и у второй НЕТ СВОЕГО актёра. Замерено ДО
+            # правки: разрез без наследования даёт РОВНО НОЛЬ фактов из второй
+            # части («нет ни подлежащего (ИМ.п.), ни сказуемого»), то есть 0
+            # вместо 0 — правка прошла бы незамеченной.
+            coords = [p for p in parts if not p["sub"]]
+            if len(coords) > 1:
+                return self._coord_parts(coords, sentence, order)
             return self._extract_flat(sentence, order)
 
         subs = [p for p in parts if p["sub"]]
@@ -718,6 +736,67 @@ class SimpleExtractor:
         # Заметка обязана остаться: без строки в отчёте нельзя отличить
         # «придаточного не было» от «придаточное размечено, но не разобрано».
         res.notes.append("придаточное: разобрано по частям (%d ч.)" % len(parts))
+        res.facts = self._dedup(res.facts)
+        return res
+
+    # ── ОДНОРОДНЫЕ ЧАСТИ С ОБЩИМ АКТЁРОМ (П3а) ────────────────
+
+    def _coord_parts(self, coords: List[dict], sentence: str,
+                     order: int) -> SentenceFacts:
+        """
+        Части, разделённые союзом, в котором у каждой свой личный глагол:
+        «Егор любит жену | боится мамы». Разбираются СЛЕВА НАПРАВО, и часть
+        без своего подлежащего получает актёра из уже разобранной левой.
+
+        ПОЧЕМУ НЕ ПОДСТАНОВКА В ТЕКСТ. Соблазн — собрать «Егор боится мамы»
+        и позвать обычный разбор. Тот же соблазн уже разобран в
+        _relative_part: обычный разбор опирается на порядок слов и падежные
+        вероятности словаря, а подставленное слово получает чужой падеж
+        («мяч CAN_DO бросить»). Здесь актёр передаётся РАЗБОРУ как факт,
+        а не как придуманное слово текста: текст части остаётся тем, что
+        в нём было, и evidence не врёт.
+
+        МОЛЧАЛИВОГО НОЛЯ НЕ БУДЕТ: если левая часть не дала актёра, правая
+        разбирается как умела, и в notes остаётся её собственная заметка.
+        """
+        res = SentenceFacts(sentence=sentence)
+        actor: Optional[dict] = None
+        for part in coords:
+            sub = self._extract_flat(part["text"], order, actor_hint=actor)
+            for f in sub.facts:
+                f.evidence = sentence
+                res.facts.append(f)
+            for e in sub.events:
+                e.evidence = sentence
+                res.events.append(e)
+            for a in sub.aliases:
+                res.aliases.append(a)
+            for x in sub.expectations:
+                res.expectations.append(x)
+            res.notes.extend(n for n in sub.notes
+                             if "связи могут быть разорваны" not in n)
+            # Актёром следующей части становится ТОЛЬКО существительное, названное
+            # СВОЕЙ частью (ищется в её собственных токенах, не в токенах всего
+            # предложения: там оно могло бы относиться к другой части).
+            own = next((t for t in sub.tokens
+                        if t["lemma"] == sub.main_subject
+                        and t["role"] == "subject"), None)
+            if own is not None and own["lemma"] not in PRONOUN_ACTORS:
+                actor = own                       # часть назвала своего актёра
+            elif actor is not None and sub.main_subject == actor["lemma"]:
+                pass                              # часть унаследовала — каскад
+            else:
+                # Часть осталась без НАЗВАННОГО актёра (актёр — местоимение или его
+                # нет вовсе). Наследовать дальше нечего, и прошлый актёр обязан
+                # быть ЗАБЫТ: в «Егор любит жену, но она боится мамы» подставить
+                # Егора значило бы записать ложную связь — разрешение местоимения
+                # (антецедент) это дыра П3б, не эта правка.
+                actor = None
+            if not res.main_action and sub.main_action:
+                res.main_action = sub.main_action
+        res.tokens = analyze(sentence)
+        res.notes.append("однородные части: разобрано по частям (%d ч.)"
+                         % len(coords))
         res.facts = self._dedup(res.facts)
         return res
 
@@ -1136,7 +1215,17 @@ class SimpleExtractor:
                 return t["lemma"]
         return ""
 
-    def _extract_flat(self, sentence: str, order: int = 0) -> SentenceFacts:
+    def _extract_flat(self, sentence: str, order: int = 0,
+                      actor_hint: Optional[dict] = None) -> SentenceFacts:
+        """
+        actor_hint — ТОКЕН подлежащего из ПРЕДЫДУЩЕЙ ОДНОРОДНОЙ ЧАСТИ того же
+        предложения ("боится мамы" после "Егор любит жену"). По умолчанию нет —
+        поведение не меняется. Передается НАСТОЯЩИЙ токен, а не придуманное
+        слово: у него есть свои варианты, падеж, число и род, и разбор видит
+        ровно те признаки, что дала морфология, а не те, что ей приписали.
+        Пустой разбор подсказанного актёра НЕ ОТМЕНЯЕТСЯ: если связь не
+        построилась, актёр не выдумывается.
+        """
         res = SentenceFacts(sentence=sentence.strip())
         toks = self._tag_prepositions(analyze(sentence))
         res.tokens = toks
@@ -1176,6 +1265,18 @@ class SimpleExtractor:
         pred = self._predicate(content, None)
         subj = self._subject(content, pred)
         pred = self._predicate(content, subj) or pred
+        if subj is None and actor_hint is not None and pred is not None \
+                and pred["role"] != "property":
+            # Актёр из предыдущей ОДНОРОДНОЙ части. Подстановка обязательна
+            # ДО проверки «подлежащего нет -> сказуемого нет»: без неё часть
+            # «боится мамы» теряла сказуемое ещё до всякого разбора (замер),
+            # и правка дала бы ноль.
+            # Берётся ТОЛЬКО когда своего подлежащего в части нет: в
+            # «но мама боится его» актёр свой, и чужого здесь быть не может.
+            subj = actor_hint
+            content.insert(0, subj)
+            res.notes.append("актёр унаследован от предыдущей однородной части: "
+                             f"{subj['lemma']}")
         if subj is None and pred is not None and pred["role"] != "property":
             # подлежащего нет, а сказуемое — личный глагол: актор неизвестен,
             # приписывать действие первому существительному нельзя
@@ -1514,6 +1615,8 @@ class SimpleExtractor:
         # служебный символ, и вешать на него PURPOSE значило бы изобрести глагол.
         if pred is not None and not self._is_zero_copula(pred):
             res.main_action = pred["lemma"]
+        if subj is not None:
+            res.main_subject = subj["lemma"]
         return res
 
     # ── СТАТИКА / ДИНАМИКА ─────────────────────────────────
@@ -1807,8 +1910,7 @@ class SimpleExtractor:
             return None
         ip = toks.index(pred) if pred in toks else -1
         for t in toks[:max(ip, 0)]:
-            if t["word"] in ("он", "она", "оно", "они", "я", "ты", "мы", "вы",
-                             "кто", "кто-то", "кто-нибудь"):
+            if t["word"] in PRONOUN_ACTORS:
                 return t
         return None
 
