@@ -231,9 +231,9 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 673,
+  "checks_comparing_russian": 683,
   "files": 46,
-  "checks_with_russian_message_only": 584
+  "checks_with_russian_message_only": 586
  },
  "totals": {
   "D_debt_files": 3,
@@ -250,9 +250,9 @@
   "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 642,
-  "P_ir_output_price": 673,
+  "P_ir_output_price": 683,
   "P_ir_output_files": 46,
-  "P_msg_only_checks": 584,
+  "P_msg_only_checks": 586,
   "U_outer_seam_sites": 4,
   "U_outer_seam_files": 4,
   "G_lang_import_sites": 7,

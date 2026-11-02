@@ -154,6 +154,85 @@ class TestNestedKinshipChain(unittest.TestCase):
                       f"брат не привязан к мужу: {t}")
 
 
+class TestInventedFamilyStories(unittest.TestCase):
+    """
+    ХОЗЯЙСКАЯ БАТАРЕЯ (02.11): выдуманные рассказы про невестку, шурина,
+    деверя, сноху и двоюродных. Выдуманы СПЕЦИАЛЬНО, чтобы механизм не
+    выучил один рассказ про Зинаиду.
+
+    ЧТО ЗДЕСЬ СУДИТСЯ. Не «узнал ли термин», а хранится ли знание КАК
+    ОТНОШЕНИЕ К ДРУГОМУ ЧЕЛОВЕКУ: «шурин — брат жены» обязано дать связь
+    брат->жена, иначе в графе лежит классификация («мужчина», «родственник»),
+    а загадка по ней не решается.
+
+    ОБЩИЙ ЗАПРЕТ ДЛЯ ВСЕХ ПЯТИ: ни один человек не имеет права стать
+    другим человеком или ролью-именем. Именно это ломалось до правки
+    d84011c, и именно это ловится здесь на НОВЫХ именах.
+    """
+
+    LYUDI = ("маша", "егор", "зинаида", "оля", "тимур", "лёва",
+             "семён", "витя")
+
+    def _facts(self, text):
+        ex = SimpleExtractor()
+        out = []
+        for sf in ex.extract_text(text):
+            for f in sf.facts:
+                out.append((f.head, f.relation, f.tail))
+        return out
+
+    def _no_person_becomes_person(self, t):
+        bad = [x for x in t
+               if x[1] in ("IS_ROLE", "SYNONYM_OF", "IS_A")
+               and x[0] in self.LYUDI and x[2] in self.LYUDI]
+        self.assertEqual(bad, [], f"человек записан другим человеком: {bad} ({t})")
+
+    def test_snokha_gives_definition_through_people(self):
+        t = self._facts("Оля — сноха Зинаиды. Сноха — это жена сына.")
+        self.assertIn(("сноха", "IS_ROLE", "жена"), t, f"сноха не связана с женой: {t}")
+        self.assertIn(("жена", "PART_OF", "сын"), t,
+                      f"определение потеряло второго человека: {t}")
+        self._no_person_becomes_person(t)
+
+    def test_shurin_gives_definition_through_people(self):
+        t = self._facts("Тимур — шурин Маши. Шурин — брат жены.")
+        self.assertIn(("шурин", "IS_ROLE", "брат"), t, f"{t}")
+        self.assertIn(("брат", "PART_OF", "жена"), t,
+                      f"брат не привязан к жене — определение бесполезно: {t}")
+        self._no_person_becomes_person(t)
+
+    def test_dever_gives_definition_through_people(self):
+        t = self._facts("Лёва — деверь Оли. Деверь — это брат мужа.")
+        self.assertIn(("деверь", "IS_ROLE", "брат"), t, f"{t}")
+        self.assertIn(("брат", "PART_OF", "муж"), t, f"{t}")
+        self._no_person_becomes_person(t)
+
+    def test_cousin_keeps_both_people(self):
+        """Двоюродные: степень родства — свойство, а связь обязана остаться
+        МЕЖДУ двумя людьми. Потеря любого из них делает узел бесполезным."""
+        t = self._facts("Семён — двоюродный брат Вити.")
+        self.assertIn(("семён", "HAS_PROPERTY", "двоюродный"), t,
+                      f" степень родства потеряна: {t}")
+        self.assertIn(("брат", "PART_OF", "витя"), t,
+                      f"Витя потерян из связи: {t}")
+        self._no_person_becomes_person(t)
+
+    def test_neprostka_and_wife_of_egor_share_the_same_shape(self):
+        """СЕРДЦЕ ЗАГАДКИ. Оба высказывания обязаны дать ОДИН И ТОТ ЖЕ вид
+        ссылки — через того же человека. Если одна форма разберётся,
+        а другая нет, «это одно лицо» никогда не выведется."""
+        a = self._facts("Маша — жена Егора.")
+        b = self._facts("Невестка — жена сына.")
+        self.assertIn(("жена", "PART_OF", "егор"), a, f"жена Егора: {a}")
+        self.assertIn(("жена", "PART_OF", "сын"), b, f"жена сына: {b}")
+        rel_a = {r for _h, r, _tl in a if _h == "жена"}
+        rel_b = {r for _h, r, _tl in b if _h == "жена"}
+        self.assertEqual(rel_a, rel_b,
+                         f"одна и та же связь записана разными отношениями: "
+                         f"{a} vs {b}")
+        self._no_person_becomes_person(a + b)
+
+
 class TestNoFalseIdentity(unittest.TestCase):
     """ГЛАВНЫЙ ЗАПРЕТ. Никакая правка не имеет права сделать два разных
     имени одной ролью или человеком: тогда рассказ про Зинаиду «решался»
