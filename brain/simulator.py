@@ -97,6 +97,16 @@ class StaticKnowledge:
     def __init__(self, world: Dict):
         self.world = world or {}
         self._by_head: Dict[str, List[Tuple[str, str]]] = {}
+        self._readable_cache = None
+        # Имена, которыми ОТВЕЧАЮТ на вопрос related(). Реестр — потому что
+        # отношение могут спросить ДО того, как кто-то его записал; рёбра
+        # мира — потому что спрошенное из мира не имеет права называться
+        # «нельзя прочитать».
+        try:
+            from core.storage import RelationType
+            self._registry = {e.name for e in RelationType}
+        except Exception:      # ядро без реестра живёт; тогда мерило — мир
+            self._registry = set()
         # 1) Типизированные наблюдения (главный источник связей).
         for obs in (self.world.get("observations") or {}).values():
             if not isinstance(obs, dict) or obs.get("negated"):
@@ -171,12 +181,60 @@ class StaticKnowledge:
                 out.append((head, r))
         return out
 
-    def _tails(self, x: str, rel: str) -> List[str]:
+    def _read(self, x: str, rel: str) -> List[str]:
+        """ЕДИНСТВЕННОЕ место, где чтение связей вообще происходит.
+        Приватное и НЕ проверяющее имя: им пользуются обёртки, которым нужна
+        ПОЛНОТА (схемы подают литералы и обязаны деградировать в «не хватило»,
+        а не падать). Проверять имя — задача related()."""
         out = []
         for r, t in self._by_head.get((x or "").lower().strip(), []):
             if r == rel and t not in out:
                 out.append(t)
         return out
+
+    #: Все имена отношений, которые ЭТОТ мир реально пишет, плюс реестр.
+    def _readable(self) -> set:
+        if self._readable_cache is None:
+            names = {r for pairs in self._by_head.values() for r, _t in pairs}
+            names.update(self._registry)
+            self._readable_cache = names
+        return self._readable_cache
+
+    def related(self, x: str, rel: str) -> List[str]:
+        """
+        ПУБЛИЧНЫЙ ЧИТАТЕЛЬ ПО ИМЕНИ ОТНОШЕНИЯ — то, чего в дыре F не было.
+
+            related("невестка", "IS_ROLE")     -> ["жена"]
+            related("жена",      "PART_OF")    -> ["сын"]
+            related("гостить",   "LOCATED_IN") -> ["семья"]
+
+        ЗАЧЕМ ОН ОДИН, а не шесть новых. В реестре 17 имён (core.storage.
+        RelationType), а специализированных методов было шесть. Значит
+        ЛЮБОЕ следующее отношение — INSTRUMENT, RECIPIENT, ABOUT, VALUE —
+        родилось бы нечитаемым, и дыра повторилась бы молча. Один вход по
+        имени закрывает класс, а не список.
+
+        ДВА ОТВЕТА РАЗДЕЛЕНЫ ОСОЗНАННО (и это НЕ случайная асимметрия с
+        referenced_by):
+          * неизвестное ОТНОШЕНИЕ  -> KeyError. Имя отношения — параметр
+            программы; опечатка (IS_ROL) не имеет права становиться «знаний
+            нет», иначе вывод замолчит вместо поломки.
+          * неизвестный УЗЕЛ       -> []. Обход путей тыкает в соседей, и
+            отсутствие узла — обычный вопрос к миру, на который честен
+            пустой список. Для узла есть ОТДЕЛЬНЫЙ вопрос: knows(x).
+        referenced_by строго к узлу, потому что отвечает на вопрос «КТО
+        ссылается», а спрашивать его у несуществующего слова — ошибка
+        вопроса, а не пустой факт (заперто контрактом П2).
+        """
+        name = (rel or "").upper().strip()
+        if name not in self._readable():
+            raise KeyError(f"отношение «{rel}» нельзя прочитать: его нет ни в "
+                           f"реестре, ни в этом мире — это НЕ то же самое, "
+                           f"что «таких связей нет»")
+        return self._read(x, name)
+
+    def _tails(self, x: str, rel: str) -> List[str]:
+        return self._read(x, (rel or "").upper().strip())
 
     def is_a(self, x: str) -> List[str]:
         return self._tails(x, "IS_A")
