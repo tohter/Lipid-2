@@ -20,8 +20,8 @@ from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
 from core.records import (action_name, meaningful_categories, merge_entity,
-                          normalize_actions, observation_weight, same_word,
-                          strip_self_name)
+                          normalize_actions, normalize_provenance,
+                          observation_weight, same_word, strip_self_name)
 from core.worldfile import default_memory_dir, read_world, write_world, world_transaction
 from core.storage import NodeType, RelationType
 
@@ -863,7 +863,16 @@ class Lipid2Brain:
         его добыл. Теперь канал даёт только уверенность, а вес считает
         _integrate_entity_into_core.
         """
-        raw_src = str(data.get("source") or data.get("learned_from") or "llm").lower()
+        raw_src = str(data.get("source") or data.get("learned_from") or "").lower()
+        if not raw_src:
+            # Скаляра нет — смотрим в ЕДИНСТВЕННОЕ место, где происхождение
+            # заведомо лежит, а не выдумываем. До этой правки метод брал
+            # только source/learned_from, а отсутствующее молча называло
+            # «llm»: замер показал, что запись с provenance=[wiki] и без
+            # скаляра получала канал teacher:llm — то есть Википедия
+            # приписывалась локальной модели.
+            prov = normalize_provenance(data.get("provenance"))
+            raw_src = str(prov[-1].get("source") or "").lower() if prov else ""
         # Нормализуем имена каналов
         if raw_src in ("wikipedia", "wiki", "teacher:wiki"):
             channel = "wiki"
@@ -871,11 +880,16 @@ class Lipid2Brain:
             channel = "user"
         elif raw_src in ("text", "teacher:text"):
             channel = "text"
-        else:
+        elif raw_src in ("llm", "teacher:llm"):
             channel = "llm"
+        else:
+            # НЕИЗВЕСТНОЕ имя канала остаётся неизвестным. Раньше любой
+            # текст справа от or превращался в llm. Неизвестный канал — это
+            # «не знаю», а не «сказала модель».
+            channel = ""
         conf = float(data.get("confidence") or self.CHANNEL_CONFIDENCE.get(channel, 0.6))
         evidence = data.get("definition") or data.get("evidence") or ""
-        return conf, evidence, f"teacher:{channel}"
+        return conf, evidence, (f"teacher:{channel}" if channel else "")
 
     # ── ОБУЧЕНИЕ ───────────────────────────────────────────
 

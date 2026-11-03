@@ -18,11 +18,12 @@
    Человек ответил поверх ответа модели — а поле говорит «модель». Это не
    умолчание, это УСТАРЕВШЕЕ значение: оно было верным и перестало.
 
-2) ПУСТАЯ ЗАПИСЬ ПОЛУЧАЕТ ПРИДУМАННЫЙ КАНАЛ. brain/lipid2_brain.py:866:
+2) МЕТОД ГЛУХ К ДОКАЗАТЕЛЬСТВУ. brain/lipid2_brain.py:866:
        raw_src = str(data.get("source") or data.get("learned_from") or "llm")
-   У записи без единой метки канал становится 'teacher:llm' (замерено).
-   Неизвестное выдаётся за локальную модель — то есть прибор приписывает
-   знание самому дешёвому и самому разговорчивому источнику.
+   provenance в расчёт НЕ берётся. Достижимый замер: запись с
+   provenance=[wiki] и без скаляра даёт канал 'teacher:llm'. То есть
+   знание, пришедшее из Википедии или от человека, приписывается локальной
+   модели, хотя единственное достоверное место (список доказательств) рядом.
 
 ЗАЧЕМ ЭТОМУ ОТДЕЛЬНЫЙ ФАЙЛ, а не приложение к П1a. П1a — про ДОСТАВКУ известного
 канала. Здесь канала нет или он устарел: чинить надо ТОЧКУ ЗАПИСИ скаляра, а
@@ -44,6 +45,14 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.records import merge_entity            # noqa: E402
+
+# merge_entity сводит формы слов (алиасы, иерархия) и без службы лемм
+# молча работает эвристикой — то есть тест проверял бы не язык, а догадку
+# морфологии. Ставим службу ЯВНО: иначе результат файла зависел бы от
+# порядка импортов в общем прогоне.
+from lang.ru.lemma import install as _install_lemma_service   # noqa: E402
+
+_install_lemma_service()
 
 
 def last_src(rec):
@@ -129,18 +138,44 @@ class TestNothingInvented(unittest.TestCase):
 
 
 class TestChannelNotInventedForUnknownSource(unittest.TestCase):
-    """Мозг не имеет права называть канал там, где метки нет (замер: был
-    'teacher:llm' — самый разговорчивый канал приписывался молча)."""
+    """Мозг не имеет права называть канал там, где метки нет, и обязан
+    посмотреть в доказательство, прежде чем выдумывать.
+
+    ЗАМЕРЕНО достижимым входом, а не воображаемым. Первый вариант этого
+    теста был написан на записи БЕЗ source, БЕЗ learned_from и БЕЗ
+    provenance — и это недостижимо: base_entity приходит из _read_back
+    (teachers/teacher1.py), то есть из уже записанной сущности мира, а
+    запись мира всегда несёт хотя бы provenance. Тест на недостижимом
+    входе — это зелёный замок на несуществующем поведении.
+
+    Живой замер (brain/lipid2_brain.py:866 берёт ТОЛЬКО source или
+    learned_from и глух к provenance):
+        provenance=[wiki], скаляра нет -> канал 'teacher:llm'
+        provenance=[user], скаляра нет -> канал 'teacher:llm'
+        provenance=[text], скаляра нет -> канал 'teacher:llm'
+    То есть запись, пришедшая из Википедии или от человека, приписывается
+    локальной модели — потому что метод не посмотрел в единственное место,
+    где происхождение заведомо есть.
+    """
 
     def setUp(self):
         from brain.lipid2_brain import Lipid2Brain
         self.brain = Lipid2Brain(memory_dir="/tmp/p1b_contract")
 
-    def test_record_without_any_mark_has_no_channel(self):
+    def test_channel_read_from_evidence_when_scalar_absent(self):
+        for mark in ("wiki", "user", "text"):
+            got = self.brain._channel_provenance(
+                {"concept": "флюгер",
+                 "provenance": [{"source": mark, "evidence": "дока", "at": 1}]})[2]
+            self.assertEqual(got, f"teacher:{mark}",
+                             f"доказательство говорит {mark!r}, а прибор "
+                             f"рапортует {got!r}")
+
+    def test_truly_unmarked_record_gets_no_channel(self):
         conf, evidence, src = self.brain._channel_provenance(
-            {"concept": "флюгер"})
+            {"concept": "флюгер", "definition": "прибор"})
         self.assertFalse(src,
-                         f"каналу без метки приписан {src!r}: ложная "
+                         f"каналу без единой метки приписан {src!r}: ложная "
                          f"атрибуция дешевле честного «не знаю»")
 
     def test_marked_channels_still_normalize(self):
@@ -153,6 +188,16 @@ class TestChannelNotInventedForUnknownSource(unittest.TestCase):
                            ("teacher:wiki", "teacher:wiki")):
             got = self.brain._channel_provenance({"source": mark})[2]
             self.assertEqual(got, want, f"метка {mark} перестала узнаваться")
+
+    def test_scalar_beats_evidence_when_they_disagree(self):
+        """Скаляр — указание писателя, доказательство — свидетель. При споре
+        верим указанию: именно скаляр ставит вызывающий, знающий свой канал.
+        Заперто, чтобы правка не устроила тихую перетяжку приоритетов.
+        """
+        got = self.brain._channel_provenance(
+            {"learned_from": "user",
+             "provenance": [{"source": "wiki", "evidence": "", "at": 1}]})[2]
+        self.assertEqual(got, "teacher:user")
 
 
 if __name__ == "__main__":
