@@ -254,6 +254,135 @@ class StaticKnowledge:
     def action_purpose(self, x: str) -> List[str]:
         return self._tails(x, "PURPOSE")
 
+    # ------------------------------------------------------------------
+    # ПРАВИЛО ШАГА (П4). Обход обязан уметь ОТКАЗАТЬ.
+    # ------------------------------------------------------------------
+
+    def is_event(self, x: str) -> bool:
+        """Событие ли это по ЗАПИСИ МИРА.
+
+        ТИП ЧИТАЕТСЯ ИЗ МИРА, А НЕ ИЗ ЯДРА — и это не придирка, а замер
+        (experiments/P4_STEP_RULE.txt): узел ядра на «гостить» отвечает
+        NodeType.ENTITY (ACTION не у ОДНОГО из двадцати узлов рассказа), и
+        node_type как РЕШЕНИЕ в проекте не читает никто. Спроси правило типа
+        у ядра — оно не запретило бы РОВНО НИЧЕГО и осталось бы зелёным над
+        ложью. Полю мира kind == "action" доверяют четыре читателя мозга
+        (brain/lipid2_brain.py:1355, :1454, :1456, brain/learner.py:688).
+
+        ОТСУТСТВИЕ ЗАПИСИ — НЕ СОБЫТИЕ. У лиц kind нет ВООБЩЕ (зинаида, егор,
+        жена, сын не лежат в entities). Считать неизвестное событие было бы
+        тем же грехом, что свести «нет ребра» и «нельзя спросить» к одному
+        нулю: запрет стал бы всеобщим и честный путь исчез бы вместе с ложью.
+        """
+        ent = (self.world.get("entities") or {}).get(
+            (x or "").lower().strip())
+        return isinstance(ent, dict) and str(ent.get("kind") or "") == "action"
+
+    def _neighbors(self, node: str):
+        """Соседи в обе стороны, ЛЮБЫМ отношением. Порядок не важен: обход
+        ширинный, а ответ — путь, а не первый случай."""
+        for rel, tail in self._by_head.get(node, []):
+            yield tail, f"{rel}>"
+        for head, rel in self._by_tail.get(node, []):
+            yield head, f"<{rel}"
+
+    def _walk(self, start: str, goal: str, forbidden: frozenset,
+              max_hops: int):
+        """Обход в обе стороны, НЕ ЗАХОДЯ в forbidden. Путь или None."""
+        from collections import deque
+        if start == goal:
+            return []
+        seen = {start} | set(forbidden)
+        q = deque([(start, [])])
+        while q:
+            node, trail = q.popleft()
+            if len(trail) >= max_hops:
+                continue
+            for nxt, mark in self._neighbors(node):
+                if nxt in seen:
+                    continue
+                step = (node, mark.strip("<>"), nxt)
+                if nxt == goal:
+                    return trail + [step]
+                seen.add(nxt)
+                q.append((nxt, trail + [step]))
+        return None
+
+    def identity_path(self, start: str, goal: str,
+                      max_hops: int = 4) -> "PathResult":
+        """Путь ТОЖДЕСТВА ЛИЦА: можно ли от одного лица осмысленно заключить
+        про другое. ОТВЕТ — СТРУКТУРА с причиной, а не список рёбер.
+
+            identity_path("невестка", "егор").path     -> честная цепочка
+            identity_path("невестка", "егор").code     -> "OK"
+
+        ЗАЧЕМ ОН ВООБЩЕ НУЖЕН, если есть related(). Замер рассказа (см.
+        experiments/STORY_WITHOUT_LESSON.txt): обход, которому разрешено
+        ходить ЛЮБЫМ отношением, отвечает на «невестка и Егор» так:
+
+            невестка <-OBJECT_OF- недолюбливать -CAN_DO-> зинаида
+                     -CAN_DO-> гостить -OBJECT_OF-> егор
+
+        Ни одно ребро не выдумано, вывод ЛОЖЕН: цепочка прошла сквозь
+        событие и объявила связь лиц. Отказ должен быть возможен ДО ответа,
+        потому что ложная связь для этого проекта хуже отсутствующей.
+
+        ЗАПРЕТОМ ПРОХОДА, А НЕ ТРЕБОВАНИЕМ ЛИЦА. У лиц типа нет (см.
+        is_event), поэтому «разрешены только известные лица» запретило бы
+        зинаиду, егора и жену — то есть убило бы и честный путь
+        «невестка -IS_ROLE-> жена -PART_OF-> сын <-IS_ROLE- егор».
+        Запрещено только ОДНО: оказаться внутри события по дороге.
+
+        КОДЫ (IR, их читает вывод; русскую фразу в ответ выводам не кормят —
+        тот же закон границы, что с unreadable у дыры F):
+          OK              путь есть
+          UNKNOWN_NODE    такого слова в мире нет (вопрос к словарю, не к)
+          NO_PATH         слова знакомы, связи кончились (вопрос к базе)
+          BLOCKED_BY_EVENT путь СУЩЕСТВУЕТ, но весь проходит сквозь события
+                      (вопрос к ВЫВОДУ; врать отказались)
+        """
+        a = (start or "").lower().strip()
+        b = (goal or "").lower().strip()
+        if not self.knows(a) or not self.knows(b):
+            return PathResult([], [], "UNKNOWN_NODE")
+        events = frozenset(n for n in self._known if self.is_event(n))
+        path = self._walk(a, b, events, max_hops)
+        if path is not None:
+            return PathResult(path, [], "OK")
+        # Путь запретили МЫ, а не мир. Проверить это можно только одним
+        # способом: снять запрет и посмотреть, был ли путь. Делать это надо
+        # ПОСЛЕ отказа, а не вместо: иначе «запрет» нельзя отличить от
+        # «связей и правда нет», а это разные починки (вывод против базы).
+        loose = self._walk(a, b, frozenset(), max_hops)
+        if loose is None:
+            return PathResult([], [], "NO_PATH")
+        crossed = sorted({n for h, _r, t in loose for n in (h, t)
+                          if n in events})
+        return PathResult([], crossed, "BLOCKED_BY_EVENT")
+
+
+class PathResult:
+    """ОТВЕТ на запрос пути тождества: путь + ПРИЧИНА отказа кодом.
+
+    Поле code — IR. Русскую формулировку (если она понадобится человеку)
+    имеет право ставить мозг, не этот класс: см. unreadable_to_text и закон
+    границы A0.
+    """
+
+    __slots__ = ("path", "blocked", "code")
+
+    def __init__(self, path, blocked, code):
+        self.path = list(path or [])
+        self.blocked = list(blocked or [])
+        self.code = code
+
+    def ok(self) -> bool:
+        return self.code == "OK"
+
+    def __repr__(self):
+        return (f"PathResult(code={self.code!r}, path={self.path}, "
+                f"blocked={self.blocked})")
+
 
 def unreadable_to_text(pairs: List[Tuple[str, str]]) -> List[str]:
     """
