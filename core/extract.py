@@ -1587,21 +1587,23 @@ class SimpleExtractor:
         # ложь хуже пропуска), и убираем именно её.
         pos_of = {id(t): i for i, t in enumerate(content)}
 
-        def modifier_of_preceding(tok: dict) -> bool:
+        def modifier_owner(tok: dict) -> Optional[dict]:
             """tok стоит СРАЗУ за словом, способным быть им.падежом, и сам
             бывает родительным: «жена Егора», «сын Зинаиды», «хозяйка дома».
             Первый токен фразы определителем быть не может — слева пусто."""
             i = pos_of.get(id(tok))
             if not i:
-                return False
+                return None
             prev = content[i - 1]
             if prev.get("prep"):
                 # «в семье сына» — слева предлог, «сына» зависит от «семьи», а
                 # не от стоящего перед ней глагола; разберёт предложная ветка.
-                return False
-            return (self._pick(prev, ("NOUN", "ADJF"), case="nom") is not None
+                return None
+            if (self._pick(prev, ("NOUN", "ADJF"), case="nom") is not None
                     and self._pick(tok, ("NOUN", "ADJF"), case="gen")
-                    is not None)
+                    is not None):
+                return prev
+            return None
 
         def direct_rival(tok: dict) -> Optional[dict]:
             """Есть ли при ТОМ ЖЕ глаголе другой прямой участник действия
@@ -1632,11 +1634,12 @@ class SimpleExtractor:
             owned_here = False
             rival = None
             if (rel == "OBJECT_OF" and not nominal and verbs_present
-                    and modifier_of_preceding(t)):
+                    and modifier_owner(t) is not None):
                 # Проверка жива ТОЛЬКО если слева слово, способное быть
                 # им.падежом, и у самого слова есть родительный вариант
                 # (см. modifier_of_preceding). Дальше решает АЛЬТЕРНАТИВА.
                 rival = direct_rival(t)
+                owner = modifier_owner(t)
             if rival is not None:
                 # АЛЬТЕРНАТИВА ЕСТЬ -> кражу прекращаем. При том же глаголе
                 # стоит ДРУГОЙ прямой участник, и ему места не осталось:
@@ -1663,12 +1666,30 @@ class SimpleExtractor:
                     # test_parse_notes_contract), и у трёх разных слов общие
                     # первые 30 знаков дали бы в срезанном отчёте ОДНУ
                     # неразличимую строку вместо трёх разных причин.
+                    # ФОРМУЛИРОВКА ПЕРЕПИСАНА фазой 2: до неё здесь было
+                    # «ребро не создано», и после фазы 2 та фраза стала бы
+                    # ЛЖЬЮ — ребро как раз создаётся ниже. Заметка, которая
+                    # не совпадает с выводом, опаснее её отсутствия: по ней
+                    # разбирают вывод, когда троек не видно.
                     "определитель «%s» вытеснен дополнением «%s» при "
-                    "«%s»: факт не записан (кража дополнения прекращена, "
-                    "ребро не создано)"
+                    "«%s»: объект действия на определитель не записан, "
+                    "связь записана как PART_OF"
                     % (variant["lemma"],
                        rival["variants"][0]["lemma"],
                        pred["lemma"] if pred is not None else "?"))
+                # ── ФАЗА 2: МОЛЧАНИЕ ЗАМЕНЯЕТСЯ РЕБРОМ ──
+                owner_rel = self._pick(owner, ("NOUN", "ADJF"), case="nom")
+                if owner_rel is not None:
+                    # predicate ЗДЕСЬ НЕ ВЫСТАВЛЯЕТСЯ, и это не забывчивость.
+                    # Первая версия ставила _e.predicate = "fact" прямо тут —
+                    # и НЕ работала: ниже по потоку _collect_events перекраши-
+                    # вает ВСЕ факты предложения в "event", его правка
+                    # перекрывает эту строку. Мёртвый код, который притворяется
+                    # починкой, опаснее отсутствия починки: по нему читают
+                    # решение, которого нет.
+                    res.facts.append(self._fact_from_variant(
+                        owner_rel["lemma"], t, "PART_OF", res.sentence, negs,
+                        variant))
                 continue
             # «кошка это животное» и «кит не рыба»: именная часть стоит в
             # ИМ./Вин.п., но НИКАКОГО действия в предложении нет — называть её
@@ -1912,6 +1933,8 @@ class SimpleExtractor:
             cause=cause))
         # Факты этого предложения — ДИНАМИКА, а не онтология.
         for f in res.facts:
+            if f.relation == "PART_OF":
+                continue
             f.predicate = "event"
 
     def _collect_expectations(self, res: SentenceFacts, content: List[dict],

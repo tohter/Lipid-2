@@ -856,15 +856,14 @@
       "качать",
       "OBJECT_OF",
       "ветвь"
-     ]
-    ],
-    "misses": [
+     ],
      [
       "ветвь",
       "PART_OF",
       "берёза"
      ]
     ],
+    "misses": [],
     "neg_n": 0,
     "neg_hits": [],
     "neg_misses": [],
@@ -873,7 +872,7 @@
     "also_ok": [],
     "junk_hits": [],
     "known_gap": false,
-    "produced_n": 2,
+    "produced_n": 3,
     "role_loss": []
    },
    {
@@ -1053,21 +1052,21 @@
     "role_loss": []
    }
   ],
-  "recall": 0.8679,
-  "recall_plain": 0.8824,
+  "recall": 0.8868,
+  "recall_plain": 0.902,
   "known_gap_found": "1/2",
-  "precision_strict": 0.7188,
-  "precision_triaj": 0.9062,
+  "precision_strict": 0.7231,
+  "precision_triaj": 0.9077,
   "also_ok": 12,
   "junk": 6,
   "role_loss": 2,
-  "junk_rate": 0.0938,
+  "junk_rate": 0.0923,
   "unlabeled": 0,
   "markup_conflicts": 0,
   "forbid_violations": 0,
-  "produced_total": 64,
+  "produced_total": 65,
   "expect_total": 53,
-  "hit_total": 46,
+  "hit_total": 47,
   "by_rel": {
    "CAN_DO": "18/18",
    "CAUSES": "1/1",
@@ -1079,7 +1078,7 @@
    "IS_ROLE": "2/2",
    "LOCATED_IN": "6/7",
    "OBJECT_OF": "8/8",
-   "PART_OF": "1/2",
+   "PART_OF": "2/2",
    "RECIPIENT": "0/2",
    "VALUE": "2/2"
   }
