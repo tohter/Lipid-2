@@ -197,6 +197,14 @@
   "lang/ru/text.py"
  ],
  "outer_seams": {
+  "tools/genitive_writer.py": [
+   {
+    "module": "core.morph",
+    "line": 50,
+    "nested": true,
+    "demo": false
+   }
+  ],
   "tools/golden_corpus.py": [
    {
     "module": "core.extract",
@@ -253,8 +261,8 @@
   "P_ir_output_price": 716,
   "P_ir_output_files": 51,
   "P_msg_only_checks": 645,
-  "U_outer_seam_sites": 4,
-  "U_outer_seam_files": 4,
+  "U_outer_seam_sites": 5,
+  "U_outer_seam_files": 5,
   "G_lang_import_sites": 7,
   "G_lang_import_files": 6
  }
