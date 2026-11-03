@@ -1254,7 +1254,14 @@ class Learner:
                                                "properties": merged.get("properties", []),
                                                "actions": [a if isinstance(a, str) else a.get("name", "")
                                                            for a in merged.get("actions", [])],
-                                               "category": (merged.get("hierarchy") or [None])[0]},
+                                               "category": (merged.get("hierarchy") or [None])[0],
+                                               # КАНАЛ ИДЁТ ВМЕСТЕ С РЕБРОМ. Ребро
+                                               # ядра живёт между прогонами дольше,
+                                               # чем запись в observations: без
+                                               # имени канала выдумка модели через
+                                               # неделю становится «фактом».
+                                               "source": source,
+                                               "evidence": evidence},
                                               weight=200)
             except Exception:
                 pass

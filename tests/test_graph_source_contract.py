@@ -127,7 +127,7 @@ class TestSignatureIntegrity(unittest.TestCase):
         self.assertEqual(syn["животное"]["weight"], 200)
 
     def test_positional_weight_argument_kept(self):
-        """weight передаётся ПОЗИЦИОННО (learnер вызывает weight=200 именованно,
+        """weight передаётся ПОЗИЦИОННО (learner вызывает weight=200 именовано,
         но core/graph.py::-selftest позиционно). Порядок аргументов менять
         нельзя."""
         g = GraphMemory()

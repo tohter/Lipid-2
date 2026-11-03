@@ -356,7 +356,14 @@ def git(*args):
 
 
 def commit_messages(since=None):
-    """[(хэш, сообщение)] — от newest к oldest. since:exclusive (сам не входит)."""
+    """[(хэш, сообщение)] — от newest к oldest. since:exclusive (сам не входит).
+
+    strip() на ЗАПИСИ обязателен: git ставит перевод строки после каждой
+    записи, и без него хэш каждой записи, кроме первой, приходит как "\n" +
+    хэш. Замерено на живой истории: сравнение анкор-хэша со списком тогда
+    НЕ находило анкор никогда, а «диапазон пуст» не срабатывал ни разу —
+    проверка выглядела зелёной, пока HEAD случайно не совпал с анкором.
+    """
     rev = f"{since}..HEAD" if since else "HEAD"
     raw = git("log", "--format=%H\x01%s\x01%b\x02", rev)
     out = []
@@ -364,14 +371,23 @@ def commit_messages(since=None):
         if not rec.strip():
             continue
         h, subj, body = rec.split("\x01")
-        out.append((h, subj + "\n" + body))
+        out.append((h.strip(), subj.strip() + "\n" + body.strip()))
     return out
+
+
+def anchor_hash():
+    """ПОЛНЫЙ хэш анкора. Сравнивать надо полным: git log отдаёт 40 символов,
+    MSG_ANCHOR короткий, а молчаливое «не совпало» в такой проверке — это
+    дыра, а не отказ."""
+    return git("rev-parse", MSG_ANCHOR).strip()
 
 
 def dirty_before_anchor():
     """Коммиты ДО anchor с чужими буквами. Живой материал для самопроверки."""
+    ah = anchor_hash()
+    after = {h for h, _ in commit_messages(ah)}
     return [h for h, msg in commit_messages()
-            if MSG_ANCHOR not in (h, ) and scan_message(msg)]
+            if h != ah and h not in after and scan_message(msg)]
 
 
 def scan_message(text):
@@ -424,7 +440,7 @@ class TestCommitMessagesClean(unittest.TestCase):
         цитаты в файлах, а сообщение коммита цитатой не является.
         """
         offenders = []
-        h_anchor = git("rev-parse", MSG_ANCHOR).strip()
+        h_anchor = anchor_hash()
         for h, msg in commit_messages(h_anchor):
             for kind, frag in scan_message(msg):
                 offenders.append(f"{h[:8]} [{kind}] {frag}")
@@ -437,6 +453,44 @@ class TestCommitMessagesClean(unittest.TestCase):
                          "чужие письма / врезанная латиница в сообщении "
                          "коммита. Исправлять текстом коммита (amend), а не "
                          "списком исключений:\n  " + "\n  ".join(offenders[:20]))
+
+    def test_parser_is_not_blind(self):
+        """
+        Парсер списка коммитов обязан проверять СЕБЯ, а не только сканер.
+        Замеренный дефект: git добавляет \n после каждой записи, хэши сдвигались
+        на одну строку, и единственное место, где это было видно (проверка
+        «анкор — предок HEAD»), молча врал. Признаки правильного разбора:
+          * хэш — ровно 40 шестнадцатеричных символов, без пробелов и \n;
+          * записей ровно столько, сколько в git rev-list (ни потерянных,
+            ни склеенных);
+          * анкор присутствует в полном списке — иначе диапазон проверки пуст.
+        """
+        full = git("rev-list", "HEAD").split()
+        msgs = commit_messages()
+        self.assertEqual(len(msgs), len(full),
+                         f"парсер вернул {len(msgs)} записей, а в истории "
+                         f"{len(full)} — формат %H\\x01%b\\x02 разобран неверно")
+        for h, msg in msgs:
+            self.assertEqual(len(h), 40, f"хэш неверной длины: {h!r}")
+            self.assertEqual(h, h.strip(), f"в хэше остался пробел: {h!r}")
+            int(h, 16)
+        self.assertIn(anchor_hash(), [h for h, _ in msgs],
+                      "анкор не найден в истории — проверка новых сообщений "
+                      "сканирует НУЛЬ коммитов и обязана краснить, а не молчать")
+
+    def test_scope_excludes_anchor_and_is_anchored(self):
+        """
+        Диапазон «новые сообщения» обязан (а) НЕ включать анкор (он проверяется
+        отдельно) и (б) быть непустым, если после анкора есть коммиты. Если
+        диапазон пуст, следующий тест зелёный на пустоте.
+        """
+        ah = anchor_hash()
+        scope = [h for h, _ in commit_messages(ah)]
+        self.assertNotIn(ah, scope, "анкор попал в диапазон новых сообщений")
+        newer = git("rev-list", f"{ah}..HEAD").split()
+        self.assertEqual(len(scope), len(newer),
+                         "диапазон проверки не совпадает с git rev-list — "
+                         "сколько коммитов реально проверяется, неизвестно")
 
     def test_message_scanner_is_not_blind(self):
         """

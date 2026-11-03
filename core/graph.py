@@ -227,27 +227,47 @@ class GraphMemory:
     # рованное: правило append-only не даёт вынимать его из живых миров.
 
     def integrate_knowledge(self, knowledge: dict, weight: int = 255):
-        """Интегрирует данные от Учителя с расстановкой типов связей."""
+        """Интегрирует данные от Учителя с расстановкой типов связей.
+
+        КАНАЛ УЧИТЕЛЯ ПИШЕТСЯ В РЕБРО. Источник приходит тем же словарём по
+        ключу "source" — СИГНАТУРА МЕТОДА НЕ ИЗМЕНЕНА, единственный внешний
+        вызывающий (brain/learner.py) не сломан. Поле для источника у ребра
+        было давно (Node.connect_to), его просто не просили передать; узел,
+        рождённый учителем, записывался с source="".
+
+        Пустой source остаётся ПУСТЫМ. Никаких «неизвестно» и тем более «text»:
+        приписать знание рассказу, которого не было, опаснее, чем оставить
+        происхождение не поименованным (то же правило, что в core/records.py).
+        """
         if not knowledge or "concept" not in knowledge:
             return
 
         main_concept = knowledge["concept"]
-        root_node = self.get_or_create_node(main_concept, NodeType.ENTITY)
+        src = str(knowledge.get("source") or "")
+        evid = str(knowledge.get("evidence") or "")
+        root_node = self.get_or_create_node(main_concept, NodeType.ENTITY,
+                                            source=src, evidence=evid)
 
         # 1. Категория (IS_A)
         if "category" in knowledge and knowledge["category"]:
-            cat_node = self.get_or_create_node(knowledge["category"], NodeType.ENTITY)
-            root_node.connect_to(cat_node, rel_type=RelationType.IS_A, weight=weight)
+            cat_node = self.get_or_create_node(knowledge["category"], NodeType.ENTITY,
+                                               source=src, evidence=evid)
+            root_node.connect_to(cat_node, rel_type=RelationType.IS_A,
+                                 weight=weight, source=src)
 
         # 2. Свойства (HAS_PROPERTY)
         for prop in knowledge.get("properties", []):
-            prop_node = self.get_or_create_node(prop, NodeType.PROPERTY)
-            root_node.connect_to(prop_node, rel_type=RelationType.HAS_PROPERTY, weight=weight)
+            prop_node = self.get_or_create_node(prop, NodeType.PROPERTY,
+                                                source=src, evidence=evid)
+            root_node.connect_to(prop_node, rel_type=RelationType.HAS_PROPERTY,
+                                 weight=weight, source=src)
 
         # 3. Действия (CAN_DO)
         for act in knowledge.get("actions", []):
-            act_node = self.get_or_create_node(act, NodeType.ACTION)
-            root_node.connect_to(act_node, rel_type=RelationType.CAN_DO, weight=weight)
+            act_node = self.get_or_create_node(act, NodeType.ACTION,
+                                               source=src, evidence=evid)
+            root_node.connect_to(act_node, rel_type=RelationType.CAN_DO,
+                                 weight=weight, source=src)
 
         print(f"[Graph]: Интегрирован '{main_concept}' | Связей: {len(root_node.out_synapses_typed)}")
 
