@@ -209,7 +209,7 @@
     "hits": [
      [
       "кошка",
-      "IS_A",
+      "IS_ROLE",
       "млекопитающее"
      ]
     ],
@@ -601,7 +601,7 @@
     "hits": [
      [
       "кит",
-      "IS_A",
+      "IS_ROLE",
       "млекопитающее"
      ]
     ],
@@ -610,7 +610,7 @@
     "neg_hits": [
      [
       "кит",
-      "IS_A",
+      "IS_ROLE",
       "рыба"
      ]
     ],
@@ -871,15 +871,9 @@
     "forbid_hits": [],
     "extra": [],
     "also_ok": [],
-    "junk_hits": [
-     [
-      "качать",
-      "OBJECT_OF",
-      "берёза"
-     ]
-    ],
+    "junk_hits": [],
     "known_gap": false,
-    "produced_n": 3,
+    "produced_n": 2,
     "role_loss": []
    },
    {
@@ -1062,16 +1056,16 @@
   "recall": 0.8679,
   "recall_plain": 0.8824,
   "known_gap_found": "1/2",
-  "precision_strict": 0.7077,
-  "precision_triaj": 0.8923,
+  "precision_strict": 0.7188,
+  "precision_triaj": 0.9062,
   "also_ok": 12,
-  "junk": 7,
+  "junk": 6,
   "role_loss": 2,
-  "junk_rate": 0.1077,
+  "junk_rate": 0.0938,
   "unlabeled": 0,
   "markup_conflicts": 0,
   "forbid_violations": 0,
-  "produced_total": 65,
+  "produced_total": 64,
   "expect_total": 53,
   "hit_total": 46,
   "by_rel": {
@@ -1082,7 +1076,7 @@
    "HAS_PART": "1/2",
    "HAS_PROPERTY": "3/3",
    "INSTRUMENT": "0/1",
-   "IS_A": "2/2",
+   "IS_ROLE": "2/2",
    "LOCATED_IN": "6/7",
    "OBJECT_OF": "8/8",
    "PART_OF": "1/2",
@@ -1331,7 +1325,7 @@
     "hits": [
      [
       "воробей",
-      "IS_A",
+      "IS_ROLE",
       "птица"
      ]
     ],
@@ -2582,7 +2576,7 @@
    "HAS_PART": "1/1",
    "HAS_PROPERTY": "3/3",
    "INSTRUMENT": "0/1",
-   "IS_A": "1/1",
+   "IS_ROLE": "1/1",
    "LOCATED_IN": "5/9",
    "OBJECT_OF": "10/10",
    "PART_OF": "0/3",
