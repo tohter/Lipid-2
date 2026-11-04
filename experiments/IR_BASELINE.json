@@ -229,6 +229,14 @@
     "demo": false
    }
   ],
+  "tools/static_past_check.py": [
+   {
+    "module": "core.extract",
+    "line": 41,
+    "nested": false,
+    "demo": false
+   }
+  ],
   "teachers/teacher_wiki.py": [
    {
     "module": "pymorphy3",
@@ -261,8 +269,8 @@
   "P_ir_output_price": 724,
   "P_ir_output_files": 53,
   "P_msg_only_checks": 675,
-  "U_outer_seam_sites": 5,
-  "U_outer_seam_files": 5,
+  "U_outer_seam_sites": 6,
+  "U_outer_seam_files": 6,
   "G_lang_import_sites": 7,
   "G_lang_import_files": 6
  }
