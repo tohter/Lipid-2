@@ -28,7 +28,7 @@
    },
    {
     "module": "core.morph",
-    "line": 1049,
+    "line": 1088,
     "nested": true,
     "demo": false
    }
@@ -130,12 +130,12 @@
    {
     "cls": "Lipid2Brain",
     "method": "sleep_now",
-    "line": 1236
+    "line": 1275
    },
    {
     "cls": "Lipid2Brain",
     "method": "process_input",
-    "line": 1253
+    "line": 1292
    }
   ],
   "brain/question.py": [
@@ -174,7 +174,7 @@
   "core/encoder.py": 8,
   "core/graph.py": 9,
   "core/logchannel.py": 0,
-  "core/records.py": 4,
+  "core/records.py": 7,
   "core/schemes.py": 0,
   "core/sdr.py": 2,
   "core/storage.py": 17,
@@ -247,9 +247,9 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 724,
-  "files": 53,
-  "checks_with_russian_message_only": 675
+  "checks_comparing_russian": 737,
+  "files": 56,
+  "checks_with_russian_message_only": 692
  },
  "totals": {
   "D_debt_files": 3,
@@ -262,13 +262,13 @@
   "S_seams_inside_core": 0,
   "O_output_methods": 6,
   "R_core_ruslits": 163,
-  "M_core_messages": 112,
+  "M_core_messages": 115,
   "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 643,
-  "P_ir_output_price": 724,
-  "P_ir_output_files": 53,
-  "P_msg_only_checks": 675,
+  "P_ir_output_price": 737,
+  "P_ir_output_files": 56,
+  "P_msg_only_checks": 692,
   "U_outer_seam_sites": 6,
   "U_outer_seam_files": 6,
   "G_lang_import_sites": 7,

@@ -312,6 +312,112 @@ def meaningful_categories(concept: str, hierarchy) -> list:
     return out
 
 
+def name_variants(entities: dict, observations: dict = None,
+                  skip: Optional[str] = None) -> Dict[str, str]:
+    """
+    Карта «ВАРИАНТ ИМЕНИ -> канон» по всей Вселенной. ОДНА реализация.
+
+    Два источника, оба — то, что УЖЕ лежит во Вселенной:
+      1) поле "aliases" сущности (одно имя, два написания);
+      2) наблюдения SYNONYM_OF (вариант -> канон), пережившие перезапись.
+
+    ПОЧЕМУ ОДНА ФУНКЦИЯ НА ДВОИХ. Раньше карту строили два места, каждое у
+    себя (ученик — для записи, и больше нигде), а мозг при ЧТЕНИИ не строил
+    её вовсе: grep по brain/ на "aliases" был пуст. Следствие ЗАМЕРЕНО
+    (04.11): «бегемот» с aliases:["гиппопотам"] на вопрос «гиппопотам»
+    отвечал «не знаю», хотя знание лежало в файле; вторая сущность при этом
+    не заводилась — то есть запись осталась одной, а доступ к ней пропал.
+    Две копии карты означали бы два правила конфликта имён; правило одно,
+    поэтому и код один.
+
+    КОНФЛИКТ РАЗРЕШАЕТСЯ ПЕРВЫМ: если вариант уже привязан к другому канону,
+    второй НЕ перетягивает (см. тот же закон в _record_aliases). Детерми-
+    низм чтения важнее «угодить последнему»: без него один и тот же вопрос
+    давал бы ответ про разные сущности в зависимости от обхода словаря.
+
+    skip — имя, варианты которого не нужны (обычно сам канон: тесты и
+    пересборка карты после правки записи).
+    """
+    skip_n = str(skip).lower().strip() if skip else ""
+    out: Dict[str, str] = {}
+    for name, ent in (entities or {}).items():
+        canon = str(name).lower().strip()
+        if not canon or canon == skip_n:
+            continue
+        for al in ((ent or {}).get("aliases") or []):
+            al = str(al).lower().strip()
+            if al and al != canon and al not in out:
+                out[al] = canon
+    for obs in (observations or {}).values():
+        if not isinstance(obs, dict) or obs.get("negated"):
+            continue
+        if str(obs.get("relation", "")).upper() != "SYNONYM_OF":
+            continue
+        variant = str(obs.get("head", "")).lower().strip()
+        canon = str(obs.get("tail", "")).lower().strip()
+        if variant and canon and variant != canon and variant not in out:
+            out[variant] = canon
+    return out
+
+
+def resolve_by_variant(name: str, entities: dict, variants: dict,
+                       lemma_fn=None) -> Optional[str]:
+    """
+    Найти КАНОН по имени, которое может оказаться ВАРИАНТОМ (синонимом),
+    в том числе в чужом падеже.
+
+    Два шага, и порядок важен:
+      1) точное совпадение с вариантом — самый дешёвый и самый точный;
+      2) сведение формы — иначе «про гиппопотама» промахнётся, а именно так
+         имена и приходят из речи.
+
+    ПОЧЕМУ ШАГ 2 РАБОТАЕТ ТОЛЬКО НА НАСТОЯЩЕЙ МОРФОЛОГИИ. Если служба не
+    принесли (см. _warn_no_service), форма считается наивным отсечением, и
+    оно сводит РАЗНЫЕ слова: «кошка» и «кошачьи» -> «кошк». Для тавтологии
+    в категориях это досадно, но здесь та же ошибка ОТВЕТИЛА БЫ ПРО ДРУГУЮ
+    СУЩНОСТЬ. Ложный ответ дороже промаха (закон проекта: ложное ребро
+    хуже отсутствующего), поэтому без морфологии остаётся шаг 1.
+
+    Возвращает None, если это НЕ вариант известной сущности. Создавать узел
+    здесь нельзя по тому же закону, что и в find_in_memory: промах обратим,
+    слияние узлов — нет.
+    """
+    if not variants:
+        return None
+    name_n = str(name or "").lower().strip()
+    if not name_n:
+        return None
+    hit = variants.get(name_n)
+    if hit and hit in (entities or {}):
+        return hit
+
+    if lemma_fn is None:
+        # Служба, принесённая в ядро (lang/ru). СВОЕЙ морфологии у ядра нет
+        # и быть не может — см. experiments/IR_BOUNDARY.md §1.
+        if _LEMMA_SERVICE is None:
+            return None
+        lemma_fn = _LEMMA_SERVICE
+    try:
+        form = str(lemma_fn(name_n) or "").lower().strip()
+    except Exception as exc:                        # pragma: no cover
+        print(f"[records] ⚠ лемматизатор не разобрал «{name_n}» при поиске "
+              f"по варианту имени: {exc} — поиск останется по точной форме",
+              file=sys.stderr, flush=True)
+        return None
+    if not form or form == name_n:
+        return None
+    for variant, canon in variants.items():
+        if canon not in (entities or {}):
+            continue
+        try:
+            v_form = str(lemma_fn(variant) or "").lower().strip()
+        except Exception:                           # pragma: no cover
+            return None
+        if v_form and v_form == form:
+            return canon
+    return None
+
+
 def is_empty_entity(rec) -> bool:
     """
     «Сущность есть в файле» и «о ней что-то известно» — РАЗНЫЕ утверждения.

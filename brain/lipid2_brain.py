@@ -20,8 +20,9 @@ from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
 from core.records import (action_name, meaningful_categories, merge_entity,
-                          normalize_actions, normalize_provenance,
-                          observation_weight, same_word, strip_self_name)
+                          name_variants, normalize_actions,
+                          normalize_provenance, observation_weight,
+                          resolve_by_variant, same_word, strip_self_name)
 from core.worldfile import default_memory_dir, read_world, write_world, world_transaction
 from core.storage import NodeType, RelationType
 
@@ -52,6 +53,12 @@ class Lipid2Brain:
         # Кэш мира (очередь, п.13): мир + сигнатура файла, к которой он привязан.
         self._world_cache: Optional[Dict[str, Any]] = None
         self._world_sig = None
+        # Карта «вариант имени -> канон» (синонимы). Привязана к ТОЙ ЖЕ
+        # сигнатуре файла, что и кэш мира: перечитали мир — карта обязана
+        # перестроиться, иначе учитель допишет alias в другом потоке, а мозг
+        # продолжит отвечать «не знаю» по устаревшей карте.
+        self._variant_cache: Optional[Dict[str, str]] = None
+        self._variant_sig = None
 
         # Модули ввода
         self.ir_parser = IRParser()
@@ -422,6 +429,27 @@ class Lipid2Brain:
             self._world_cache = None
             self._world_sig = None
 
+    def _variants(self, world: dict) -> Dict[str, str]:
+        """
+        Карта «вариант имени -> канон» текущего мира (синонимы).
+
+        Строится ОДИН раз на версию файла (тот же ключ, что у кэша мира) и
+        переиспользуется: на 10^4 сущностей обход всех aliases — это
+        десятки тысяч строк на каждый запрос, а запросов в ответе несколько.
+        """
+        sig = self._world_sig
+        # sig is None — файла ещё нет: привязывать карту не к чему, поэтому
+        # старая карта обязана умереть, а не пережить файл (иначе она
+        # «помнила» бы варианты несуществующей Вселенной).
+        if sig is not None and self._variant_cache is not None \
+                and self._variant_sig == sig:
+            return self._variant_cache
+        out = name_variants(world.get("entities", {}),
+                            world.get("observations", {}))
+        self._variant_cache = out
+        self._variant_sig = sig
+        return out
+
     def find_in_memory(self, concept: str) -> Optional[Dict[str, Any]]:
         """
         Быстрый поиск сущности и её родительских связей в Графе Вселенной.
@@ -449,6 +477,17 @@ class Lipid2Brain:
                 hit = self.lemmas_world.resolve_name(concept_clean)
                 if hit and hit in entities:
                     concept_clean = hit
+
+        if concept_clean not in entities:
+            # 3) ВАРИАНТ ИМЕНИ (синоним). ЗАМЕРЕНО 04.11: запись «бегемот» с
+            # aliases:["гиппопотам"] на вопрос «гиппопотам» отвечала «не
+            # знаю», хотя знание лежало в файле: поле aliases при чтении не
+            # читал ни один модуль мозга. Запись при этом оставалась ОДНОЙ
+            # (ученик её не удвоил) — то есть пропал не дубль, а ДОСТУП.
+            hit = resolve_by_variant(concept_clean, entities,
+                                     self._variants(world))
+            if hit:
+                concept_clean = hit
 
         if concept_clean not in entities:
             # Проверка: есть ли узел в графе (из observations), но нет в entities
@@ -1370,6 +1409,21 @@ class Lipid2Brain:
             delta = ", ".join(derived_ent.get("delta_properties", []))
             if delta:
                 return f"[Lipid-2]: {concept.capitalize()} — это {parent} со свойствами: {delta}."
+            # ДЕЛЬТЫ НЕТ — а знание ЕСТЬ. Замер 04.11: запись с готовым
+            # определением давала None, как только у неё появлялся
+            # parent_concept (delta пустая / отсутствует / одна hierarchy —
+            # три формы, все три промахивались). Причина структурная: когда
+            # цепь предков есть, base_entity = РОДИТЕЛЬ (find_in_memory
+            # строит базу из chain[-1]), а собственная запись лексемы уезжает
+            # в derived_entity; ниже определение читается только у
+            # base_entity. Итог: ответ терялся, а _handle_definition звал
+            # учителя платить за копию того, что лежит в файле. Форма-то —
+            # штатная: учитель по своему промпту пишет именно derived_entity
+            # с parent_concept.
+            own_def = str(derived_ent.get("definition", "") or "").strip()
+            if own_def:
+                return (f"[Lipid-2]: {concept.capitalize()} — "
+                        + self._definition_phrase(concept, own_def))
 
         if base_ent.get("concept") == concept:
             hierarchy = meaningful_categories(concept, base_ent.get("hierarchy", []))

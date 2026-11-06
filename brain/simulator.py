@@ -41,6 +41,55 @@ if _ROOT not in sys.path:
 from core.schemes import SchemeInterpreter, load_schemes
 
 
+def _is_star(entered, rel: str, enters: bool) -> bool:
+    """
+    ПРАВИЛО ШАГА: шаг В хвост и шаг ИЗ хвоста по ОДНОМУ отношению — это не
+    продолжение, а ЗВЕЗДА: «оба про одно», а не «одно продолжается в
+    другое». Формально: то же отношение прикреплено к вершине ОДИНАКОВО —
+    оба ребра в неё входят или оба из неё выходят.
+
+    entered = (отношение, ВХОДИТ ли то ребро в вершину, где мы стоИм); None
+    в старте. rel/enters — про ребро, которым ХОТИМ уйти. True = уйти
+    нельзя, это разворот через общий хвост.
+
+    ПОЧЕМУ ИМЕННО «ОДИНАКОВО», а не «то же отношение». Направление — не
+    формальность, у каждой формы свой смысл:
+      * в хаб ВХОДЯТ оба (хвост -HP-> мокрый <-HP- лапа): хаб НАЗЫВАЕТ оба
+        узла, это звезда, тождества между ними нет;
+      * одно ВХОДИТ, другое ВЫХОДИТ (дождь -IS_A-> вода -IS_A-> вещество;
+        невестка <-OBJECT_OF- недолюбливать <-CAN_DO- зинаида): одно ребро
+        называет узел, другое РАСКРЫВАЕТ его — это цепочка, она обязана
+        ходить.
+    Запрет «по совпадению отношения» без направления убил бы транзитивность
+    IS_A и весь вывод «дождь — это вода» (проверено этой правкой: живые
+    тесты транзитивности погасли). Запрет «по имени отношения» (закрыть
+    HAS_PROPERTY) поймал бы 1 измеренную звезду из 4 — тот же грех, против
+    которого написан test_rule_covers_a_class_not_the_measured_case.
+
+    ЗАМЕР 04.11 (обход в обе стороны объявлял тождество):
+
+        хвост -HAS_PROPERTY-> мокрый <-HAS_PROPERTY- лапа   «хвост = лапа»
+        кошка -IS_A-> животное <-IS_A- собака               «кошка = собака»
+        маша  -IS_ROLE-> врач  <-IS_ROLE- петр              «маша = петр»
+        колесо-PART_OF-> машина <-PART_OF- мотор            «колесо = мотор»
+
+    Ни одно ребро не выдумано; лжена ЦЕПОЧКА. Правило структурное — ловит
+    ФОРМУ пути, поэтому новое отношение (owns, located_in, PREVENTS)
+    попадает под него само, без переписывания замка.
+
+    ЖИВОЕ (заперто здесь и в test_step_rule_contract):
+        невестка -IS_ROLE-> жена -PART_OF-> сын <-IS_ROLE- егор — в сына
+            вошли по PART_OF (входит), уходим по IS_ROLE (тоже входит, НО
+            ОТНОШЕНИЕ ДРУГОЕ) — проходит;
+        машина -PART_OF-> мотор -PART_OF-> коленвал — отношение то же, но в
+            мотор ребро вошло, а из мотора вышло — проходит;
+        иван -IS_ROLE-> сын -IS_ROLE-> наследник — проходит.
+    """
+    if entered is None:
+        return False
+    return entered[0] == rel and entered[1] == enters
+
+
 # ─────────────────────────────────────────────────────────────
 # СОБЫТИЕ — единица динамики. Статике такое неведомо.
 # ─────────────────────────────────────────────────────────────
@@ -278,35 +327,72 @@ class StaticKnowledge:
             (x or "").lower().strip())
         return isinstance(ent, dict) and str(ent.get("kind") or "") == "action"
 
-    def _neighbors(self, node: str):
-        """Соседи в обе стороны, ЛЮБЫМ отношением. Порядок не важен: обход
-        ширинный, а ответ — путь, а не первый случай."""
+    def _neighbors(self, node: str,
+                   entered: Optional[Tuple[str, bool]] = None):
+        """
+        Соседи в обе стороны, ЛЮБЫМ отношением: (куда, метка, ЗВЕЗДА_ЛИ_ШАГ).
+
+        entered = (ОТНОШЕНИЕ, ВХОДИТ_ЛИ_ТО_РЕБРО_В_ЭТУ_ВЕРШИНУ) — как мы сюда
+        попали; None в старте. Нужно затем, чтобы обход не выдал «ОБА ВИСЯТ
+        НА ОДНОМ ХВОСТЕ» за «одно продолжается в другое», см. _is_star.
+
+        Признак звезды считается ЗДЕСЬ, а не в обходе: направление шага
+        знает только это место (вперёд — ребро ВЫХОДИТ из вершины, назад —
+        ВХОДИТ в неё). Отдать его наружу строкой "<REL" и потом разбирать
+        меткой — второй способ посчитать то же самое, а два способа
+        расходятся при первой же правке (тот же закон, что у обратного
+        индекса-транспозиции).
+        """
         for rel, tail in self._by_head.get(node, []):
-            yield tail, f"{rel}>"
+            # шаг ВПЕРЁД: ребро node -rel-> tail, из node оно ВЫХОДИТ
+            yield tail, f"{rel}>", _is_star(entered, rel, enters=False)
         for head, rel in self._by_tail.get(node, []):
-            yield head, f"<{rel}"
+            # шаг НАЗАД: ребро head -rel-> node, в node оно ВХОДИТ
+            yield head, f"<{rel}", _is_star(entered, rel, enters=True)
 
     def _walk(self, start: str, goal: str, forbidden: frozenset,
-              max_hops: int):
-        """Обход в обе стороны, НЕ ЗАХОДЯ в forbidden. Путь или None."""
+              max_hops: int, star_budget: int = 0):
+        """
+        Обход в обе стороны. Возвращает (путь, хабы) или (None, []).
+
+        forbidden — вершины, в которые не входим (события).
+        star_budget — сколько РАЗРЕШЁННЫХ разворотов через общий хвост. Для
+        ОТВЕТА он ноль: путь со звездой не является ответом. Нужен он
+        ТОЛЬКО отказу, чтобы назвать хаб словами мира вместо молчаливого
+        «пути нет» («связей нет» и «связь есть, но ничего не утверждает» —
+        разные нули, чинятся в разных местах).
+
+        Состояние обхода — пара (вершина, КАК в неё вошли), а не вершина: в
+        одну вершину можно войти цепочкой и звездой, запрещать надо второе,
+        а не вход вообще. Способов крепления конечное число (отношение и
+        флаг), поэтому обход всё ещё завершается на циклах.
+        """
         from collections import deque
         if start == goal:
-            return []
-        seen = {start} | set(forbidden)
-        q = deque([(start, [])])
+            return [], []
+        forbidden_set = set(forbidden)
+        seen = {(start, None)}
+        q = deque([(start, None, [], [])])
         while q:
-            node, trail = q.popleft()
+            node, entered, trail, hubs = q.popleft()
             if len(trail) >= max_hops:
                 continue
-            for nxt, mark in self._neighbors(node):
-                if nxt in seen:
+            for nxt, mark, star in self._neighbors(node, entered):
+                if nxt in forbidden_set:
                     continue
-                step = (node, mark.strip("<>"), nxt)
+                rel = mark.strip("<>")
+                if star and len(hubs) >= star_budget:
+                    continue
+                state = (nxt, (rel, mark.endswith(">")))
+                if state in seen:
+                    continue
+                step = (node, rel, nxt)
+                step_hubs = hubs + [node] if star else hubs
                 if nxt == goal:
-                    return trail + [step]
-                seen.add(nxt)
-                q.append((nxt, trail + [step]))
-        return None
+                    return trail + [step], step_hubs
+                seen.add(state)
+                q.append((nxt, state[1], trail + [step], step_hubs))
+        return None, []
 
     def identity_path(self, start: str, goal: str,
                       max_hops: int = 4) -> "PathResult":
@@ -331,34 +417,50 @@ class StaticKnowledge:
         is_event), поэтому «разрешены только известные лица» запретило бы
         зинаиду, егора и жену — то есть убило бы и честный путь
         «невестка -IS_ROLE-> жена -PART_OF-> сын <-IS_ROLE- егор».
-        Запрещено только ОДНО: оказаться внутри события по дороге.
+        Запрещено ДВА, и оба — про ШАГ, а не про слова:
+          1) оказаться внутри события по дороге (замер рассказа);
+          2) развернуться через ОБЩИЙ ХВОСТ (замер 04.11): две сущности,
+             на которые ОДНО и то же отношение указывает одинаково, стали
+             «связанными тождеством» — хвост/лапа через «мокрый», кошка/
+             собака через «животное», маша/петр через «врач», колесо/мотор
+             через «машина». Ребра верны; лжена цепочка: «оба про одно» —
+             это НЕ «одно продолжается в другое». См. _is_shared_tail.
 
         КОДЫ (IR, их читает вывод; русскую фразу в ответ выводам не кормят —
         тот же закон границы, что с unreadable у дыры F):
-          OK              путь есть
-          UNKNOWN_NODE    такого слова в мире нет (вопрос к словарю, не к)
-          NO_PATH         слова знакомы, связи кончились (вопрос к базе)
+          OK               путь есть
+          UNKNOWN_NODE     такого слова в мире нет (вопрос к словарю, не к)
+          NO_PATH          слова знакомы, связи кончились (вопрос к базе)
           BLOCKED_BY_EVENT путь СУЩЕСТВУЕТ, но весь проходит сквозь события
-                      (вопрос к ВЫВОДУ; врать отказались)
+                           (вопрос к ВЫВОДУ; врать отказались)
+          BLOCKED_BY_HUB   путь СУЩЕСТВУЕТ, но он звезда: оба висят на одном
+                           хвосте (вопрос к ВЫВОДУ; `blocked` = те хабы)
         """
         a = (start or "").lower().strip()
         b = (goal or "").lower().strip()
         if not self.knows(a) or not self.knows(b):
             return PathResult([], [], "UNKNOWN_NODE")
         events = frozenset(n for n in self._known if self.is_event(n))
-        path = self._walk(a, b, events, max_hops)
+        path, _h = self._walk(a, b, events, max_hops)
         if path is not None:
             return PathResult(path, [], "OK")
         # Путь запретили МЫ, а не мир. Проверить это можно только одним
         # способом: снять запрет и посмотреть, был ли путь. Делать это надо
         # ПОСЛЕ отказа, а не вместо: иначе «запрет» нельзя отличить от
         # «связей и правда нет», а это разные починки (вывод против базы).
-        loose = self._walk(a, b, frozenset(), max_hops)
+        # Звезду ищем СНОВА с запретом событий: путь сквозь событие остаётся
+        # событием и без звёзд — иначе две лжи склеились бы в один отказ.
+        loose, _h = self._walk(a, b, frozenset(), max_hops, star_budget=1)
         if loose is None:
             return PathResult([], [], "NO_PATH")
         crossed = sorted({n for h, _r, t in loose for n in (h, t)
                           if n in events})
-        return PathResult([], crossed, "BLOCKED_BY_EVENT")
+        if crossed:
+            return PathResult([], crossed, "BLOCKED_BY_EVENT")
+        _p, hubs = self._walk(a, b, events, max_hops, star_budget=1)
+        if hubs:
+            return PathResult([], sorted(set(hubs)), "BLOCKED_BY_HUB")
+        return PathResult([], [], "NO_PATH")
 
 
 class PathResult:
