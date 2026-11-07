@@ -28,7 +28,7 @@
    },
    {
     "module": "core.morph",
-    "line": 1100,
+    "line": 1104,
     "nested": true,
     "demo": false
    }
@@ -74,7 +74,7 @@
    },
    {
     "module": "lang.ru.ability",
-    "line": 1346,
+    "line": 1350,
     "nested": true,
     "demo": false
    }
@@ -144,12 +144,12 @@
    {
     "cls": "Lipid2Brain",
     "method": "sleep_now",
-    "line": 1287
+    "line": 1291
    },
    {
     "cls": "Lipid2Brain",
     "method": "process_input",
-    "line": 1304
+    "line": 1308
    }
   ],
   "brain/question.py": [

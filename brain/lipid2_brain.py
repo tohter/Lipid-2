@@ -109,9 +109,13 @@ class Lipid2Brain:
 
         self.hormone_gate = HormoneGate(self.hormones).load(self.memory_dir)
         # Реестр ПРОБЕЛОВ: что не знаю и зачем понадобилось. Писатель во
-        # Вселенную подключается при переносе кандидатов (promote), а не сейчас:
-        # сам по себе реестр прав на запись не имеет.
-        self.curiosity = Curiosity(self.memory_dir)
+        # Вселенную подключён СРАЗУ (иначе «дофамин может записать» означало бы
+        # «кандидат вечно лежит в карантине»), но права у него нет: сам метод
+        # _write_knowledge вызывается только из Curiosity.promote, а тот стоит
+        # за шлюзом dopamine_ok и за проверкой зацепки.
+        self.curiosity = Curiosity(self.memory_dir,
+                                   writer=self._write_knowledge)
+
         # Резолвер форм по именам ВСЕЛЕННОЙ (мир шире ядра: там есть сущности,
         # ещё не интегрированные в граф).
         self.lemmas_world = LemmaResolver()
@@ -1725,3 +1729,30 @@ class Lipid2Brain:
     @property
     def dopamine(self):
         return self.hormones.dopamine
+
+    def _write_knowledge(self, entities: Dict[str, Any]) -> int:
+        """Единственный путь кандидата из карантина во Вселенную.
+
+        Вызывается ТОЛЬКО из Curiosity.promote — то есть после двух замков:
+        dopamine_ok (ответ найден, тревога спокойна) и зацепка за известный
+        узел. Запись идёт merge_entity, а не присваиванием: кандидат беднее
+        того, что уже есть, и прямое присваивание стёрло бы ранее выученные
+        свойства того же слова (то же правило, что для Вики и Учителя).
+        """
+        written = 0
+        with world_transaction(self.world_filepath) as world:
+            ents = world.setdefault("entities", {})
+            for key, record in (entities or {}).items():
+                key = str(key).lower().strip()
+                if not key or not isinstance(record, dict):
+                    continue
+                record = dict(record)
+                record.setdefault("provenance", []).append(
+                    {"source": "staged_candidate", "at": int(time.time())})
+                before = ents.get(key)
+                ents[key] = merge_entity(before, record)
+                if before is None:
+                    written += 1
+                world.setdefault("unknown_words", {}).pop(key, None)
+        self._world_sig = None            # кэш мира обязан протухнуть
+        return written
