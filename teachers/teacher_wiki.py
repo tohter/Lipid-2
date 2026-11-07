@@ -25,6 +25,28 @@ _MORPH = None
 _MORPH_TRIED = False
 
 
+def strip_stress(text: str) -> str:
+    """Снимает постановые ударения (U+0301) — ОДНО правило на всех читателей Вики.
+
+    ЗАЧЕМ. Русская Википедия отдаёт вступление с ударными знаками над гласны-
+    ми. Морфология на них рассыпается: ЗАМЕРЕНО на живой статье «Курица» (5
+    знаков) — экстрактор давал «рица --HAS_PROPERTY--> шний» вместо «курица ->
+    домашний», и я записала это как слепоту канала (experiments/
+    wiki_channel_probe.py, первая версия). Снятие стояло ТОЛЬКО в
+    `_first_sentence`, то есть у того, кто про грабли помнил.
+
+    Почему функция, а не удаление снятия из `_first_sentence`: офлайновые
+    тесты каналa кормятся фикстурами tests/data/wiki_intros.json, в которых
+    живые ударения ЕСТЬ (6 штук), и зовут `_first_sentence` напрямую
+    (test_wiki_quality_contract.py). Правило теперь одно и в одном месте, а
+    вызывается оно и на входе (`_fetch_page`), и внутри разбора — чтобы ни у
+    кого не было шанса получить сырой текст.
+    """
+    if not text:
+        return text or ""
+    return text.replace("\u0301", "")
+
+
 def _get_morph():
     """pymorphy3 лениво; None — значит морфологии нет и канал уйдёт в остаток."""
     global _MORPH, _MORPH_TRIED
@@ -237,8 +259,10 @@ class WikiTeacher:
                 # pageid < 0 => страница не существует
                 return None
 
-            real_title = page.get("title", title)
-            extract = page.get("extract", "")
+            # Ударения снимаются ЗДЕСЬ, на входе: дальше по коду может поя-
+            # виться любой новый читатель, и он не обязан знать историю.
+            real_title = strip_stress(page.get("title", title))
+            extract = strip_stress(page.get("extract", ""))
 
             categories = []
             for cat in page.get("categories", []):
@@ -316,7 +340,7 @@ class WikiTeacher:
         """
         if not extract:
             return ""
-        text = re.sub(r"\u0301", "", extract.replace("\n", " ").strip())
+        text = strip_stress(extract).replace("\n", " ").strip()
         masked = [m.span() for m in self._ABBREV_RE.finditer(text)]
 
         def inside_abbrev(i):
@@ -495,6 +519,35 @@ class WikiTeacher:
         return props[:5]
 
 
+    def _is_self_name(self, category: str, concept: str) -> bool:
+        """Категория называет САМУ сущность (в любом падеже и числе).
+
+        «Огонь» для «огонь», «Киты» для «кит», «Столы» для «стол». Такая
+        категория не является родителем: X не бывает собственным родом. Именно
+        так рождались ЗАМЕРЕННЫЕ петли «огонь IS_A огонь», «солнце IS_A
+        солнце», «вода IS_A вода» (StaticKnowledge читает hierarchy как IS_A).
+
+        Сравнение по ЛЕММЕ, а не по строке: «киты» и «кит» — одна лемма. Если
+        pymorphy3 нет, остаётся грубый стем из core.lemma (тот же результат на
+        замеренных парах), и это loud: канал не должен тихо жиреть вниз.
+        """
+        cat = strip_stress(category).lower().strip()
+        con = strip_stress(concept).lower().strip()
+        if not cat or not con or " " in cat or " " in con:
+            # Многословная категория («Домашние куры») не может быть именем
+            # одиночного концепта; сравнивать их бессмысленно.
+            return False
+        if cat == con:
+            return True
+        morph = _get_morph()
+        if morph is not None:
+            try:
+                return morph.parse(cat)[0].lemma == morph.parse(con)[0].lemma
+            except Exception:                              # pragma: no cover
+                pass
+        from core.lemma import stem
+        return stem(cat) == stem(con)
+
     def _categories_to_hierarchy(self, categories: list, concept: str = "") -> list:
         """
         Отбирает из категорий Вики настоящие категории предмета.
@@ -508,8 +561,14 @@ class WikiTeacher:
         по частоте; до такого замера здесь стоит только фильтр мусора.
         """
         cleaned = []
+        loops = 0
         for cat in categories:
             c = cat.lower().strip()
+            # Категория-тёзка производит ребро «X IS_A X» (замерено: огонь,
+            # солнце, вода). Семантики для этого не нужно — форма слова.
+            if self._is_self_name(c, concept):
+                loops += 1
+                continue
             # отбрасываем служебные категории
             if any(w in c for w in self.IGNORE_CATEGORY_WORDS):
                 continue
@@ -523,6 +582,10 @@ class WikiTeacher:
                 cleaned.append(c)
 
         if cleaned:
+            if loops:
+                self._say(f"Википедия: у «{concept}» отброшено категорий-тёзок: "
+                          f"{loops} (иначе в графе появилось бы «{concept} IS_A "
+                          f"{concept}»)")
             return cleaned
         if not categories:
             return []

@@ -122,7 +122,7 @@
   "teachers/teacher_wiki.py": [
    {
     "module": "lang.ru.lemma",
-    "line": 94,
+    "line": 116,
     "nested": false,
     "demo": false
    }
@@ -263,16 +263,22 @@
   "teachers/teacher_wiki.py": [
    {
     "module": "pymorphy3",
-    "line": 35,
+    "line": 57,
+    "nested": true,
+    "demo": false
+   },
+   {
+    "module": "core.lemma",
+    "line": 548,
     "nested": true,
     "demo": false
    }
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 774,
-  "files": 61,
-  "checks_with_russian_message_only": 766
+  "checks_comparing_russian": 787,
+  "files": 62,
+  "checks_with_russian_message_only": 768
  },
  "totals": {
   "D_debt_files": 3,
@@ -289,10 +295,10 @@
   "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 643,
-  "P_ir_output_price": 774,
-  "P_ir_output_files": 61,
-  "P_msg_only_checks": 766,
-  "U_outer_seam_sites": 6,
+  "P_ir_output_price": 787,
+  "P_ir_output_files": 62,
+  "P_msg_only_checks": 768,
+  "U_outer_seam_sites": 7,
   "U_outer_seam_files": 6,
   "G_lang_import_sites": 10,
   "G_lang_import_files": 8
