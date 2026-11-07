@@ -179,10 +179,14 @@ ents = world.get("entities", {})
 obs = world.get("observations", {})
 unk = world.get("unknown_words", {})
 print(f"  сущностей {len(ents)}: {sorted(ents)}")
-# В observations ДВА РАЗНЫХ сорта записей: связи (head/relation/tail) и
-# записи любопытства («егор|curiosity», у них этих полей НЕТ). Первый прогон
-# печатал все одним циклом и выдал три строки «None --None--> None» — мёртвый
-# вывод, в котором настоящая связь тонула (тот же класс, что урок 54).
+# В observations ИСТОРИЧЕСКИ ДВА сорта записей: связи (head/relation/tail)
+# и старые записи любопытства («егор|curiosity», у них этих полей НЕТ) — такие
+# остались в базах, записанных до 08.11, когда свидетельство любопытства
+# писали без связи. С 08.11 любопытство пишет те же связи, что и обучающий
+# из рассказов (tests/test_evidence_link_contract.py), но фильтр остаётся:
+# первый прогон печатал всё одним циклом и выдал три строки
+# «None --None--> None» — мёртвый вывод, в котором настоящая связь тонула
+# (тот же класс, что урок 54).
 links = {k: v for k, v in obs.items() if isinstance(v, dict) and v.get("head")}
 curios = {k: v for k, v in obs.items() if k not in links}
 print(f"  связей-наблюдений {len(links)} (плюс {len(curios)} записей любопытства):")

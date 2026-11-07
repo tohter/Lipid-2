@@ -2,7 +2,7 @@ import os
 import json
 import re
 import time
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Импортируем вынесенный IR-парсер
 from lang.ru.questions import IRParser
@@ -19,7 +19,8 @@ from core.transitions import (TransitionTable, merge_json,
 from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
-from core.records import (action_name, meaningful_categories, merge_entity,
+from core.records import (action_name, fact_weight, meaningful_categories,
+                          merge_entity,
                           name_variants, normalize_actions,
                           normalize_provenance, observation_weight,
                           resolve_by_variant, same_word, strip_self_name)
@@ -365,17 +366,53 @@ class Lipid2Brain:
 
     def _record_observation(self, concept: str, data: dict, confidence: float,
                             evidence: str, source: str):
-        """Записывает наблюдение (evidence + confidence) в world["observations"].
+        """Записывает КАЖДЫЙ факт как СВЯЗЬ с числом достоверности.
 
         Наблюдения — это то, ЧТО МЫ ВИДЕЛИ и насколько были уверены. Они
         отличаются от entities (что мы ЗНАЕМ). Без наблюдений нельзя отличить
         факт из Вики (одно свидетельство) от факта, подтверждённого трижды.
+
+        ПОЧЕМУ ПЕРЕПИСАНО (замер 08.11, tests/test_evidence_link_contract.py).
+        Прежний вариант писал ключ f"{concept}|curiosity" и три поля —
+        confidence, support, provenance. СЛЕДСТВИЯ, ИЗМЕРЕННЫЕ ЖИВЬЁМ:
+          а) StaticKnowledge собирает граф рассуждения только из записей с
+             head/tail. «Мяч — игрушка» с conf=0.9 давала knows('мяч')=False:
+             любопытство УЧИЛОСЯ, а рассуждение этого не видело. Это и есть
+             настоящая причина, по которой лестница стоит на 1/7.
+          б) Ключ — одно слово, поэтому ДВА РАЗНЫХ факта про мяч сваливались
+             в одну запись: «мяч игрушка» (0.4) и «мяч катится» (0.9) дали
+             support=2, conf=0.9. Достоверность росла от ПОСТОРОННИХ
+             свидетельств — ровно то, что запретил Хозяин.
+          в) weight в записи отсутствовал (None), хотя единая формула есть.
+        Нынешний формат — ТОТ ЖЕ, что у обучающего из рассказов
+        (brain/learner.py), а не свой собственный: два писателя с разными
+        схемами наблюдений — это читатель, который умеет читать только одного.
         """
-        key = f"{concept}|curiosity"
         now = int(time.time())
         prov_entry = {"source": source or "unknown",
                       "evidence": (evidence or "")[:200],
                       "at": now}
+        # Один факт = одна запись. Поля сущностей разворачиваются в рёбра теми
+        # же именами отношений, что и весь мир: hierarchy -> IS_A, actions ->
+        # CAN_DO (см. brain/simulator.py, где мир читается обратно).
+        links: List[Tuple[str, str, str]] = []
+        for parent in (data.get("hierarchy") or []):
+            parent = str(parent).strip().lower()
+            if parent:
+                links.append((concept.strip().lower(), "IS_A", parent))
+        for act in (data.get("actions") or []):
+            act = str(act.get("name", "") if isinstance(act, dict) else act)
+            act = act.strip().lower()
+            if act:
+                links.append((concept.strip().lower(), "CAN_DO", act))
+        for prop in (data.get("properties") or []):
+            prop = str(prop).strip().lower()
+            if prop:
+                links.append((concept.strip().lower(), "HAS_PROPERTY", prop))
+        if not links:
+            # Связи нет — записывать нечего. Молча создать «запись любопытства»
+            # без хвоста значило бы вернуть дыру (а): она невидима рассуждению.
+            return
         # Транзакция: чтение и запись под ОДНИМ замком. Иначе фоновое обучение
         # и Учитель-агент могли пересечься между чтением и записью — и один
         # снимок молча стёр правки другого.
@@ -388,18 +425,34 @@ class Lipid2Brain:
         target = self._staging_target or self.world_filepath
         with world_transaction(target) as world:
             observations = world.setdefault("observations", {})
-            obs = observations.get(key)
-            if obs:
-                # Повторное свидетельство: support растёт, confidence берём максимум
-                cur_conf = max(float(obs.get("confidence", 0)), confidence)
-                supports = int(obs.get("support", 1)) + 1
-                prov = obs.setdefault("provenance", [])
-                prov.append(prov_entry)
-                observations[key] = {"confidence": cur_conf, "support": supports,
-                                     "provenance": prov}
-            else:
-                observations[key] = {"confidence": confidence, "support": 1,
-                                     "provenance": [prov_entry]}
+            for head, relation, tail in links:
+                key = f"{head}|{relation}|{tail}"
+                obs = observations.get(key)
+                if obs is None:
+                    observations[key] = {
+                        "head": head, "relation": relation, "tail": tail,
+                        "confidence": float(confidence), "negated": False,
+                        "evidence": (evidence or "")[:220],
+                        "source": source or "unknown",
+                        "support": 1, "first_seen": now,
+                        "provenance": [prov_entry],
+                        # ВЕС В ДАННЫХ, а не в голове процесса: без него
+                        # гипотеза и проверка неразличимы (ср. learner).
+                        "weight": fact_weight(confidence, False, relation, 1),
+                    }
+                    continue
+                # Повтор ТОЙ ЖЕ связи — подтверждение. Чужая связь этого узла
+                # сюда не попадает: у неё другой ключ.
+                obs["support"] = int(obs.get("support", 1)) + 1
+                obs["confidence"] = max(float(obs.get("confidence", 0.0)),
+                                        float(confidence))
+                obs.setdefault("provenance", []).append(prov_entry)
+                # weight — ПРОИЗВОДНАЯ от (confidence, support, negated),
+                # пересчитывается целиком, а не «максимумом»: иначе support
+                # вырос бы, а число осталось старым.
+                obs["weight"] = fact_weight(obs["confidence"],
+                                            obs.get("negated"), relation,
+                                            obs["support"])
 
     # ── РАБОТА С ВСЕЛЕННОЙ ─────────────────────────────────
 
