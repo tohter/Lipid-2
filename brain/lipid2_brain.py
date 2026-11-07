@@ -20,7 +20,7 @@ from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
 from core.records import (action_name, add_witness, fact_weight,
-                          ground_of,
+                          ground_of, lineage_of,
                           meaningful_categories,
                           merge_entity,
                           name_variants, normalize_actions,
@@ -391,9 +391,19 @@ class Lipid2Brain:
         схемами наблюдений — это читатель, который умеет читать только одного.
         """
         now = int(time.time())
+        # ПРОИСХОЖДЕНИЕ берётся из ТОГО, что учитель сказал сам, а не
+        # выдумывается из концепта (tests/test_lineage_contract.py, тест 14).
+        # ЗАМЕР: учитель Википедии кладёт заголовок статьи в
+        # base_entity["title"], он доезжает сюда в data — и раньше терялся,
+        # из-за чего статья «Кит» и пять пересказов модели были неразличимы,
+        # а support рос от объёма цитирования.
+        document = str(data.get("title") or data.get("document") or "").strip()
+        lineage = lineage_of(source, document)
         prov_entry = {"source": source or "unknown",
                       "evidence": (evidence or "")[:200],
                       "at": now}
+        if lineage:
+            prov_entry["lineage"] = lineage
         # Один факт = одна запись. Поля сущностей разворачиваются в рёбра теми
         # же именами отношений, что и весь мир: hierarchy -> IS_A, actions ->
         # CAN_DO (см. brain/simulator.py, где мир читается обратно).
@@ -445,6 +455,10 @@ class Lipid2Brain:
                         # проверка различимы только по числу, которое сам
                         # канал себе и выбрал.
                         "ground": ground_of(source),
+                        # ОТКУДА ПРИЕХАЛО. Пусто — если назвать нечем (модель,
+                        # безымянный текст): свидетельство сохранится, но
+                        # достоверности не прибавит.
+                        "lineage": lineage,
                         # ВЕС В ДАННЫХ, а не в голове процесса: без него
                         # гипотеза и проверка неразличимы (ср. learner).
                         "weight": fact_weight(confidence, False, relation, 1),
@@ -456,7 +470,7 @@ class Lipid2Brain:
                 # tests/test_repeat_witness_contract.py).
                 add_witness(obs, source=source, evidence=evidence,
                             confidence=confidence, negated=False,
-                            relation=relation)
+                            relation=relation, document=document)
 
     # ── РАБОТА С ВСЕЛЕННОЙ ─────────────────────────────────
 

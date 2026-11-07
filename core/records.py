@@ -735,6 +735,117 @@ def record_ground(record: Optional[dict]) -> str:
     return best
 
 
+# ── ПРОИСХОЖДЕНИЕ СВИДЕТЕЛЬСТВА (lineage) ────────────────────────────
+#
+# ЗАЧЕМ. Кирпич 2 запретил греть связь от ПЕРЕСКАЗА, сравнивая КАНАЛ и
+# ТЕКСТ. Жозефина (experiments/ADVISOR_GROUND_JO.txt) назвала это дыркой:
+# «Система увидит четыре разных текста и два разных источника. На самом
+# деле у неё может быть одно первоначальное основание». ЕЁ ПРЕДСКАЗАНИЕ
+# ИЗМЕРЕНО ЖИВЬЁМ: цепочка «статья -> пересказ модели -> перефраз ->
+# пересказ перефраза» подняла support 1 -> 5 и вес 160 -> 190 при ОДНОМ
+# основании. Семь высказываний о связи «дождь CAN_DO гасить» (два рассказа,
+# три канала-пересказа, слово Хозяина) дали support = 7 при ТРЁХ различных
+# основаниях: четыре «подтверждения» нажиты одним способом производства.
+#
+# ПОЧЕМУ ЭТО НЕ ВЫДУМАННОЕ ПОЛЕ (замер). Происхождение УЖЕ есть в данных,
+# но писатель его ВЫБРАСЫВАЕТ: учитель Википедии кладёт заголовок статьи в
+# base_entity["title"], он доезжает до _record_observation в аргументе data
+# и исчезает — в записи остаются head/relation/tail/confidence/evidence/
+# source/support/ground/weight, ссылки на документ НЕТ. Назвать происхождение
+# могут три канала из семи: Хозяин (он своё начало), статья Вики (заголовок
+# есть), рассказ из файла (ЕСЛИ вызывающий назвал файл). У модели — НИЧЕГО:
+# состав обучения неизвестен, и признать её ответ независимым от той же
+# Википедии нечем.
+INDEPENDENT = "independent"      # происхождение названо и встречается впервые
+DEPENDENT = "dependent"          # такое происхождение уже было
+UNKNOWN = "unknown"              # назвать нечем
+
+# Хозяин здесь не документ: его слово является своим собственным началом,
+# а не цитатой из чего-то.
+_OWNER_SOURCES = frozenset({"user", "owner"})
+
+
+def lineage_of(source: str, document: str = "") -> str:
+    """Откуда ПРИЕХАЛО это свидетельство. Пустая строка = нечем назвать.
+
+    ЗДЕСЬ НЕТ ВЫДУМКИ. Если документа нет, функция возвращает ПУСТО, а не
+    канон из имени концепта: ЗАМЕРЕНО, что учитель Википедии знает заголовок
+    своей статьи и передаёт его, а писатель терял. Выводить происхождение из
+    head значило бы слить в одно основание статьи «Кит» и «Киты» — или
+    раздвоить одну статью в двух каналах, как повезёт.
+
+    КАНАЛ ВМЫСЛЕ НЕ ВХОДИТ (это не стиль, это измеренная дыра). Первая
+    реализация делала ключ doc:<канал>:<документ>, и тест
+    test_lineage_contract 9 поймал следствие: модель, объявившая источник
+    «Кит», давала ОТДЕЛЬНОЕ основание рядом со статьёй «Кит», прочитанной
+    нами, — то есть ровно то самое «четыре текста, одно основание», против
+    чего весь механизм. Значит идентичность определяется ДОКУМЕНТОМ: кто
+    именно его пересказал, записано в source отдельной строкой журнала.
+
+    ЧЕСТНАЯ ЦЕНА: одно и то же имя у двух разных изданий («Кит» в Вики и
+    «Кит» в словаре) сольётся в одно основание, и второе подтверждение мы
+    потеряем. Теряем молчание, а не наживаем уверенность — по закону проекта
+    это правильный край.
+
+    Канал без документа НЕ получает «doc:<канал>»: «wiki» и «wiki» были бы
+    тогда двумя основаниями, хотя это одна и та же статья, прочитанная
+    дважды.
+    """
+    key = str(source or "").strip().lower()
+    if key.startswith("teacher:"):
+        key = key.split(":", 1)[1].strip().lower()
+    if key in _OWNER_SOURCES:
+        return "owner"
+    doc = _norm_phrase(document)
+    if not doc:
+        return ""
+    return f"doc:{doc}"
+
+
+def independent_bases(record: Optional[dict]) -> int:
+    """СКОЛЬКО РАЗЛИЧНЫХ ОСНОВАНИЙ стоит за связью — а не сколько строк.
+
+    Это то, чем обязана питаться достоверность. Старый support считал
+    СТРОКИ журнала: на измеренной цепочке это 7 строк против 3 оснований.
+    """
+    if not isinstance(record, dict):
+        return 0
+    bases = set()
+    own = str(record.get("lineage") or "").strip()
+    if own:
+        bases.add(own)
+    for prov in (record.get("provenance") or []):
+        if isinstance(prov, dict):
+            lin = str(prov.get("lineage") or "").strip()
+            if lin:
+                bases.add(lin)
+    return len(bases)
+
+
+def witness_state(record: Optional[dict], source: str, evidence: str,
+                  document: str = "") -> str:
+    """INDEPENDENT / DEPENDENT / UNKNOWN для предстоящего свидетельства.
+
+    UNKNOWN ОТДЕЛЁН от DEPENDENT намеренно (состояние придумала не я, а
+    Жозефина, и цена у него другая): зависимость НЕ УСТАНОВЛЕНА — это не
+    «тот же документ», а «мы не знаем». Такое свидетельство СОХРАНЯЕТСЯ
+    (его ещё можно перепроверить, когда происхождение выяснится), но НЕ
+    греет: необоснованное повышение доверия и есть самообман.
+    """
+    lin = lineage_of(source, document)
+    if not lin:
+        return UNKNOWN
+    if not isinstance(record, dict):
+        return INDEPENDENT
+    if str(record.get("lineage") or "").strip() == lin:
+        return DEPENDENT
+    for prov in (record.get("provenance") or []):
+        if isinstance(prov, dict) and \
+                str(prov.get("lineage") or "").strip() == lin:
+            return DEPENDENT
+    return INDEPENDENT
+
+
 def stamp_ground(record: dict) -> dict:
     """Записать в запись её основание, ВЫЧИСЛИВ его, а не приняв на веру.
 
@@ -777,10 +888,10 @@ def same_witness(obs: Optional[dict], source: str, evidence: str) -> bool:
 
 def add_witness(obs: dict, *, source: str, evidence: str, confidence: float,
                 negated: bool = False, relation: str = "",
-                at: Optional[int] = None) -> bool:
+                at: Optional[int] = None, document: str = "") -> bool:
     """
     Одно СВИДЕТЕЛЬСТВО к уже существующей связи. Возвращает True, если
-    достоверность выросла, False — если это ПЕРЕСКАЗ.
+    достоверность выросла, False — если это ПЕРЕСКАЗ или НЕИЗВЕСТНО ОТКУДА.
 
     ПОЧЕМУ ПРАВИЛО ЖИВЁТ ЗДЕСЬ, А НЕ В ПИСАТЕЛЯХ (слова Хозяина 08.11 +
     замер живьём). Хозяин запретил превращать одну историю в пожизненное
@@ -794,28 +905,108 @@ def add_witness(obs: dict, *, source: str, evidence: str, confidence: float,
     расходится — этот класс дыр мы чинили кирпичом раньше, поэтому закон
     стоит в одном месте и вызывается обоими.
 
-    ОТДЕЛЬНЫМ считается свидетельство, у которого отличается ИСТОЧНИК или
-    ОСНОВАНИЕ. Цена правила названа и принята сознательно: одинаково
-    сформулированные разные события (сегодня и вчера, одним каналом) мы НЕ
-    согреем. Мы теряем часть подтверждений и никогда не наживаем ложную
-    уверенность — ложная связь хуже пропущенной (закон проекта), а ложная
-    уверенность в связи хуже молчаливой дыры: её нечем перепроверить, потому
-    что число выглядит заработанным.
+    ОТДЕЛЬНЫМ считалось свидетельство, у которого отличается ИСТОЧНИК или
+    ОСНОВАНИЕ (кирпич 2). Этого оказалось мало, и это измерено, а не
+    угадано: Жозефина предсказала, что четыре текста с одним первоначальным
+    основанием дадут четыре подтверждения. Прогнано живьём — цепочка «статья
+    Вики -> пересказ модели -> перефраз -> пересказ перефраза» подняла
+    support 1 -> 5 и вес 160 -> 190. Отличие текстов не спорно: пересказ
+    отличается от оригинала ВСЕГДА.
+
+    НОВОЕ ПРАВИЛО: греет только НЕЗАВИСИМОСТЬ, которую можно НАЗВАТЬ
+    (lineage_of). Совпало происхождение — DEPENDENT, не греет. Назвать
+    нечем — UNKNOWN, тоже не греет, но свидетельство ОСТАЁТСЯ в журнале:
+    мы отказываемся от необоснованного повышения доверия, но не от данных,
+    которые можно перепроверить, когда происхождение выяснится.
+
+    ЦЕНА ПРАВИЛА (замерена ДО правки, слова Хозяина 08.11: «поехали»).
+    На семи высказываниях о «дождь CAN_DO гасить» support 7 -> 3; на цепочке
+    пересказов 5 -> 1. Молчание каналов без документа (модель, безымянный
+    текст) становится нормой: их ответы больше НИКОГДА не поднимут
+    достоверность сами по себе. Мы теряем часть подтверждений — и никогда не
+    наживаем ложную уверенность: ложная связь хуже пропущенной (закон
+    проекта), а ложная уверенность в связи хуже молчаливой дыры, потому что
+    её нечем перепроверить — число выглядит заработанным.
     """
+    lineage = lineage_of(source, document)
+    state = witness_state(obs, source, evidence, document)
     if same_witness(obs, source, evidence):
+        # Дословное повторение того же опыта. Новую строку в журнал не
+        # пишем: строка, которая ничего не измеряет, раздувает то самое
+        # число, против которого весь механизм.
+        # ЕДИНСТВЕННОЕ исключение — УТОЧНЕНИЕ ДАННЫХ: раньше происхождение
+        # назвать было нечем, теперь есть чем. Иначе обещание «UNKNOWN
+        # сохраняется и будет пересмотрено» осталось бы текстом —
+        # переклассифицировать строку было бы нечем. ДОСТОВЕРНОСТЬ ЭТО НЕ
+        # ГРЕЕТ: число подтверждений остаётся числом подтверждений, мы лишь
+        # перестали притворяться, что не знаем, откуда строка приехала.
+        if not lineage:
+            return False
+        touched = False
+        # ВЕРХНИЙ УРОВЕНЬ ЗАПИСИ. Первый свидетель у обучающего хранится
+        # не в журнале, а полями source/evidence самой записи. Замер 08.11:
+        # поиск только по журналу делал уточнение ВЕРХНЕГО уровня
+        # невозможным — то есть «назови происхождение позже» работало лишь
+        # для второго и дальше свидетельства, а первое оставалось вечно
+        # безымянным.
+        if (not str(obs.get("lineage") or "").strip()
+                and _norm_phrase(obs.get("source", "")) == _norm_phrase(source)
+                and _norm_phrase(obs.get("evidence", "")) == _norm_phrase(evidence)):
+            obs["lineage"] = lineage
+            touched = True
+        for prov in (obs.get("provenance") or []):
+            if not isinstance(prov, dict):
+                continue
+            if _norm_phrase(prov.get("source", "")) != _norm_phrase(source):
+                continue
+            if _norm_phrase(prov.get("evidence", "")) != _norm_phrase(evidence):
+                continue
+            if not str(prov.get("lineage") or "").strip():
+                prov["lineage"] = lineage
+                touched = True
+        if not touched:
+            return False
+        if not str(obs.get("lineage") or "").strip():
+            obs["lineage"] = lineage
+        # ЕДИНОЕ ПРАВИЛО ЗАСЧЁТА (и оно же отвечает на вопрос «зачем тогда
+        # хранить UNKNOWN»): подтверждение засчитывается ОДИН РАЗ — в момент,
+        # когда независимость НАЗВАНА. Пришла строка без происхождения —
+        # молчим; назвали её позже тем же документом — вот теперь зачёт, и
+        # ровно один. Если бы зачёт не происходил вовсе, смысл хранить
+        # неопознанное свидетельство терялся бы: число навсегда осталось бы
+        # враньём в меньшую сторону, а Вранье в большую мы как раз лечим.
+        if state == INDEPENDENT:
+            obs["support"] = int(obs.get("support", 1)) + 1
+            obs["ground"] = record_ground(obs)
+            obs["weight"] = fact_weight(obs["confidence"],
+                                        obs.get("negated"),
+                                        relation, obs["support"])
+            return True
+        obs["ground"] = record_ground(obs)
         return False
-    obs["support"] = int(obs.get("support", 1)) + 1
+    prov = obs.setdefault("provenance", [])
+    entry = {"source": source or "unknown", "evidence": (evidence or "")[:200]}
+    # Происхождение пишется В ЖУРНАЛЕ и дописывается в верх записи, а не
+    # ЗАМЕНЯЕТ его: запись обязана помнить и первое основание, и все
+    # пришедшие позже, иначе independent_bases() видит только последнее.
+    if lineage:
+        entry["lineage"] = lineage
+    if at is not None:
+        entry["at"] = int(at)
+    prov.append(entry)
+    if lineage and not str(obs.get("lineage") or "").strip():
+        obs["lineage"] = lineage
     # Уверенность берём ЛУЧШЕЕ из свидетельств, а не последнее: второй проход
     # с более слабым разбором не должен отменять уверенный.
     obs["confidence"] = max(float(obs.get("confidence", 0.0)),
                             float(confidence))
     if negated:
         obs["negated"] = True
-    prov = obs.setdefault("provenance", [])
-    entry = {"source": source or "unknown", "evidence": (evidence or "")[:200]}
-    if at is not None:
-        entry["at"] = int(at)
-    prov.append(entry)
+    # ЕДИНСТВЕННОЕ МЕСТО, где растёт достоверность: только НАЗВАННАЯ
+    # независимость. UNKNOWN и DEPENDENT проходят мимо — свидетельство уже
+    # лежит в журнале выше, но числа не касается.
+    if state == INDEPENDENT:
+        obs["support"] = int(obs.get("support", 1)) + 1
     # ОСНОВАНИЕ ПЕРЕСЧИТЫВАЕТСЯ ПОСЛЕ КАЖДОГО СВИДЕТЕЛЯ, а не берётся из
     # приехавшего поля: иначе канал, приславший "ground": "rule", стал бы
     # правилом (тест 6). Рост support сам по себе статуса НЕ даёт — за это
@@ -826,7 +1017,64 @@ def add_witness(obs: dict, *, source: str, evidence: str, confidence: float,
     # число осталось старым.
     obs["weight"] = fact_weight(obs["confidence"], obs.get("negated"),
                                 relation, obs["support"])
-    return True
+    return state == INDEPENDENT
+
+
+def merge_observation(cur: dict, incoming: dict) -> dict:
+    """Слить ДВА снимка ОДНОЙ связи (чужой процесс писал тот же файл).
+
+    ПРАВИЛО ЖИВЁТ ЗДЕСЬ, а не в писателе, по той же причине, по которой
+    рядом живёт add_witness: brain/learner.py держал свою копию слияния и
+    переносил из неё support/confidence/negated, а ПРОИСХОЖДЕНИЕ И ЖУРНАЛ —
+    НЕТ. Замер 08.11: отказавшее (независимость не названа) свидетельство
+    добавлялось в память, а после записи на диске его не оказывалось — то
+    есть обещание «сохраняем и перепроверим позже» было текстом. Молча
+    потерянные данные хуже потерянных громко: их некому восстановить.
+
+    support после слияния — НЕ сумма и не «+1": это число засчитанных
+    подтверждений, и оно обязано согласоваться с числом РАЗЛИЧНЫХ
+    названных оснований в объединённом журнале (иначе два процесса,
+    независимо засчитавшие одно и то же основание, удвоили бы его).
+    """
+    if not isinstance(cur, dict):
+        return incoming
+    if not isinstance(incoming, dict):
+        return cur
+    cur["support"] = max(int(cur.get("support", 1)),
+                         int(incoming.get("support", 1)))
+    cur["confidence"] = max(float(cur.get("confidence", 0)),
+                            float(incoming.get("confidence", 0)))
+    cur["negated"] = bool(cur.get("negated")) or bool(incoming.get("negated"))
+    # ЖУРНАЛ и ПРОИСХОЖДЕНИЕ — аддитивно, по той же цене, что события и
+    # ожидания ниже по файлу: чужой рассказ не должен теряться.
+    seen = {(_norm_phrase(str(p.get("source", ""))),
+             _norm_phrase(str(p.get("evidence", ""))))
+            for p in (cur.get("provenance") or []) if isinstance(p, dict)}
+    prov = cur.setdefault("provenance", [])
+    for p in (incoming.get("provenance") or []):
+        if not isinstance(p, dict):
+            continue
+        mark = (_norm_phrase(str(p.get("source", ""))),
+                _norm_phrase(str(p.get("evidence", ""))))
+        if mark in seen:
+            continue
+        seen.add(mark)
+        prov.append(p)
+    if not str(cur.get("lineage") or "").strip():
+        cur["lineage"] = str(incoming.get("lineage") or "").strip()
+    cur["support"] = max(int(cur["support"]), independent_bases(cur))
+    # weight ПЕРЕСЧИТЫВАЕТСЯ от слитых полей, а не хранится «максимумом
+    # двух весов»: weight — ПРОИЗВОДНАЯ от (confidence, support, negated).
+    # При ОТРИЦАНИИ пересчёт обязывает число УПАСТЬ: иначе высокий вес
+    # остался бы лежать рядом с negated=True — тихая порча, из-за которой
+    # формулу и перенесли в данные.
+    rel = str(cur.get("relation", "") or incoming.get("relation", ""))
+    merged_w = fact_weight(cur["confidence"], cur["negated"], rel,
+                           cur["support"])
+    cur["weight"] = max(int(merged_w), int(cur.get("weight", 0) or 0)) \
+        if not cur.get("negated") else merged_w
+    cur["ground"] = record_ground(cur)
+    return cur
 
 
 def merge_unknown_entry(prev: Optional[dict], new: Optional[dict]) -> dict:

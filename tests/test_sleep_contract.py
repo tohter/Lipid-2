@@ -486,10 +486,13 @@ class TestWeightLivesInData(unittest.TestCase):
         lr = Learner(load_world=self._read, save_world=self._write)
         lr.learn_from_text("Кошка боится воды.", source="t")
         first = self._read()["observations"]["кошка|CAN_DO|бояться"]["weight"]
-        # ВТОРОЕ свидетельство — ИЗ ДРУГОГО КАНАЛА. Прежний вариант подавал
-        # ту же фразу с тем же source, а это ПЕРЕСКАЗ: с 08.11 он не греет
-        # (tests/test_repeat_witness_contract.py, слово Хозяина про мяч).
-        lr.learn_from_text("Кошка боится воды.", source="wiki")
+        # ВТОРОЕ свидетельство — из ДРУГОГО НАЗВАННОГО ДОКУМЕНТА. Прежний
+        # вариант подавал ту же фразу с тем же source (пересказ), затем — с
+        # другим source без документа. Оба не греют с 08.11: канал сам по
+        # себе не основание, основанием бывает документ
+        # (tests/test_lineage_contract.py).
+        lr.learn_from_text("Кошка боится воды.", source="t",
+                           document="zoologicheskaya-lektsiya-2")
         second = self._read()["observations"]["кошка|CAN_DO|бояться"]["weight"]
         self.assertGreater(second, first,
                            "второе свидетельство обязано быть видно числом")

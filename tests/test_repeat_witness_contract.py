@@ -138,30 +138,72 @@ class TestRetellingIsNotProof(unittest.TestCase):
                          "читать как число наблюдений")
 
     # ── 2. отдельное свидетельство греет ────────────────────────
-    def test_5_other_sentence_is_a_witness(self):
-        """ДРУГАЯ фраза про ту же связь — подтверждение, и оно видно числом."""
+    def test_5_other_document_is_a_witness(self):
+        """Подтверждением стала ДРУГАЯ НАЗВАННАЯ книга, а не другая фраза.
+
+        ПЕРЕПИСАНО 08.11 вместе с законом lineage
+        (tests/test_lineage_contract.py). Прежняя формулировка — «другая
+        фраза про ту же связь есть подтверждение» — измерена и оказалась
+        дырой: Жозефина предсказала, что четыре текста с одним
+        первоначальным основанием дадут четыре подтверждения, и цепочка
+        «статья -> пересказ модели -> перефраз» подняла support 1 -> 5 при
+        ОДНОМ основании. Пересказ отличается от оригинала ВСЕГДА, значит
+        различие текстов не спорный аргумент, а самый лёгкий способ надуть
+        достоверность.
+
+        Цена принята: второй прогон того же рассказа без имени файла больше
+        НЕ греет. Греют два разных названных документа.
+        """
         lr = self._learner()
         lr.learn_from_text("Дождь гасит огонь.", source="text",
-                           allow_teacher=False)
+                           allow_teacher=False,
+                           document="рассказ-про-костёр.txt")
         before = observation_weight(next(iter(self._obs().values())))
-        lr.learn_from_text("Дождь способен гасить пламя и огонь.", source="text",
-                           allow_teacher=False)
+        lr.learn_from_text("Дождь способен гасить пламя и огонь.",
+                           source="text", allow_teacher=False,
+                           document="учебник-физики-5")
         warmed = [k for k, v in self._obs().items()
                   if v.get("head") == "дождь" and v.get("tail") == "гасить"]
         self.assertTrue(warmed, "связь потерялась при втором факте")
         rec = self._obs()[warmed[0]]
-        self.assertGreater(int(rec["support"]), 1,
-                           "второе независимое свидетельство не стало "
-                           "подтверждением")
+        self.assertEqual(2, int(rec["support"]),
+                         "два названных документа не стали двумя основаниями")
         self.assertGreater(observation_weight(rec), before,
                            "подтверждение не добавило достоверности")
 
-    def test_6_same_words_other_channel_is_a_witness(self):
-        """Те же слова ИЗ ДРУГОГО КАНАЛА — отдельное свидетельство.
+    def test_5b_anonymous_second_sentence_no_longer_warms(self):
+        """Две безымянные фразы — НЕ два основания: цена нового закона.
 
-        Гасит ли это спор? Нет, и вот почему: Википедия и рассказ Хозяина
-        говорят одними словами о разных основаниях, и совпадение двух
-        независимых каналов — это и есть то, что повышает уверенность.
+        Это ОБРАТНАЯ сторона теста 5 и она дорогая: раньше здесь support
+        рос. Отличить независимый рассказ от пересказа той же статьи нам
+        нечем, пока вызывающий не назвал документ, — поэтому молчание
+        выбрано вместо уверенности, которую нечем перепроверить.
+        """
+        lr = self._learner()
+        lr.learn_from_text("Дождь гасит огонь.", source="text",
+                           allow_teacher=False)
+        lr.learn_from_text("Дождь способен гасить пламя и огонь.",
+                           source="text", allow_teacher=False)
+        rec = [v for v in self._obs().values()
+               if v.get("head") == "дождь" and v.get("tail") == "гасить"]
+        self.assertTrue(rec, "связь потерялась")
+        self.assertEqual(1, int(rec[0]["support"]),
+                         "безымянные тексты по-прежнему греют support — "
+                         "дыра, названная Жозефиной, вернулась")
+
+    def test_6_channel_names_alone_are_not_two_bases(self):
+        """Два канала без документа — НЕ два основания. ПРАВИЛО ПЕРЕМЕНЕНО.
+
+        Прежняя версия этого теста запирала обратное («совпадение двух
+        каналов — самый сильный из доступных нам аргументов») и была права
+        ровно в одной части: независимые каналы действительно независимы.
+        Ошибка была в слове «канал»: НЕЗАВИСИМОСТЬ — свойство ДОКУМЕНТА, а
+        не названия трубы. Замер: «wiki» и «text» с одним и тем же
+        предложением могли быть переписаны с одной страницы, и отличить это
+        нам было нечем; support при этом рос до 7 там, где оснований 3.
+
+        Слово Хозяина остаётся отдельным основанием — он своё начало, его
+        нельзя «переписать с той же статьи», и это закреплено ниже.
         """
         lr = self._learner()
         lr.learn_from_text("Дождь гасит огонь.", source="text",
@@ -169,9 +211,43 @@ class TestRetellingIsNotProof(unittest.TestCase):
         lr.learn_from_text("Дождь гасит огонь.", source="wiki",
                            allow_teacher=False)
         rec = self._obs()["дождь|CAN_DO|гасить"]
+        self.assertEqual(1, int(rec["support"]),
+                         "два безымянных канала согрели связь: название "
+                         "канала снова стало основанием")
+        # ЖУРНАЛ у обучающего ведётся с ВТОРОГО свидетельства: первое лежит
+        # верхним уровнем записи (source/evidence), и это его законное место
+        # — иначе одна и та же строка хранилась бы дважды.
+        self.assertEqual("text", rec.get("source"),
+                         "первое свидетельство не осталось верхним уровнем")
+        self.assertEqual(1, len(rec.get("provenance") or []),
+                         "свидетельство выброшено из журнала: греть не "
+                         "греет, но данные терять нельзя")
+        self.assertEqual("wiki", (rec["provenance"][0] or {}).get("source"),
+                         "отказавшее свидетельство не сохранено")
+
+    def test_6b_two_named_documents_are_two_bases(self):
+        """Независимость по-прежнему учится — когда её можно назвать."""
+        lr = self._learner()
+        lr.learn_from_text("Дождь гасит огонь.", source="text",
+                           allow_teacher=False, document="рассказ-1")
+        lr.learn_from_text("Дождь гасит огонь.", source="wiki",
+                           allow_teacher=False, document="статья-дождь")
+        rec = self._obs()["дождь|CAN_DO|гасить"]
         self.assertEqual(2, int(rec["support"]),
-                         "совпадение двух каналов не засчитано — а это "
-                         "самый сильный из доступных нам аргументов")
+                         "два разных названных документа перестали быть "
+                         "двумя основаниями — закон перемудрил")
+
+    def test_6c_owner_word_is_its_own_basis(self):
+        """Слово Хозяина — отдельное основание при том же тексте."""
+        lr = self._learner()
+        lr.learn_from_text("Дождь гасит огонь.", source="text",
+                           allow_teacher=False)
+        lr.learn_from_text("Дождь гасит огонь.", source="user",
+                           allow_teacher=False)
+        rec = self._obs()["дождь|CAN_DO|гасить"]
+        self.assertEqual(2, int(rec["support"]),
+                         "слово Хозяина слито с чужим текстом: он своё "
+                         "начало, а не чей-то пересказ")
 
 
 class TestRuleLivesInOnePlace(unittest.TestCase):
@@ -196,7 +272,13 @@ class TestRuleLivesInOnePlace(unittest.TestCase):
             return json.load(fh)["observations"]
 
     def test_7_brain_respects_the_same_rule(self):
-        """Любопытство обязано греться тем же законом, что и обучающий."""
+        """Любопытство обязано греться тем же законом, что и обучающий.
+
+        Ветка «греет» переписана 08.11 под закон lineage: раньше «другой
+        раз» от того же канала поднимал support, теперь это пересказ без
+        названия. Мозг обязан греться от НАЗВАННОГО документа (заголовок
+        статьи доезжает в data["title"]), а не от смены формулировки.
+        """
         self.brain._record_observation("мяч", {"hierarchy": ["игрушка"]},
                                        confidence=0.5, evidence="один рассказ",
                                        source="llm")
@@ -216,18 +298,50 @@ class TestRuleLivesInOnePlace(unittest.TestCase):
         self.assertEqual(1, len(rec.get("provenance") or []),
                          "пересказ добавил строку в журнал: число строк "
                          "начинают читать как число наблюдений")
-        self.brain._record_observation("мяч", {"hierarchy": ["игрушка"]},
-                                       confidence=0.5, evidence="другой раз",
+        # ПЕРВОЕ НАЗВАННОЕ основание. Первая запись выше пришла от модели
+        # без документа — она установила связь (support 1), но сослаться на
+        # неё нечем. Статья «Мяч» — первое основание, которое можно
+        # назвать, и зачёт ей законен: неизвестное происхождение греет только как повтор, а
+        # впервые названное происхождение — это новое основание.
+        self.brain._record_observation("мяч", {"hierarchy": ["игрушка"],
+                                              "title": "Мяч"},
+                                       confidence=0.5, evidence="другая фраза",
+                                       source="wiki")
+        rec = self._obs()["мяч|IS_A|игрушка"]
+        self.assertEqual(2, int(rec["support"]),
+                         "первое названное основание не засчитано")
+        # ВОТ ГЛАВНАЯ ДЫРА: модель пересказывает СТАТЬЮ, которую мы сами
+        # читали. Другой канал, другие слова, ТОТ ЖЕ документ.
+        self.brain._record_observation("мяч", {"hierarchy": ["игрушка"],
+                                              "title": "Мяч"},
+                                       confidence=0.9,
+                                       evidence="мяч — предмет для игр",
                                        source="llm")
         rec = self._obs()["мяч|IS_A|игрушка"]
         self.assertEqual(2, int(rec["support"]),
+                         "та же статья, пересказанная другим каналом, согрела "
+                         "связь: независимость снова измеряется словами")
+        self.assertEqual(3, len(rec.get("provenance") or []),
+                         "пересказ выброшен из журнала: отказывать в доверии "
+                         "— не значит терять данные")
+        # ДРУГОЙ названный документ — вот это третье основание.
+        self.brain._record_observation("мяч", {"hierarchy": ["игрушка"],
+                                              "title": "Список игрушек"},
+                                       confidence=0.5, evidence="ещё один",
+                                       source="wiki")
+        rec = self._obs()["мяч|IS_A|игрушка"]
+        self.assertEqual(3, int(rec["support"]),
                          "мозг перестал замечать ОТДЕЛЬНОЕ свидетельство — "
                          "опыт перестал чему-то учить")
-        self.assertEqual(2, len(rec.get("provenance") or []),
-                         "подтверждение не оставило следа в журнале")
 
     def test_8_helper_refuses_same_source_and_text(self):
-        """Само правило: совпал и канал, и основание — подтверждения нет."""
+        """Само правило: пересказ и НЕИЗВЕСТНО ОТКУДА — не подтверждение.
+
+        Вторая ветка переписана 08.11: раньше «новое основание» от канала
+        без документа грело. Теперь такое свидетельство сохраняет журнал и
+        молчит в числе — независимо́вость надо НАЗВАТЬ, а не только сменить
+        формулировку.
+        """
         rec = {"head": "а", "relation": "IS_A", "tail": "б", "confidence": 0.5,
                "support": 1, "weight": 100,
                "provenance": [{"source": "llm", "evidence": "тот же текст"}]}
@@ -237,7 +351,13 @@ class TestRuleLivesInOnePlace(unittest.TestCase):
         self.assertEqual(1, int(rec["support"]))
         warmed = add_witness(rec, source="llm", evidence="новое основание",
                              confidence=0.5, negated=False, relation="IS_A")
-        self.assertTrue(warmed, "отдельное свидетельство не принято")
+        self.assertFalse(warmed,
+                         "свидетельство без происхождения подогрело support")
+        self.assertEqual(1, int(rec["support"]))
+        warmed = add_witness(rec, source="llm", evidence="новое основание",
+                             confidence=0.5, negated=False, relation="IS_A",
+                             document="глоссарий игрушек")
+        self.assertTrue(warmed, "названный документ не принят как основание")
         self.assertEqual(2, int(rec["support"]))
 
 

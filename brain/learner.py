@@ -52,7 +52,8 @@ if __package__ in (None, ""):        # прямой запуск: python brain/l
 from core.extract import Fact, SimpleExtractor
 from core.logchannel import status as _status
 from core.morph import Morph
-from core.records import (add_witness, fact_weight, ground_of, merge_entity,
+from core.records import (add_witness, fact_weight, ground_of, lineage_of,
+                          merge_entity, merge_observation,
                           merge_unknown_entry, observation_weight)
 from core.storage import NodeType, RelationType
 
@@ -394,7 +395,8 @@ class Learner:
     # ── ПУБЛИЧНЫЙ ВХОД ─────────────────────────────────────
 
     def learn_from_text(self, text: str, source: str = "text",
-                        allow_teacher: bool = True) -> LearningReport:
+                        allow_teacher: bool = True,
+                        document: str = "") -> LearningReport:
         rep = LearningReport(text_len=len(text or ""),
                              quality={"morph": Morph.available,
                                       "teacher": self.teacher is not None})
@@ -464,7 +466,7 @@ class Learner:
         # отдельным набором связей. Разлепить их потом можно только руками,
         # поэтому карта вариант->канон строится первой.
         alias_map = self._record_aliases(sentences, entities, observations,
-                                         source, rep)
+                                         source, rep, document)
         if rep.aliases_new:
             _status(f"вариантов имён добавлено: {rep.aliases_new} "
                     f"(всего известно {len(alias_map)})")
@@ -653,7 +655,7 @@ class Learner:
             _status(f"раскладываю предложение: «{sf.sentence[:80]}»")
             for fact in sf.facts:
                 self._apply_fact(fact, sf, resolve, entities, observations,
-                                 source, rep)
+                                 source, rep, document)
 
         # 2b) СОБЫТИЯ — в отдельную секцию мира, НЕ в онтологию.
         # «Кошка СЪЕЛА канарейку» — происшествие во времени, а не знание о
@@ -819,24 +821,13 @@ class Learner:
             if cur is None:
                 fo[key] = obs
                 continue
-            cur["support"] = max(int(cur.get("support", 1)),
-                                 int(obs.get("support", 1)))
-            cur["confidence"] = max(float(cur.get("confidence", 0)),
-                                    float(obs.get("confidence", 0)))
-            cur["negated"] = bool(cur.get("negated")) or bool(obs.get("negated"))
-            # weight ПЕРЕСЧИТЫВАЕТСЯ от слитых полей, а не хранится «максимумом
-            # двух весов». weight — ПРОИЗВОДНАЯ от (confidence, support,
-            # negated). При ОТРИЦАНИИ пересчёт обязывает число УПАСТЬ: если бы
-            # мы просто взяли max, высокий вес остался бы лежать рядом с
-            # negated=True — та самая тихая порча, из-за которой формулу и
-            # перенесли в данные. Без отрицания confidence и support слиты по
-            # max, значит пересчитанный вес и так не меньше каждого из двух;
-            # max() здесь — страховка для чужих записей, где confidence
-            # отсутствует (иначе вес соседа обнулился бы при слиянии).
-            merged_w = fact_weight(cur["confidence"], cur["negated"],
-                                   str(cur.get("relation", "")), cur["support"])
-            cur["weight"] = max(int(merged_w), int(cur.get("weight", 0) or 0)) \
-                if not cur.get("negated") else merged_w
+            # ЗАКОН СЛИЯНИЯ — В ОДНОМ МЕСТЕ (core.records.merge_observation).
+            # Эта копия была местной и переносила support/confidence/negated,
+            # но НЕ журнал и НЕ происхождение: замер 08.11 показал, что
+            # отказавшее свидетельство добавлялось в память и исчезало с
+            # диска. Два писателя с двумя версиями одного закона — это закон,
+            # который соблюдает только один из них.
+            fo[key] = merge_observation(cur, obs)
         # СОБЫТИЯ — аддитивно, как наблюдения: чужой рассказ не должен теряться.
         fev = fresh.setdefault("events", [])
         if not isinstance(fev, list):
@@ -916,7 +907,8 @@ class Learner:
         return out
 
     def _record_aliases(self, sentences, entities: dict, observations: dict,
-                        source: str, rep: LearningReport) -> Dict[str, str]:
+                        source: str, rep: LearningReport,
+                        document: str = "") -> Dict[str, str]:
         """
         Записать варианты имён, ВЫВЕДЕННЫЕ ИЗ ТЕКСТА («бегемот, или
         гиппопотам»), и вернуть карту вариант -> канон для резолвера.
@@ -964,13 +956,26 @@ class Learner:
                         "support": 1, "first_seen": int(time.time()),
                         "ground": ground_of(source),
                         "weight": fact_weight(0.9, False, "SYNONYM_OF", 1),
+                        # ОТКУДА ПРИЕХАЛО (tests/test_lineage_contract.py,
+                        # тест 13): без имени документа запись остаётся без
+                        # происхождения, и любое её повторение навечно
+                        # повисает UNKNOWN. Честно, но дорого: вызывающий
+                        # обязан назвать файл, когда читает файл.
+                        "lineage": lineage_of(source, document),
                     }
                     rep.observations_new += 1
                 else:
-                    obs["support"] = int(obs.get("support", 1)) + 1
-                    obs["weight"] = fact_weight(
-                        float(obs.get("confidence", 0.9)), obs.get("negated"),
-                        "SYNONYM_OF", obs["support"])
+                    # Рост поддержки — ЧЕРЕЗ ОБЩЕЕ ПРАВИЛО, а не прямым
+                    # «support += 1»: второй прогон того же рассказа поднимал
+                    # поддержку синонима на глазок, без единого нового
+                    # наблюдения — тот же класс дыры, что и в тесте
+                    # test_ground_contract 7, только на ветке aliases.
+                    if add_witness(obs, source=source,
+                                   evidence=sf.sentence,
+                                   confidence=0.9,
+                                   relation="SYNONYM_OF",
+                                   document=document):
+                        rep.observations_seen += 1
                 if canon in entities:
                     ent = entities[canon]
                     have = list(ent.get("aliases") or [])
@@ -1098,7 +1103,8 @@ class Learner:
         return resolve
 
     def _apply_fact(self, fact: Fact, sf, resolve, entities, observations,
-                    source: str, rep: LearningReport) -> None:
+                    source: str, rep: LearningReport,
+                    document: str = "") -> None:
         if fact.confidence < self.min_confidence:
             rep.skipped += 1
             return
@@ -1138,6 +1144,10 @@ class Learner:
                 # confidence = 0.6 у любой записи разбора, откуда бы фраза
                 # ни пришла).
                 "ground": ground_of(source),
+                # ПРОИСХОЖДЕНИЕ: имя документа, из которого приехала фраза.
+                # Пусто — значит назвать нечем, и это UNKNOWN: свидетельство
+                # сохранится в журнале, но достоверности не добавит.
+                "lineage": lineage_of(source, document),
                 # ВЕС ЗАПИСЫВАЕТСЯ В ДАННЫЕ. До этого он существовал только
                 # внутри процесса (синапсы графа) и пересчитывался при каждом
                 # replay, а experience_conflicts() читал его из observations и
@@ -1155,7 +1165,8 @@ class Learner:
             if add_witness(obs, source=source,
                            evidence=(fact.evidence or sf.sentence),
                            confidence=fact.confidence,
-                           negated=bool(fact.negated), relation=rel_name):
+                           negated=bool(fact.negated), relation=rel_name,
+                           document=document):
                 rep.observations_seen += 1
 
         if self.core is not None:

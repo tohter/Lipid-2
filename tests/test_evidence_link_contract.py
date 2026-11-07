@@ -143,17 +143,42 @@ class TestEvidenceIsALink(unittest.TestCase):
                              "ни то, ни другое не подтверждено дважды")
 
     # ── 2. достоверность растёт СВОИМ повтором ──────────────────────
-    def test_4_repeat_same_fact_raises_support(self):
-        """Тот же факт второй раз — подтверждение, и оно видно числом."""
-        self.brain._record_observation("мяч", {"hierarchy": ["игрушка"]},
+    def test_4_second_named_source_raises_support(self):
+        """Подтверждение видно числом — но засчитывается НАЗВАННОЕ.
+
+        ПЕРЕПИСАНО 08.11 вместе с законом lineage
+        (tests/test_lineage_contract.py). Смысл теста НЕ изменён: связь
+        обязана становиться убедительнее от второго опыта, и это обязано
+        быть видно по support. Изменилось основание зачёта. Прежняя версия
+        подавала тот же текст вторым каналом без документа и получала
+        support=2 — ровно та дыра, которую Жозефина предсказала, а замер
+        подтвердил: пересказ отличается от оригинала ВСЕГДА, поэтому
+        «другой канал/другая фраза» — самый дешёвый способ надуть
+        достоверность.
+
+        Первая ветка (замеренная) остаётся запертой: та же статья,
+        названная другим каналом, НЕ подтверждение. Вторая — настоящее
+        независимое основание.
+        """
+        self.brain._record_observation("мяч", {"hierarchy": ["игрушка"],
+                                              "title": "Мяч"},
                                        confidence=0.4, evidence="первый раз",
-                                       source="llm")
-        self.brain._record_observation("мяч", {"hierarchy": ["игрушка"]},
-                                       confidence=0.4, evidence="второй раз",
                                        source="wiki")
+        self.brain._record_observation("мяч", {"hierarchy": ["игрушка"],
+                                              "title": "Мяч"},
+                                       confidence=0.4, evidence="второй раз",
+                                       source="llm")
         obs = read_world(self.dir)["observations"]
         self.assertEqual(1, len(obs), "повтор того же факта раздвоился")
         rec = list(obs.values())[0]
+        self.assertEqual(1, int(rec["support"]),
+                         "одна и та же статья, названная двумя каналами, "
+                         "согрела связь дважды")
+        self.brain._record_observation("мяч", {"hierarchy": ["игрушка"],
+                                              "title": "Игрушки двора"},
+                                       confidence=0.4, evidence="третья фраза",
+                                       source="wiki")
+        rec = list(read_world(self.dir)["observations"].values())[0]
         self.assertEqual(2, int(rec["support"]),
                          "повторённый факт не стал убедительнее")
 
