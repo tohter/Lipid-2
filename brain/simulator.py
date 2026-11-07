@@ -146,6 +146,13 @@ class StaticKnowledge:
     def __init__(self, world: Dict):
         self.world = world or {}
         self._by_head: Dict[str, List[Tuple[str, str]]] = {}
+        # СВИДЕТЕЛЬСТВА НА РЕБРО (0..255 на связь). Отдельный словарь, а не
+        # кортеж (rel, tail, n) в _by_head: в него упираются все обёртки
+        # (related/_read/_tails/referenced_by), и любое из них пришлось бы
+        # переписывать под третью позицию — а это ровно тот класс поломки,
+        # который ломает молча. Пустое значение = МЫ НЕ ИЗМЕРЯЛИ, а не «ноль
+        # раз видели»; различение нужно ответу (см. witnesses()).
+        self._witness: Dict[Tuple[str, str, str], int] = {}
         self._readable_cache = None
         # Имена, которыми ОТВЕЧАЮТ на вопрос related(). Реестр — потому что
         # отношение могут спросить ДО того, как кто-то его записал; рёбра
@@ -165,6 +172,15 @@ class StaticKnowledge:
             tail = str(obs.get("tail", "")).lower().strip()
             if head and tail:
                 self._by_head.setdefault(head, []).append((rel, tail))
+                try:
+                    sup = int(obs.get("support", 1) or 1)
+                except (TypeError, ValueError):
+                    sup = 1
+                key = (head, rel, tail)
+                # НЕ max: sum здесь был бы удвоением при двух наблюдениях
+                # одной связи, а max молча съедает правку, если связь
+                # встречается в мире дважды с разным support.
+                self._witness[key] = max(self._witness.get(key, 0), max(1, sup))
         # 2) Поля сущностей (hierarchy / actions). Они тоже ЗНАНИЕ, и мозг их
         #    использует (п.12: рекурсивные предки; action_profile для глаголов).
         #    Читать только observations значило бы, что «пламя IS_A огонь» из
@@ -281,6 +297,26 @@ class StaticKnowledge:
                            f"реестре, ни в этом мире — это НЕ то же самое, "
                            f"что «таких связей нет»")
         return self._read(x, name)
+
+    def witnesses(self, head: str, rel: str, tail: str) -> int:
+        """СКОЛЬКО ОТДЕЛЬНЫХ свидетельств стоит за этой связью.
+
+            witnesses("вода", "CAN_DO", "гасить") -> 1 или 3
+            witnesses("огонь", "IS_A", "пламя")   -> 0
+
+        НОЛЬ ЗДЕСЬ ОТЛИЧЕН ОТ «НЕ ЗНАЕМ» ПО СМЫСЛУ, И ОТВЕТ ОБЯЗАН ЭТО УМЕТЬ
+        ПРОИЗНЕСТИ: 0 означает, что наблюдение не записано (ребро пришло из
+        полей сущности или из старых данных), а не то, что связь видели ноль
+        раз. И то, и другое трактуется как НЕ ПРОВЕРЕНО, но путать числа
+        нельзя: «не измеряли» — это не результат измерения.
+
+        Почему это спрашивает РЁБРО, а не узел: ответ «может ли X делать Y»
+        стоит на цепочке, и убедительна она ровно настолько, насколько её
+        слабое звено (см. brain/thinker.py::certainty).
+        """
+        return self._witness.get(((head or "").lower().strip(),
+                                  (rel or "").upper().strip(),
+                                  (tail or "").lower().strip()), 0)
 
     def _tails(self, x: str, rel: str) -> List[str]:
         return self._read(x, (rel or "").upper().strip())

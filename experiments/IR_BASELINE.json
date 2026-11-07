@@ -90,7 +90,7 @@
   "brain/thinker.py": [
    {
     "module": "lang.ru.ability",
-    "line": 135,
+    "line": 159,
     "nested": true,
     "demo": false
    }
@@ -270,9 +270,9 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 767,
-  "files": 60,
-  "checks_with_russian_message_only": 761
+  "checks_comparing_russian": 774,
+  "files": 61,
+  "checks_with_russian_message_only": 766
  },
  "totals": {
   "D_debt_files": 3,
@@ -289,9 +289,9 @@
   "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 643,
-  "P_ir_output_price": 767,
-  "P_ir_output_files": 60,
-  "P_msg_only_checks": 761,
+  "P_ir_output_price": 774,
+  "P_ir_output_files": 61,
+  "P_msg_only_checks": 766,
   "U_outer_seam_sites": 6,
   "U_outer_seam_files": 6,
   "G_lang_import_sites": 10,

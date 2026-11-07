@@ -85,6 +85,13 @@ class Link:
     asked: str = ""      # каким словом спросили (для отчёта о разрыве)
     via: str = ""        # чем найденное действие пришлось запрошенному
     hops: Tuple[Tuple[str, str, str], ...] = ()
+    # Сколько ОТДЕЛЬНЫХ свидетельств у САМОГО СЛАБОГО ребра объяснения.
+    # Число КЛАДЁТ думалка (она одна знает читателя мира), а не вычисляет
+    # сама: у Link нет и не должно быть ссылки на мир, иначе объяснение
+    # начнет жить своей копией графа. МИНИМУМ по рёбрам, а не среднее:
+    # путь «гасит (трижды) -> огонь (один раз)» на среднем выглядел бы
+    # уверенным, хотя шаткое звено в нём одно.
+    support: int = 0
 
 
 @dataclass
@@ -102,6 +109,23 @@ class Verdict:
     examined: int = 0
     depth_used: int = 0
     notes: List[str] = field(default_factory=list)
+
+    @property
+    def certainty(self) -> int:
+        """Уверенность ОТВЕТА в отдельных свидетельствах (0 = не проверено).
+
+        Внутри объяснения — МИНИМУМ (цепочка не убедительнее слабого звена),
+        между объяснениями — МАКСИМУМ: достаточно одного надёжного пути, чтобы
+        ответить прямо, а второе шаткое объяснение не обязано тянуть ответ
+        вниз — оно не нужно, когда есть первое.
+
+        Отказ даёт 0: у него нет пути, и делать вид, что он «совсем
+        неуверенный ответ», значило бы смешать два разных состояния там, где
+        Хозяин требует разного слова.
+        """
+        if not self.explains:
+            return 0
+        return max((link.support for link in self.links), default=0)
 
     @property
     def explains(self) -> bool:
@@ -186,7 +210,10 @@ class Thinker:
                         source=carrier, action=verb, target=goal, goal=goal,
                         asked=action, via=via,
                         hops=((carrier, "CAN_DO", verb),
-                              (verb, "OBJECT_OF", goal))))
+                              (verb, "OBJECT_OF", goal)),
+                        support=self._support(
+                            ((carrier, "CAN_DO", verb),
+                             (verb, "OBJECT_OF", goal)))))
                     v.depth_used = max(v.depth_used, depth)
 
         if v.links:
@@ -222,6 +249,23 @@ class Thinker:
         return v
 
     # ── вспомогательное ─────────────────────────────────────
+    def _support(self, hops: Sequence[Tuple[str, str, str]]) -> int:
+        """МИНИМУМ отдельных свидетельств по рёбрам пути (0 = не проверяли).
+
+        ЧИТАЕТСЯ ИЗ МИРА, а не считается по числу шагов: правдоподобная
+        длина пути ничего не говорит о том, видели ли мы эти связи. У мира,
+        который не умеет считать свидетельства (старый читатель, заглушка),
+        ответ 0 — «не измеряли», и вывод обязан назвать это предположением,
+        а не молча выдать за знание.
+        """
+        reader = getattr(self.k, "witnesses", None)
+        if reader is None or not hops:
+            return 0
+        try:
+            return min(int(reader(h, r, t) or 0) for h, r, t in hops)
+        except (TypeError, ValueError):
+            return 0
+
     def _matches(self, found: str, asked: str) -> str:
         """Чем найденное действие приходится запрошенному ('' = не приходится).
 

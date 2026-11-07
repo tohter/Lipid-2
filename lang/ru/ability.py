@@ -142,6 +142,17 @@ def render_verdict(v: Any) -> str:
         depth = getattr(v, "depth_used", 0)
         if depth:
             text += f" (через {depth} шаг(ов) обобщения)"
+        # СЛОВО О ДОСТОВЕРНОСТИ — здесь, а не в мозге: это язык, а не решение.
+        # Решение «насколько уверен» несёт verdict.certainty (число ОТДЕЛЬНЫХ
+        # свидетельств у шаткого звена); здесь оно только произносится.
+        # Замер 08.11: мир с support=1 и мир с support=3 давали ОДНУ фразу
+        # байт в байт — накопленное число никуда не шло, а Хозяин требовал
+        # отличать «испугался» от «знаю» (tests/test_certainty_contract.py).
+        certainty = int(getattr(v, "certainty", 0) or 0)
+        if certainty <= 0:
+            return ("связь нашла, но подтверждений ей не видела: " + text)
+        if certainty <= 1:
+            return f"предположительно (видела {certainty} раз): " + text
         return text
 
     code = getattr(v, "code", "")
