@@ -20,6 +20,7 @@ from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
 from core.records import (action_name, add_witness, fact_weight,
+                          ground_of,
                           meaningful_categories,
                           merge_entity,
                           name_variants, normalize_actions,
@@ -437,6 +438,13 @@ class Lipid2Brain:
                         "source": source or "unknown",
                         "support": 1, "first_seen": now,
                         "provenance": [prov_entry],
+                        # ОСНОВАНИЕ, а не уверенность канала. ЧИСЛО confidence
+                        # здесь есть громкость канала (brain.CHANNEL_CONFIDENCE
+                        # приписывает wiki 0.85, llm 0.75), и оставить её как
+                        # единственное различие значило бы, что пересказ и
+                        # проверка различимы только по числу, которое сам
+                        # канал себе и выбрал.
+                        "ground": ground_of(source),
                         # ВЕС В ДАННЫХ, а не в голове процесса: без него
                         # гипотеза и проверка неразличимы (ср. learner).
                         "weight": fact_weight(confidence, False, relation, 1),

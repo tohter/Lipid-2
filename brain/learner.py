@@ -52,7 +52,7 @@ if __package__ in (None, ""):        # прямой запуск: python brain/l
 from core.extract import Fact, SimpleExtractor
 from core.logchannel import status as _status
 from core.morph import Morph
-from core.records import (add_witness, fact_weight, merge_entity,
+from core.records import (add_witness, fact_weight, ground_of, merge_entity,
                           merge_unknown_entry, observation_weight)
 from core.storage import NodeType, RelationType
 
@@ -962,6 +962,7 @@ class Learner:
                         "tail": canon, "confidence": 0.9, "negated": False,
                         "evidence": sf.sentence[:220], "source": source,
                         "support": 1, "first_seen": int(time.time()),
+                        "ground": ground_of(source),
                         "weight": fact_weight(0.9, False, "SYNONYM_OF", 1),
                     }
                     rep.observations_new += 1
@@ -1131,6 +1132,12 @@ class Learner:
                 "confidence": fact.confidence, "negated": bool(fact.negated),
                 "evidence": (fact.evidence or sf.sentence)[:220],
                 "source": source, "support": 1, "first_seen": int(time.time()),
+                # ОСНОВАНИЕ, а не уверенность. ВЫЧИСЛЯЕТСЯ из канала, а не
+                # принимается от него: «мне показалось» и «я проверил» должны
+                # быть различимы после перезапуска процесса (замер: поле
+                # confidence = 0.6 у любой записи разбора, откуда бы фраза
+                # ни пришла).
+                "ground": ground_of(source),
                 # ВЕС ЗАПИСЫВАЕТСЯ В ДАННЫЕ. До этого он существовал только
                 # внутри процесса (синапсы графа) и пересчитывался при каждом
                 # replay, а experience_conflicts() читал его из observations и

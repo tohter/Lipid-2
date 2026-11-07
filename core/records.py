@@ -640,6 +640,113 @@ def observation_weight(obs: Optional[dict]) -> int:
                        int(obs.get("support", 1) or 1))
 
 
+# ── ОСНОВАНИЕ ЗНАНИЯ (ground) ────────────────────────────────────────────
+#
+# ЧЕТЫРЕ ИМЕНИ — ИМЕНИ ТИПА ОСНОВАНИЯ, А НЕ ЧИСЛА. Числом владеть нельзя:
+# «угольник — это треугольник» не бывает истинно на 0.3, а «собака — это
+# животное» не обязано быть убедительнее определения.
+GROUND_RULE = "rule"                    # формальное правило, вынесенное ПРОВЕРКОЙ
+GROUND_OWNER = "owner"                  # слово Хозяина (источник назван)
+GROUND_OBSERVATION = "observation"      # вычитано из текста (разбор)
+GROUND_TESTIMONY = "testimony"          # чужой пересказ: Вики, модель
+GROUNDS = (GROUND_RULE, GROUND_OWNER, GROUND_OBSERVATION, GROUND_TESTIMONY)
+# Сила основания для сравнения «что сильнее» (НЕ вес и НЕ достоверность).
+_GROUND_POWER = {GROUND_TESTIMONY: 0, GROUND_OBSERVATION: 1, GROUND_OWNER: 2,
+                 GROUND_RULE: 3}
+# ИМЕНА КАНАЛОВ. Именно от них зависит основание, а не от того, что канал
+# о себе сказал. Таблица brain.CHANNEL_CONFIDENCE остаётся для разбора
+# предложений; влиять на статус знания она больше не может.
+_GROUND_BY_SOURCE = {
+    "user": GROUND_OWNER, "owner": GROUND_OWNER,
+    "text": GROUND_OBSERVATION, "story": GROUND_OBSERVATION,
+    "replay": GROUND_OBSERVATION, "dream": GROUND_OBSERVATION,
+    "wiki": GROUND_TESTIMONY, "wikipedia": GROUND_TESTIMONY,
+    "llm": GROUND_TESTIMONY, "gemma": GROUND_TESTIMONY,
+    "agent_teacher": GROUND_TESTIMONY, "teacher": GROUND_TESTIMONY,
+}
+# ПУТИ следования знания, а не его основания. Перенос из карантина ничего не
+# утверждает об истинности — он говорит, ОТКУДА запись приехала в этот файл.
+# Не сказать этого явно значило бы понести слово Хозяина до пересказа при
+# первом же прохождении через единственную дверь записи.
+_GROUND_PATHS = frozenset({"staged_candidate", "", "unknown"})
+
+
+def ground_of(source: str, claimed: str = "") -> str:
+    """Какое ОСНОВАНИЕ у знания, пришедшего от `source`.
+
+    СЛОВО КАНАЛА НЕ ИМЕЕТ СИЛЫ. Аргумент `claimed` принят только для того,
+    чтобы дыру можно было ЗАКРЫТЬ ТЕСТОМ: канал, заявивший «это аксиома»,
+    обязан остаться свидетельством. Измерение 08.11: Gemma на 12 проверенных
+    утверждениях поставила себе уверенность 1.00 на всех 12 (про бросок
+    кубика она честно сказала 50%) — то есть самоотчёт есть громкость, а не
+    проверка. Слово «правило» из уст учителя — тот же самоотчёт.
+
+    `rule` отсюда НЕ ВЫВОДИТСЯ НИ ПРИ КАКОМ имени источника: его выносит
+    только проверяющий механизм (реестр правил с тестом), и никакая строка
+    "source" к нему не ведёт.
+
+    Незнакомый канал идёт в testimony, а не в owner: «мы его просто пока не
+    знаем» не есть основание доверять.
+    """
+    del claimed                                     # заявление канала
+    key = str(source or "").strip().lower()
+    if key.startswith("teacher:"):
+        key = key.split(":", 1)[1].strip().lower()
+    return _GROUND_BY_SOURCE.get(key, GROUND_TESTIMONY)
+
+
+def record_ground(record: Optional[dict]) -> str:
+    """Основание ЗАПИСИ, прочитанное из её коллекции свидетельств.
+
+    ПОЧЕМУ НЕ ИЗ ПОЛЯ `ground` (возражение Жозефины, experiments/
+    ADVISOR_GROUND_JO.txt, проверенное живьём). Одно поле на одно знание
+    лжёт, потому что смешивает «кто сказал», «как получено» и «почему верим».
+    Замер её предсказания: цепочка «статья Вики -> пересказ модели ->
+    перефраз -> пересказ перефраза» подняла support 1 -> 5 и вес 160 -> 190,
+    оставшись ОДНИМ независимым основанием.
+
+    Поэтому первоисточник — КОЛЛЕКЦИЯ (верхний source + журнал provenance,
+    оба уже пишутся), а `ground` — её прочтение: сильнейшее из оснований,
+    каждое из которых помнит свой канал. Записанное поле `ground` —
+    СПРАВКА для читателя, которое всегда можно пересчитать; оно не является
+    доказательством самого себя (тест 6 это и проверяет).
+
+    Разделение «потенциально независимых» оснований — следуюший кирпич, а
+    не этот: здесь основание только перестаёт врать о себе.
+    """
+    if not isinstance(record, dict):
+        return GROUND_TESTIMONY
+    sources = []
+    if record.get("source"):
+        sources.append(str(record.get("source")))
+    for prov in (record.get("provenance") or []):
+        if isinstance(prov, dict) and prov.get("source"):
+            src = str(prov["source"]).strip().lower()
+            if src in _GROUND_PATHS:
+                continue        # путь следования, а не свидетель
+            sources.append(src)
+    if not sources:
+        return GROUND_TESTIMONY
+    best = GROUND_TESTIMONY
+    for src in sources:
+        g = ground_of(src)
+        if _GROUND_POWER[g] > _GROUND_POWER[best]:
+            best = g
+    return best
+
+
+def stamp_ground(record: dict) -> dict:
+    """Записать в запись её основание, ВЫЧИСЛИВ его, а не приняв на веру.
+
+    Поле перечисляется ПОСЛЕ того, как коллекция собрана, и ПЕРЕЗАПИСЫВАЕТ
+    любое значение, приехавшее извне: пакет учителя со словом "rule"
+    обязан выйти из функции со статусом свидетельства.
+    """
+    if isinstance(record, dict):
+        record["ground"] = record_ground(record)
+    return record
+
+
 def same_witness(obs: Optional[dict], source: str, evidence: str) -> bool:
     """То ли это СВИДЕТЕЛЬСТВО, что уже лежит в записи, или пересказ.
 
@@ -709,6 +816,11 @@ def add_witness(obs: dict, *, source: str, evidence: str, confidence: float,
     if at is not None:
         entry["at"] = int(at)
     prov.append(entry)
+    # ОСНОВАНИЕ ПЕРЕСЧИТЫВАЕТСЯ ПОСЛЕ КАЖДОГО СВИДЕТЕЛЯ, а не берётся из
+    # приехавшего поля: иначе канал, приславший "ground": "rule", стал бы
+    # правилом (тест 6). Рост support сам по себе статуса НЕ даёт — за это
+    # отвечает record_ground, который смотрит на каналы, а не на их число.
+    obs["ground"] = record_ground(obs)
     # weight — ПРОИЗВОДНАЯ от (confidence, negated, relation, support), поэтому
     # пересчитывается ЦЕЛИКОМ, а не «максимумом": иначе support вырос бы, а
     # число осталось старым.
