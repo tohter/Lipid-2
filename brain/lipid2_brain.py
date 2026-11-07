@@ -100,6 +100,18 @@ class Lipid2Brain:
         # раньше: один создавало ядро внутри себя, второй — мозг.
         self.core = GraphMemory(surface_forms=LemmaResolver())
         self.hormones = Hormones()
+        # Гормоны как РЕШЕНИЕ, а не как полоска в окне. До этого значения
+        # кортизола/дофамина только ПИСАЛИСЬ (замер 07.11: ни одного if, где от
+        # них что-то зависело). Шлюз даёт два ответа: must_search() — пока
+        # тревога высокая, поиск не завершён; dopamine_ok() — писать в базу
+        # разрешено только с найденным ответом и на спокойной голове.
+        from brain.curiosity import Curiosity, HormoneGate
+
+        self.hormone_gate = HormoneGate(self.hormones).load(self.memory_dir)
+        # Реестр ПРОБЕЛОВ: что не знаю и зачем понадобилось. Писатель во
+        # Вселенную подключается при переносе кандидатов (promote), а не сейчас:
+        # сам по себе реестр прав на запись не имеет.
+        self.curiosity = Curiosity(self.memory_dir)
         # Резолвер форм по именам ВСЕЛЕННОЙ (мир шире ядра: там есть сущности,
         # ещё не интегрированные в граф).
         self.lemmas_world = LemmaResolver()
@@ -1304,7 +1316,77 @@ class Lipid2Brain:
         elif intent_type == "ACTION":
             return self._handle_actions(subject)
         else:
-            return f"🤔 [Lipid-2]: Интент '{intent_type}' распознан, но обработчик для него ещё в разработке."
+            # ВОПРОС О СПОСОБНОСТИ («может ли X сделать Y»). IR-парсер его не
+            # знает и честно возвращает UNKNOWN; раньше тут заканчивалось
+            # «обработчик в разработке». Теперь вопрос уходит думалке, а та
+            # обязана либо назвать ПУТЬ, либо назвать НЕХВАТКУ (brain/thinker.py).
+            ability = self._handle_ability(text)
+            if ability is not None:
+                return ability
+            return (f"🤔 [Lipid-2]: Интент '{intent_type}' распознан, но "
+                    f"обработчик для него ещё в разработке.")
+
+    def _handle_ability(self, text: str) -> Optional[str]:
+        """«Может ли X сделать Y» — поиск пути, а не угадывание ответа.
+
+        Порядок ровно тот, о котором просил хозяин:
+
+          1. думаем по тому, что УЖЕ в графе (никаких учителей на пустом месте);
+          2. если в вопросе есть НЕИЗВЕСТНОЕ слово — кортизол вверх и цель в
+             реестр любопытства: поиск обязан продолжиться, а не «не знаю»;
+          3. добытое знание закрывает цель, кортизол падает, дофамин поднимается,
+             и мы Думаем ЕЩЁ РАЗ по пополненному графу;
+          4. ответа нет — отказ с именем нехватки, тревога НЕ снята.
+
+        Возвращает None, если вопрос не про способность (тогда говорит другой
+        обработчик) — иначе мозг начал бы врать про «может» на произвольной фразе.
+        """
+        from brain.simulator import StaticKnowledge
+        from brain.thinker import Thinker
+        from lang.ru.ability import parse_ability, render_verdict
+
+        roles = parse_ability(text)
+        if not (roles.get("ability") and roles.get("action")
+                and (roles.get("object") or roles.get("subject"))):
+            return None
+
+        world = self._load_world()
+        thinker = Thinker(StaticKnowledge(world))
+        verdict = thinker.think(text)
+
+        if verdict.ok:
+            self.hormone_gate.relief()
+            self._say(f"дождалась ответа сама: «{text}»")
+            return f"[Lipid-2]: {render_verdict(verdict)}"
+
+        # ПРОБЕЛ. Тревога — это ФЛАГ ПОИСКА, а не косметика (brain/curiosity.py).
+        self.hormone_gate.stress()
+        for word in verdict.unknown_words:
+            self.curiosity.note_unknown(word, why=f"нужно для вопроса «{text}»")
+        self._say(f"не хватает: {', '.join(verdict.unknown_words) or 'связи'} "
+                  f"— кортизол {self.hormone_gate.cortisol}, ищу")
+
+        learned: List[str] = []
+        for word in list(verdict.unknown_words)[:3]:
+            if self._trigger_curiosity_and_learn(word):
+                learned.append(word)
+        if learned:
+            verdict = Thinker(StaticKnowledge(self._load_world())).think(text)
+            if verdict.ok:
+                # Цель ЗАКРЫТА знанием — и только теперь тревога падает.
+                for word in learned:
+                    self.curiosity.closed(self.curiosity.note_unknown(word))
+                self.hormone_gate.relief()
+                self.hormone_gate.save(self.memory_dir)
+                self._say("цель закрыта: связь нашлась, тревога упала")
+                return f"[Lipid-2]: {render_verdict(verdict)}"
+            for word in learned:
+                self._say(f"выучено «{word}», но вопрос ещё не закрыт")
+
+        # Не нашли — тревога ОСТАЁТСЯ: вопрос жив, пока не закрыт.
+        self.hormone_gate.save(self.memory_dir)
+        self._say(f"ответ НЕ добыт: {verdict.code}; цель осталась открыта")
+        return f"[Lipid-2]: {render_verdict(verdict)}"
 
     # ── ОБРАБОТЧИКИ ────────────────────────────────────────
 
@@ -1375,6 +1457,11 @@ class Lipid2Brain:
                     learned.get("matched_concept", concept), learned)
             if answer is None:
                 return self._definition_hollow(concept, data)
+        # Ответ ЕСТЬ — тревога обязана упасть. Иначе кортизол остался бы флагом,
+        # который только включается и никогда не гаснет: по нему нельзя было бы
+        # отличить «ищем» от «уже нашли и ответили» (замер: после успешного
+        # «что такое вода» кортизол стоял 255).
+        self.hormone_gate.relief()
         return answer
 
     def _definition_answer(self, concept: str, data: dict):

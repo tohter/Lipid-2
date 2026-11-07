@@ -28,7 +28,7 @@
    },
    {
     "module": "core.morph",
-    "line": 1088,
+    "line": 1100,
     "nested": true,
     "demo": false
    }
@@ -70,6 +70,20 @@
     "module": "lang.ru.text",
     "line": 9,
     "nested": false,
+    "demo": false
+   },
+   {
+    "module": "lang.ru.ability",
+    "line": 1346,
+    "nested": true,
+    "demo": false
+   }
+  ],
+  "brain/thinker.py": [
+   {
+    "module": "lang.ru.ability",
+    "line": 135,
+    "nested": true,
     "demo": false
    }
   ],
@@ -130,12 +144,12 @@
    {
     "cls": "Lipid2Brain",
     "method": "sleep_now",
-    "line": 1275
+    "line": 1287
    },
    {
     "cls": "Lipid2Brain",
     "method": "process_input",
-    "line": 1292
+    "line": 1304
    }
   ],
   "brain/question.py": [
@@ -192,6 +206,7 @@
  "lang_files": [
   "lang/__init__.py",
   "lang/ru/__init__.py",
+  "lang/ru/ability.py",
   "lang/ru/lemma.py",
   "lang/ru/questions.py",
   "lang/ru/text.py"
@@ -247,14 +262,14 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 737,
-  "files": 56,
-  "checks_with_russian_message_only": 692
+  "checks_comparing_russian": 756,
+  "files": 58,
+  "checks_with_russian_message_only": 719
  },
  "totals": {
   "D_debt_files": 3,
   "C_core_reaches_lang": 0,
-  "L_lang_files": 5,
+  "L_lang_files": 6,
   "S_seam_sites": 6,
   "S_demo_seam_sites": 0,
   "S_seam_files": 4,
@@ -266,12 +281,12 @@
   "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 643,
-  "P_ir_output_price": 737,
-  "P_ir_output_files": 56,
-  "P_msg_only_checks": 692,
+  "P_ir_output_price": 756,
+  "P_ir_output_files": 58,
+  "P_msg_only_checks": 719,
   "U_outer_seam_sites": 6,
   "U_outer_seam_files": 6,
-  "G_lang_import_sites": 7,
-  "G_lang_import_files": 6
+  "G_lang_import_sites": 9,
+  "G_lang_import_files": 7
  }
 }
