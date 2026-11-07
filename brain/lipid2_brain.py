@@ -19,7 +19,8 @@ from core.transitions import (TransitionTable, merge_json,
 from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
-from core.records import (action_name, fact_weight, meaningful_categories,
+from core.records import (action_name, add_witness, fact_weight,
+                          meaningful_categories,
                           merge_entity,
                           name_variants, normalize_actions,
                           normalize_provenance, observation_weight,
@@ -441,18 +442,13 @@ class Lipid2Brain:
                         "weight": fact_weight(confidence, False, relation, 1),
                     }
                     continue
-                # Повтор ТОЙ ЖЕ связи — подтверждение. Чужая связь этого узла
-                # сюда не попадает: у неё другой ключ.
-                obs["support"] = int(obs.get("support", 1)) + 1
-                obs["confidence"] = max(float(obs.get("confidence", 0.0)),
-                                        float(confidence))
-                obs.setdefault("provenance", []).append(prov_entry)
-                # weight — ПРОИЗВОДНАЯ от (confidence, support, negated),
-                # пересчитывается целиком, а не «максимумом»: иначе support
-                # вырос бы, а число осталось старым.
-                obs["weight"] = fact_weight(obs["confidence"],
-                                            obs.get("negated"), relation,
-                                            obs["support"])
+                # Повтор ТОЙ ЖЕ связи — подтверждение ТОЛЬКО если это
+                # ОТДЕЛЬНОЕ свидетельство: тот же канал и то же основание —
+                # пересказ, а не опыт (правило — в core/records.py,
+                # tests/test_repeat_witness_contract.py).
+                add_witness(obs, source=source, evidence=evidence,
+                            confidence=confidence, negated=False,
+                            relation=relation)
 
     # ── РАБОТА С ВСЕЛЕННОЙ ─────────────────────────────────
 

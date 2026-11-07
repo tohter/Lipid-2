@@ -277,18 +277,32 @@ class TestLearnerContract(unittest.TestCase):
         self.assertTrue(any(k.startswith("кошка|") for k in obs),
                         f"связь не попала в файл: {list(obs)}")
 
-    def test_relearn_is_idempotent_and_strengthens(self):
-        """Повтор НЕ создаёт дублей, но повышает support — два независимых
-        свидетельства это уже не случайность."""
+    def test_relearn_is_idempotent_and_not_strengthened(self):
+        """Повтор НЕ создаёт дублей и НЕ повышает support.
+
+        ПЕРЕПИСАН 08.11. Прежний вариант назывался ..._and_strengthens и
+        требовал support == 2, а в docstring'е стояло «два независимых
+        свидетельства это уже не случайность». Независимость в том тесте была
+        СЛОВОМ: подавалась ОДНА И ТА ЖЕ фраза с ОДНИМ И ТЕМ ЖЕ source.
+        Замер живьём: «Дождь гасит огонь.» трижды -> support 1 -> 2 -> 3,
+        вес 200 -> 210 -> 220, при том что мир не двигался и учитель ничего
+        не приносил. Хозяин (08.11) запретил одну историю превращать в
+        пожизненное ребро, так что арифметика того теста охраняла дыру.
+        Законное подтверждение другим каналом проверяется в
+        tests/test_repeat_witness_contract.py.
+        """
         lr = self._learner()
         lr.learn_from_text("Кошка сторожит мышь.", source="t")
         first = json.dumps(self._read()["observations"], sort_keys=True)
         rep2 = lr.learn_from_text("Кошка сторожит мышь.", source="t")
         obs = self._read()["observations"]
         self.assertEqual(len(obs), len(json.loads(first)), "появились дубли связей")
-        self.assertTrue(all(v["support"] == 2 for v in obs.values()),
-                        f"поддержка не выросла: {[v['support'] for v in obs.values()]}")
-        self.assertGreater(rep2.observations_seen, 0)
+        self.assertTrue(all(v["support"] == 1 for v in obs.values()),
+                        f"пересказ одной фразы стал подтверждением: "
+                        f"{[v['support'] for v in obs.values()]}")
+        self.assertEqual(rep2.observations_seen, 0,
+                         "обучающий засчитал повтор как просмотренное "
+                         "свидетельство")
 
     def test_unknown_word_asked_once_not_every_time(self):
         """Неизвестное слово помнится: иначе каждое упоминание гонит LLM."""

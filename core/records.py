@@ -640,6 +640,83 @@ def observation_weight(obs: Optional[dict]) -> int:
                        int(obs.get("support", 1) or 1))
 
 
+def same_witness(obs: Optional[dict], source: str, evidence: str) -> bool:
+    """То ли это СВИДЕТЕЛЬСТВО, что уже лежит в записи, или пересказ.
+
+    Совпали И канал, И основание (текст-доказательство) — перед нами тот же
+    самый опыт, рассказанный второй раз.
+    """
+    if not isinstance(obs, dict):
+        return False
+    src = _norm_phrase(source)
+    ev = _norm_phrase(evidence)
+    # ПЕРВОЕ свидетельство обучающий из рассказов держит ВЕРХНИМ УРОВНЕМ
+    # (source/evidence у самой записи), а не в журнале provenance. Сверять
+    # только журнал значило бы признать ПЕРЕСКАЗ новым подтверждением у того
+    # писателя, который журнала не ведёт, — то есть ровно там, где дыра и
+    # была измерена.
+    if (src and _norm_phrase(obs.get("source", "")) == src
+            and _norm_phrase(obs.get("evidence", "")) == ev):
+        return True
+    for prov in (obs.get("provenance") or []):
+        if not isinstance(prov, dict):
+            continue
+        if _norm_phrase(prov.get("source", "")) != src:
+            continue
+        if _norm_phrase(prov.get("evidence", "")) == ev:
+            return True
+    return False
+
+
+def add_witness(obs: dict, *, source: str, evidence: str, confidence: float,
+                negated: bool = False, relation: str = "",
+                at: Optional[int] = None) -> bool:
+    """
+    Одно СВИДЕТЕЛЬСТВО к уже существующей связи. Возвращает True, если
+    достоверность выросла, False — если это ПЕРЕСКАЗ.
+
+    ПОЧЕМУ ПРАВИЛО ЖИВЁТ ЗДЕСЬ, А НЕ В ПИСАТЕЛЯХ (слова Хозяина 08.11 +
+    замер живьём). Хозяин запретил превращать одну историю в пожизненное
+    ребро. А замер дал обратное: ОДНА И ТА ЖЕ фраза «Дождь гасит огонь.»,
+    прогнанная через обучающий трижды, подняла support 1 -> 2 -> 3 и вес
+    200 -> 210 -> 220. Ни одного нового наблюдения в мире не было — мир не
+    двигался; движение было только в процессе, и оно превратилось в
+    убеждённость. Раньше это охранял тест с формулировкой «два независимых
+    свидетельства», где независимость была СЛОВОМ: подавалась одна фраза с
+    одним source. Правило в двух писателях (brain и learner) неизбежно
+    расходится — этот класс дыр мы чинили кирпичом раньше, поэтому закон
+    стоит в одном месте и вызывается обоими.
+
+    ОТДЕЛЬНЫМ считается свидетельство, у которого отличается ИСТОЧНИК или
+    ОСНОВАНИЕ. Цена правила названа и принята сознательно: одинаково
+    сформулированные разные события (сегодня и вчера, одним каналом) мы НЕ
+    согреем. Мы теряем часть подтверждений и никогда не наживаем ложную
+    уверенность — ложная связь хуже пропущенной (закон проекта), а ложная
+    уверенность в связи хуже молчаливой дыры: её нечем перепроверить, потому
+    что число выглядит заработанным.
+    """
+    if same_witness(obs, source, evidence):
+        return False
+    obs["support"] = int(obs.get("support", 1)) + 1
+    # Уверенность берём ЛУЧШЕЕ из свидетельств, а не последнее: второй проход
+    # с более слабым разбором не должен отменять уверенный.
+    obs["confidence"] = max(float(obs.get("confidence", 0.0)),
+                            float(confidence))
+    if negated:
+        obs["negated"] = True
+    prov = obs.setdefault("provenance", [])
+    entry = {"source": source or "unknown", "evidence": (evidence or "")[:200]}
+    if at is not None:
+        entry["at"] = int(at)
+    prov.append(entry)
+    # weight — ПРОИЗВОДНАЯ от (confidence, negated, relation, support), поэтому
+    # пересчитывается ЦЕЛИКОМ, а не «максимумом": иначе support вырос бы, а
+    # число осталось старым.
+    obs["weight"] = fact_weight(obs["confidence"], obs.get("negated"),
+                                relation, obs["support"])
+    return True
+
+
 def merge_unknown_entry(prev: Optional[dict], new: Optional[dict]) -> dict:
     """
     СЛИЯНИЕ двух записей unknown_words ОДНОГО слова (очередь, п.15).

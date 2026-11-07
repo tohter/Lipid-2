@@ -52,8 +52,8 @@ if __package__ in (None, ""):        # прямой запуск: python brain/l
 from core.extract import Fact, SimpleExtractor
 from core.logchannel import status as _status
 from core.morph import Morph
-from core.records import (fact_weight, merge_entity, merge_unknown_entry,
-                          observation_weight)
+from core.records import (add_witness, fact_weight, merge_entity,
+                          merge_unknown_entry, observation_weight)
 from core.storage import NodeType, RelationType
 
 # Ядро само себя языком не снабжает (C_core_reaches_lang = 0 вечен). Ученик —
@@ -1139,19 +1139,17 @@ class Learner:
             }
             rep.observations_new += 1
         else:
-            obs["support"] = int(obs.get("support", 1)) + 1
-            # Уверенность берём ЛУЧШЕЕ из свидетельств, а не последнее: второй
-            # проход с более слабым разбором не должен отменять уверенный.
-            obs["confidence"] = max(float(obs.get("confidence", 0.0)),
-                                    fact.confidence)
-            if fact.negated:
-                obs["negated"] = True
-            # weight — ПРОИЗВОДНАЯ от (confidence, support, negated), значит
-            # пересчитывается целиком при каждом новом свидетельстве, а не
-            # «максимумом»: иначе support вырос, а число осталось старым.
-            obs["weight"] = fact_weight(obs["confidence"], obs.get("negated"),
-                                        rel_name, obs["support"])
-            rep.observations_seen += 1
+            # ПЕРЕСКАЗ НЕ ПОДТВЕРЖДАЕТ (слова Хозяина 08.11, замер
+            # tests/test_repeat_witness_contract.py): одна и та же фраза,
+            # прогнанная три раза, поднимала support 1 -> 2 -> 3 и вес
+            # 200 -> 210 -> 220, хотя НИ ОДНОГО нового наблюдения в мире не
+            # было. Правило живёт в core/records.py::add_witness — ОДНОМ на
+            # оба писателя, иначе brain и learner расходуются в законе.
+            if add_witness(obs, source=source,
+                           evidence=(fact.evidence or sf.sentence),
+                           confidence=fact.confidence,
+                           negated=bool(fact.negated), relation=rel_name):
+                rep.observations_seen += 1
 
         if self.core is not None:
             hn = self.core.get_or_create_node(head, NodeType.ENTITY, source=source,
