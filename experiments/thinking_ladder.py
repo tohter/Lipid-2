@@ -67,8 +67,18 @@ def run(world_path: str) -> int:
         except Exception as exc:                       # noqa: BLE001
             ans = f"💥 {type(exc).__name__}: {exc}"
         ans = " ".join(str(ans).replace("[Lipid-2]:", "").split())
-        bad = ("Интент" in ans or "не понял" in ans or "не содержит" in ans
-               or "источники" in ans or "💥" in ans or len(ans) < 12)
+        # Мера обязана ловить СОБСТВЕННЫЕ отказы. Замер 07.11: первая
+        # редакция считала ответом всё, где нет слов «Интент»/«не понял»,
+        # и отказ думалки «не могу рассуждать: не знаю слов» засчитывался
+        # как ✅ — лестница показывала успех там, где модель только что
+        # призналась, что не знает слов. Честный признак — ЛЮБОЕ отрицание
+        # в ответе, а не список заранее угаданных формулировок.
+        low = ans.lower()
+        bad = ("интент" in low or "не понял" in low or "не содержит" in low
+               or "источники" in low or "💥" in low or len(ans) < 12
+               or low.startswith("не ") or " не могу" in low or " не знаю"
+               in low or " не нашёл" in low or "не хватает" in low
+               or "нет связи" in low or "не могу утверждать" in low)
         if not bad:
             answered += 1
         print(f"  {'✅' if not bad else '❌'} {q}")

@@ -40,11 +40,23 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+from core.records import merge_entity
+# СЛУЖБА СВЕДЕНИЯ ФОРМ. Запрет tests/test_lemma_service_contract.py ловит тех,
+# кто сводит формы слов молча: без службы merge_entity опирается на эвристику
+# по буквам и может не заметить дубль («роса»/«росу»). Любопытство имеет право
+# на язык больше, чем ядро (оно в brain/, а не в core/), поэтому приносит
+# службу само, а не надеется, что её принесли до него.
+from lang.ru.lemma import install as _install_lemma_service
+
+_install_lemma_service()
+
 GATE_FILE = "hormone_gate.json"
 CURIOSITY_FILE = "curiosity.json"
+STAGING_FILE = "staging_world.json"
 
 #: Кортизол на этом уровне и выше означает «ИЩИ», ниже — «можно отвечать».
 #: Выбран не «на глаз»: 128 — середина шкалы 0..255, один всплеск неизвестного
@@ -252,6 +264,107 @@ class Curiosity:
         return goal
 
     # ── карантин кандидатов ─────────────────────────────────────────
+    # ── карантинный ФАЙЛ для учителей ───────────────────────────────
+    def live_world_path(self) -> str:
+        return os.path.join(self.dirpath, "lipid_world.json")
+
+    def staging_path(self) -> str:
+        return os.path.join(self.dirpath, STAGING_FILE)
+
+    def begin_search(self) -> str:
+        """Подготовить каналу файл, в котором МОЖНО учиться.
+
+        Пока поиск не завершён, учитель не имеет права трогать живую базу
+        (замер: вопрос про дождь изменил lipid_world.json на 3 сущности и не
+        дал ответа). Здесь учитель получает КОПИЮ живой базы: он видит уже
+        известное и не переучивает его, а пишет в копию. Живой файл от этого
+        не меняется ни на байт.
+
+        Копия, а не пустой файл — иначе учитель потерял бы контекст и начал
+        заново описывать то, что уже есть (та же дыра, что с перезаписью
+        сущности вырожденным derived).
+        """
+        os.makedirs(self.dirpath, exist_ok=True)
+        live, stage = self.live_world_path(), self.staging_path()
+        if os.path.exists(stage):
+            # Рабочее окно УЖЕ открыто. Перезаливать его копией живой базы
+            # нельзя: затёрлись бы данные, которые канал принёс в прошлой
+            # неудачной попытке (провал поиска не имеет права терять их).
+            return stage
+        if os.path.exists(live):
+            shutil.copyfile(live, stage)
+        else:
+            with open(stage, "w", encoding="utf-8") as fh:
+                json.dump({"entities": {}, "observations": {},
+                           "unknown_words": {}}, fh, ensure_ascii=False)
+        return stage
+
+    def collect_from_staging(self) -> List[str]:
+        """Забрать из карантина ТОЛЬКО новое и убрать карточку-копию.
+
+        Переносится то, чего в живой базе не было вовсе, или что стало БОГАЧЕ
+        (учитель добавил ребро к уже знакомому слову). Иначе копия всей
+        Вселенной переехала бы в кандидаты, и promote затащил бы в файл чужие
+        знания под моей меткой.
+        """
+        stage = self.staging_path()
+        if not os.path.exists(stage):
+            return []
+        try:
+            with open(stage, encoding="utf-8") as fh:
+                new_world = json.load(fh)
+        except Exception:
+            return []
+        live_entities: Dict[str, Any] = {}
+        try:
+            with open(self.live_world_path(), encoding="utf-8") as fh:
+                live_entities = json.load(fh).get("entities") or {}
+        except Exception:
+            live_entities = {}
+        taken: List[str] = []
+        fresh: Dict[str, Any] = {}
+        already = {str(i.get("name", "")).strip().lower() for i in self._staged}
+        for key, rec in ((new_world.get("entities") or {}).items()):
+            if not isinstance(rec, dict):
+                continue
+            if key in already:
+                # Кандидат уже лежит в карантине (собирали в прошлой попытке).
+                # Второй раз ставить его нельзя: promote перенёс бы дубль.
+                continue
+            old = live_entities.get(key)
+            if not isinstance(old, dict):
+                fresh[key] = rec
+                taken.append(key)
+                continue
+            gained = {}
+            for field in ("hierarchy", "properties", "actions",
+                          "delta_properties"):
+                now = [str(x) for x in (rec.get(field) or [])]
+                was = [str(x) for x in (old.get(field) or [])]
+                if now and now != was:
+                    gained[field] = rec.get(field) or []
+            richer = bool(gained) or (bool(rec.get("definition")) and
+                                      rec["definition"] != old.get("definition"))
+            if richer:
+                merged = merge_entity(old, rec)
+                merged.update(gained)
+                fresh[key] = merged
+                taken.append(key)
+        if fresh:
+            self.stage(fresh, source="staging")
+        # Карточку-копию НЕ удаляем: в ней остаются observations (свидетельства
+        # канала) и то, что не подошло по имени. Живая база не изменилась, а
+        # данные живы. Окно закрывает clear_staging().
+        return taken
+
+    def clear_staging(self) -> bool:
+        """Закрыть окно поиска: карточка-копия больше не нужна."""
+        try:
+            os.remove(self.staging_path())
+            return True
+        except OSError:
+            return False
+
     def stage(self, entities: Dict[str, Any], source: str = "") -> int:
         """Кандидат от учителя/наблюдателя ДО разрешения записи.
 

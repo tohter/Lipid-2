@@ -379,7 +379,14 @@ class Lipid2Brain:
         # Транзакция: чтение и запись под ОДНИМ замком. Иначе фоновое обучение
         # и Учитель-агент могли пересечься между чтением и записью — и один
         # снимок молча стёр правки другого.
-        with world_transaction(self.world_filepath) as world:
+        # АДРЕС. Пока поиск по вопросу не закрыт, наблюдение идёт в КАРАНТИН,
+        # а не в живую базу (тот же закон, что для сущностей учителя: слово
+        # хозяина «дофамин может записать» выполняется только после ответа).
+        # Замер: с включённым Учителем живая база менялась даже когда число
+        # сущностей стояло на месте — росли observations (0 -> 3), то есть
+        # недоученный вопрос оставлял в файле «свидетельства» о себе.
+        target = self._staging_target or self.world_filepath
+        with world_transaction(target) as world:
             observations = world.setdefault("observations", {})
             obs = observations.get(key)
             if obs:
@@ -1371,26 +1378,73 @@ class Lipid2Brain:
                   f"— кортизол {self.hormone_gate.cortisol}, ищу")
 
         learned: List[str] = []
-        for word in list(verdict.unknown_words)[:3]:
-            if self._trigger_curiosity_and_learn(word):
-                learned.append(word)
+        # УЧИТЬСЯ — В КАРАНТИН. Замер: с живым Учителем этот вопрос изменил
+        # lipid_world.json (сущностей 1 -> 4), ответа не дав. Пока поиск не
+        # закрыт, оба канала получают КОПИЮ живой базы: она даёт им контекст
+        # (не переучивать известное), но живая файл не трогает. Слово хозяина
+        # «дофамин МОЖЕТ записать» иначе превращается в «учитель уже записал».
+        staging = self.curiosity.begin_search()
+        saved = (self.teacher_llm.world_filepath, self.teacher_wiki.world_filepath)
+        self.teacher_llm.world_filepath = staging
+        self.teacher_wiki.world_filepath = staging
+        self._staging_target = staging
+        try:
+            for word in list(verdict.unknown_words)[:3]:
+                if self._trigger_curiosity_and_learn(word):
+                    learned.append(word)
+        finally:
+            (self.teacher_llm.world_filepath,
+             self.teacher_wiki.world_filepath) = saved
+            self._staging_target = None
+        # Что принесли каналы — то КАНДИДАТ, а не факт (brain/curiosity.py).
+        self.curiosity.collect_from_staging()
         if learned:
-            verdict = Thinker(StaticKnowledge(self._load_world())).think(text)
+            # Думать по ЖИВОМУ + кандидатам: гипотеза имеет право УЧАСТВОВАТЬ
+            # в рассуждении, но не право лежать в базе до ответа. Иначе
+            # второй вызов thinker читал бы только живое и никогда не нашёл бы
+            # связь, которую только что выучили.
+            verdict = Thinker(StaticKnowledge(self._reasoning_view())).think(text)
             if verdict.ok:
                 # Цель ЗАКРЫТА знанием — и только теперь тревога падает.
                 for word in learned:
                     self.curiosity.closed(self.curiosity.note_unknown(word))
                 self.hormone_gate.relief()
                 self.hormone_gate.save(self.memory_dir)
-                self._say("цель закрыта: связь нашлась, тревога упала")
+                moved = self.curiosity.promote(
+                    lambda: StaticKnowledge(self._load_world()),
+                    self.hormone_gate, answer_found=True)
+                # Знание вошло — карточка-копия закрыта (её содержимое в базе).
+                self.curiosity.clear_staging()
+                self._say(f"цель закрыта: связь нашлась, тревога упала, "
+                          f"в базу вошло {moved}")
                 return f"[Lipid-2]: {render_verdict(verdict)}"
             for word in learned:
                 self._say(f"выучено «{word}», но вопрос ещё не закрыт")
 
-        # Не нашли — тревога ОСТАЁТСЯ: вопрос жив, пока не закрыт.
+        # Не нашли — тревога ОСТАЁТСЯ: вопрос жив, пока не закрыт. Кандидаты
+        # остаются в карантине: их ещё есть чем закрыть позже.
         self.hormone_gate.save(self.memory_dir)
-        self._say(f"ответ НЕ добыт: {verdict.code}; цель осталась открыта")
+        self._say(f"ответ НЕ добыт: {verdict.code}; цель осталась открыта, "
+                  f"кандидатов в карантине: {len(self.curiosity.staged())}")
         return f"[Lipid-2]: {render_verdict(verdict)}"
+
+    def _reasoning_view(self) -> Dict[str, Any]:
+        """Мир для РАССУЖДЕНИЯ: живая база плюс неподтверждённые кандидаты.
+
+        Кандидат имеет право быть доводом, но не фактом: он здесь, но его нет
+        в lipid_world.json, пока дофамин не разрешил. Разделение нужно потому,
+        что иначе либо гипотеза никогда не поможет найти ответ (её не видно),
+        либо гипотеза станет знанием без проверки (она уже в базе).
+        """
+        import copy
+        world = copy.deepcopy(self._load_world())
+        ents = world.setdefault("entities", {})
+        for item in self.curiosity.staged():
+            key = str(item.get("name", "")).strip().lower()
+            rec = item.get("record")
+            if key and isinstance(rec, dict):
+                ents[key] = merge_entity(ents.get(key), dict(rec))
+        return world
 
     # ── ОБРАБОТЧИКИ ────────────────────────────────────────
 
@@ -1756,3 +1810,8 @@ class Lipid2Brain:
                 world.setdefault("unknown_words", {}).pop(key, None)
         self._world_sig = None            # кэш мира обязан протухнуть
         return written
+
+    #: Куда перенаправить наблюдение, пока поиск по вопросу не закрыт.
+    #: None = писать в живую базу как обычно. Ставится только на время
+    #: окна поиска в _handle_ability (и снимается в finally).
+    _staging_target: Optional[str] = None
