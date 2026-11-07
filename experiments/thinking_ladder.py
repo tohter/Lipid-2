@@ -84,6 +84,19 @@ def run(world_path: str) -> int:
         print(f"  {'✅' if not bad else '❌'} {q}")
         print(f"       {ans[:170]}")
     print(f"\nотвечено {answered} из {len(LADDER)}")
+    # Лестница проверяет не только «ответила ли», но и ЧТО ОСТАЛОСЬ ПОСЛЕ.
+    # Слово хозяина: высокая тревога = поиск не завершён. Если после прогона
+    # отвеченных меньше, чем вопросов, а кортизол спокойный — флаг врёт:
+    # система «успокоилась», не найдя ответа.
+    gate = getattr(brain, "hormone_gate", None)
+    if gate is not None:
+        cur = getattr(brain, "curiosity", None)
+        goals = len(cur.open_goals()) if cur is not None else -1
+        print(f"тревога {gate.cortisol} (ищем={gate.must_search()}), "
+              f"открытых целей {goals}, кандидатов в карантине "
+              f"{len(cur.staged()) if cur is not None else -1}")
+        if answered < len(LADDER) and not gate.must_search():
+            print("⚠️ вопрос(ы) не закрыты, а тревога СПОКОЙНАЯ — флаг враньёт")
     return answered
 
 
