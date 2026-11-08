@@ -134,6 +134,12 @@ PRONOUN_ACTORS = ("он", "она", "оно", "они", "я", "ты", "мы", "�
 # «быть». Символ в тексте встречается нулю раз (замер по корпусу experiments),
 # поэтому не смешивается с настоящим словом.
 ZERO_COPULA = "\u2205"
+# Отношения, которые ПРОШЕДШАЯ СВЯЗКА имеет право перевести в случай
+# (см. SimpleExtractor._mark_copula_state). PART_OF и OBJECT_OF здесь НЕТ
+# намеренно: «жена Егора» остаётся чьей-то женой, каким бы временем ни было
+# сказано сказуемое (замер рассказа о Егоре, 09.11: ребро, утонувшее в
+# событии, — 0 из 7 пар путей при живом экстракторе).
+COPULA_STATE_RELS = ("HAS_PROPERTY", "IS_ROLE")
 
 NEGATIONS = {"не", "ни"}
 VERB_POS = ("VERB", "INFN", "PRTF", "GRND")
@@ -1829,6 +1835,14 @@ class SimpleExtractor:
         # Делается ПОСЛЕ сборки фактов и ДО dedup — метка predicate входит в
         # вывод, но dedup ключуется по (head,relation,tail) и её сохранит.
         self._collect_events(res, subj, pred, order, negs)
+        # СУДЬБА СВЯЗОЧНОГО ФАКТА: «Маша БЫЛА жирная» — случай, а не закон.
+        # Отдельным шагом, а НЕ внутри `_collect_events`: та функция
+        # ОТКАЗЫВАЕТСЯ работать со связкой (`if self._is_copula_form(pred):
+        # return`), и снятие этого отказа перекрасило бы в события ВСЕ именные
+        # предложения рассказов — ровно тот слив статики с динамикой, из-за
+        # которого связочные фразы и выводились из-под перекраски (урок
+        # test_kinship_edge_contract).
+        self._mark_copula_state(res, subj, order, negs)
         # ОЖИДАНИЕ из конструкции «X попросил Y <инфинитив>» — тоже динамика.
         self._collect_expectations(res, content, subj, pred, order, negs)
         # ГДЕ КОНЧИЛОСЬ «НЕ» — громко, если правка что-то изменила: без строки
@@ -1936,6 +1950,86 @@ class SimpleExtractor:
             if f.relation == "PART_OF":
                 continue
             f.predicate = "event"
+
+    def _past_copula_forms(self, toks: List[dict]) -> List[dict]:
+        """
+        Прошедшие связочные формы предложения (токены, у которых есть
+        время past). Пусто — связки нет; ДВЕ — время сказуемого не
+        определено, и выбирать наугад нельзя.
+
+        Форма «была» выкинута морфологией из content (role="stop"), и до
+        этого метода о её существовании при решении судьбы факта никто не
+        спрашивал: «Маша была жирная» разбиралась ровно как «Маша толстая»,
+        и в мире оседало вечное свойство (замер 09.11 (ночь):
+        маша|HAS_PROPERTY|жирный, support=1, вес как у закона).
+
+        КЛЮЧ — lemma + content + role. ЗАМЕРЕНЫ обе обрезанные версии:
+        * по одному lemma («Маша стала жирная»): «стать» — содержательный
+          глагол (content=True, role=action), и без content/role он считался
+          связкой, а её состояние — прошлым. Сказка про «стать» — отдельная
+          дыра (инхоатив), здесь она НЕ решается, но заперта тестом;
+        * по pos=VERB без lemma: ловит ЛЮБУЮ служебную глагольную форму,
+          а не связку.
+        """
+        return [t for t in toks
+                if t.get("lemma") in COPULAS and not t.get("content")
+                and t.get("role") == "stop"
+                and any(v.get("tense") == "past"
+                        for v in t.get("variants", []))]
+
+    def _mark_copula_state(self, res, subj: Optional[dict], order: int,
+                           neg) -> None:
+        """
+        ИМЕННАЯ ЧАСТЬ, сказанная ПРОШЕДШЕЙ связкой, — состояние, а не закон.
+
+        Что происходит с фактом: `predicate="event"` (в онтологию он не
+        пойдёт, см. brain/learner.py::_apply_fact) + EventRecord, чтобы
+        отброшенное НЕ исчезло бесследно, и заметка, чтобы отказ был
+        назван в отчёте (пустой приём неотличим от «в тексте нечего было
+        брать», memory.txt п.B).
+
+        Под правом ТОЛЬКО отношения из COPULA_STATE_RELS и только у
+        подлежащего. PART_OF/OBJECT_OF временем не смываются, а придаточное
+        и однородные части разбираются своими вызовами — каждый со своим
+        подлежащим.
+
+        ГДЕ ЭТО ЕЩЁ НЕ РАБОТАЕТ (замер 09.11 (ночь), названо, а не обещано):
+        «Вася был инженером» остаётся вася|INSTRUMENT|инженер — там сказуемого
+        нет вовсе и именная часть уезжает косым падежом до всякого времени
+        (заперто TestCopulaInstrumentHoleLeftAlive), «Маша стала жирная»
+        (инхоатив) и «У Маши была жирная кошка» (possession-ветка уходит из
+        метода ДО этого шага) — заперты TestInchoativeHoleLeftAlive и
+        TestPossessionBranchHoleLeftAlive в tests/test_fact_fate_contract.py.
+        """
+        if subj is None:
+            return
+        forms = self._past_copula_forms(res.tokens)
+        if not forms:
+            return
+        if len(forms) > 1:
+            # СВЯЗОК НЕСКОЛЬКО — время сказуемого НЕ ВЫБИРАЕТСЯ. Молчание
+            # здесь неотличимо от «связки не было», а исход РАЗНЫЙ: при
+            # одной связке факт становится состоянием, при двух мы остаёмся
+            # со связью. ЗАМЕРЕНО на «Вася был был инженер»: без этой строки
+            # отказ выглядел бы как «время не дошло».
+            res.notes.append(
+                "связочных форм в прошедшем времени %d (%s): время сказуемого "
+                "не определено, связь НЕ переведена в состояние"
+                % (len(forms), " ".join(t["word"] for t in forms)))
+            return
+        word = forms[0]["word"]
+        for f in res.facts:
+            if f.relation not in COPULA_STATE_RELS or f.head != subj["lemma"]:
+                continue
+            res.events.append(EventRecord(
+                subject=f.head, action=word, obj=f.tail, tense="past",
+                order=order, evidence=res.sentence, negated=bool(f.negated),
+                cause=""))
+            f.predicate = "event"
+            res.notes.append(
+                "«%s» — прошедшая связка: %s %s %s это состояние, а не "
+                "закон; в онтологию НЕ записано, сохранено как событие"
+                % (word, f.head, f.relation, f.tail))
 
     def _collect_expectations(self, res: SentenceFacts, content: List[dict],
                               subj: Optional[dict], pred: Optional[dict],
