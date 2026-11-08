@@ -537,6 +537,52 @@ class Lipid2Brain:
         self._variant_sig = sig
         return out
 
+    def _learned_in_file(self, concept: str, path: str) -> Optional[Dict[str, Any]]:
+        """Знание ВОШЛО в файл `path`? Вот единственный измеримый успех канала.
+
+        Прежний закон был «learned_data непустой» — и это враньё, ЗАМЕРЕННОЕ
+        09.11 (experiments/measure_use_vs_commit.py): канал возвращает связный
+        отчёт, ничего не записав (живая Gemma делает так всякий раз, когда
+        рассуждает без вызова инструмента). Мозг при этом поднимал дофамин,
+        печатал «выучено» и ВЫЧИСТЯЛ слово из unknown_words: переставал
+        считать его неизвестным, не узнав. Дыра перестала быть видимой —
+        то есть была замазана, что законом проекта запрещено.
+
+        Здесь нет никакого нового знания: есть сверка объявления с фактом.
+        Ищем в ТОМ ЖЕ файле, куда канал пишет (во время поиска по вопросу
+        это карантин, а не живая база), и не по точной строке: форма слова
+        («дождя») есть то же знание, и требовать именительный падеж значило
+        бы вечный поиск уже известного. Порядок как в find_in_memory: точный
+        ключ -> варианты имени -> морфология.
+        """
+        try:
+            world = read_world(path)
+        except Exception:
+            return None
+        entities = world.get("entities", {})
+        key = str(concept or "").lower().strip()
+        if not key:
+            return None
+        if key in entities:
+            return entities[key]
+        hit = resolve_by_variant(key, entities, self._variants(world)) \
+            or self.core.resolve_name(key) or self.lemmas_world.resolve_name(key)
+        if hit and hit in entities:
+            return entities[hit]
+        # 4) ФОРМА СЛОВА. Резолверы выше знают только те формы, которые ядро
+        # уже видело, поэтому запись «дождя» они не находят по вопросу «дождь»,
+        # хотя same_word эти формы сводит (замерено: same_word("дождя",
+        # "дождь") -> True, оба резолвера -> None). Без этого шага мозг
+        # ОТКАЗЫВАЛ каналу, который записал знание, то есть лечил одну ложную
+        # определённость другой — вечным переучиванием.
+        # ЦЕНА замерена: 0.3 мс на сущность (500 сущностей = 152 мс в холодном
+        # процессе), и шаг идёт только когда три дешёвых промахнулись — то
+        # есть на редком событии обучения, а не на каждом запросе.
+        for existing, record in entities.items():
+            if same_word(existing, key):
+                return record
+        return None
+
     def find_in_memory(self, concept: str) -> Optional[Dict[str, Any]]:
         """
         Быстрый поиск сущности и её родительских связей в Графе Вселенной.
@@ -777,6 +823,19 @@ class Lipid2Brain:
                 # которую оставил другой канал или прошлый урок.
                 learned_data = got if got else None
                 failure = getattr(self.teacher_llm, "last_failure", None)
+                if learned_data:
+                    # УСПЕХ = ЗАПИСЬ, А НЕ ОТВЕТ. Мерим по тому адресу, куда
+                    # мозг НАПРАВИЛ учителя (при поиске по вопросу это карантин):
+                    # сверять с живой базой значило бы отвергнуть законную
+                    # запись в окно поиска.
+                    адрес = getattr(self.teacher_llm, "world_filepath",
+                                    self.world_filepath)
+                    if not self._learned_in_file(concept, адрес):
+                        self._say(f"канал 1 ответил про «{concept}», но в «"
+                                  f"{os.path.basename(адрес)}» ничего не "
+                                  f"записал — это НЕ знание")
+                        failures.append(("empty", "канал 1: ответ без записи"))
+                        learned_data = None
                 if learned_data:
                     self.channel_found["llm"] += 1
                     self._say(f"канал 1: нашёл «{concept}»")
