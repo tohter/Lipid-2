@@ -54,7 +54,7 @@ import shutil
 import tempfile
 import unittest
 
-from core.records import add_witness, observation_weight
+from core.records import add_witness, independent_bases, record_weight, observation_weight
 from core.worldfile import read_world, write_world
 from lang.ru.lemma import install as _install_lemma_service
 
@@ -245,9 +245,21 @@ class TestRetellingIsNotProof(unittest.TestCase):
         lr.learn_from_text("Дождь гасит огонь.", source="user",
                            allow_teacher=False)
         rec = self._obs()["дождь|CAN_DO|гасить"]
-        self.assertEqual(2, int(rec["support"]),
+        # ПОДДЕРЖКА = НАЗВАННЫЕ ОСНОВАНИЯ (смена закона 08.11, шаг Г).
+        # Прежняя редакция ждала support=2. Слово Хозяина ЗАСЧИТАНО и
+        # осталось засчитанным — но видно это по ВЕСУ, а не по числу
+        # «видела N раз»: основание здесь ОДНО (owner), безымянная строка
+        # source="text" сослаться на себя не может. Разойтись числам
+        # означало бы то измеренное враньё, ради которого правка и делалась:
+        # «видела 2 раза» при одном основании (experiments/
+        # measure_support_vs_bases.py, случай A).
+        self.assertEqual(1, int(rec["support"]))
+        self.assertEqual(1, independent_bases(rec),
                          "слово Хозяина слито с чужим текстом: он своё "
                          "начало, а не чей-то пересказ")
+        self.assertGreater(record_weight(rec), 100,
+                           "слово Хозяина не дало веса: засчёт не виден "
+                           "ни в одном числе")
 
 
 class TestRuleLivesInOnePlace(unittest.TestCase):
@@ -308,8 +320,13 @@ class TestRuleLivesInOnePlace(unittest.TestCase):
                                        confidence=0.5, evidence="другая фраза",
                                        source="wiki")
         rec = self._obs()["мяч|IS_A|игрушка"]
-        self.assertEqual(2, int(rec["support"]),
-                         "первое названное основание не засчитано")
+        # ЗАКОН ИЗМЕНЁН ОТКРЫТО (08.11, шаг Г): зачёт остался (вес растёт),
+        # support больше не «сколько раз засчитали», он равен названным
+        # основаниям. Здесь оно первое — и молчание числа честно: второй
+        # опоры у связи нет.
+        self.assertEqual(1, int(rec["support"]),
+                         "первое названное основание не стало основанием")
+        self.assertEqual(1, independent_bases(rec))
         # ВОТ ГЛАВНАЯ ДЫРА: модель пересказывает СТАТЬЮ, которую мы сами
         # читали. Другой канал, другие слова, ТОТ ЖЕ документ.
         self.brain._record_observation("мяч", {"hierarchy": ["игрушка"],
@@ -318,7 +335,7 @@ class TestRuleLivesInOnePlace(unittest.TestCase):
                                        evidence="мяч — предмет для игр",
                                        source="llm")
         rec = self._obs()["мяч|IS_A|игрушка"]
-        self.assertEqual(2, int(rec["support"]),
+        self.assertEqual(1, int(rec["support"]),
                          "та же статья, пересказанная другим каналом, согрела "
                          "связь: независимость снова измеряется словами")
         self.assertEqual(3, len(rec.get("provenance") or []),
@@ -330,9 +347,13 @@ class TestRuleLivesInOnePlace(unittest.TestCase):
                                        confidence=0.5, evidence="ещё один",
                                        source="wiki")
         rec = self._obs()["мяч|IS_A|игрушка"]
-        self.assertEqual(3, int(rec["support"]),
+        # Число = НАЗВАННЫЕ ОСНОВАНИЯ (закон 08.11, шаг Г): «Мяч» + «Список
+        # игрушек». Прежняя редакция ждала 3 — там считалось и безымянное
+        # первое свидетельство, то есть «видела 3 раза» при двух опорах.
+        self.assertEqual(2, int(rec["support"]),
                          "мозг перестал замечать ОТДЕЛЬНОЕ свидетельство — "
                          "опыт перестал чему-то учить")
+        self.assertEqual(2, independent_bases(rec))
 
     def test_8_helper_refuses_same_source_and_text(self):
         """Само правило: пересказ и НЕИЗВЕСТНО ОТКУДА — не подтверждение.
@@ -358,7 +379,9 @@ class TestRuleLivesInOnePlace(unittest.TestCase):
                              confidence=0.5, negated=False, relation="IS_A",
                              document="глоссарий игрушек")
         self.assertTrue(warmed, "названный документ не принят как основание")
-        self.assertEqual(2, int(rec["support"]))
+        # Основание стало ОДНИМ названным — поддержка обязана показать ровно
+        # одно (смена закона 08.11; floor 1 при этом сохранён).
+        self.assertEqual(1, int(rec["support"]))
 
 
 if __name__ == "__main__":

@@ -769,12 +769,23 @@ class TestForceIsConsumedVisibly(unittest.TestCase):
         b.use_llm_teacher = b.use_wiki_teacher = b.ask_user_enabled = False
         return b
 
-    def _add_obs(self, b, head, tail, relation="CAN_DO", weight=180, negated=False):
+    def _add_obs(self, b, head, tail, relation="CAN_DO", weight=180,
+                 negated=False, source="user", lineage="owner"):
+        """Сильная связь, у которой есть НАЗВАННОЕ основание.
+
+        Цена смены закона (08.11, шаг Г). Прежняя фикстура клала source
+        "text" и голое число weight=180 — то есть записывала «сильно
+        утверждает» как самоотчёт: по новому закону вес такой связи
+        выводится из основания и равен 20 (наблюдение, основание не
+        названо), и диагноз ontology_without_experience для неё ЧЕСТНО не
+        срабатывает. Силой связь делает Хозяин (180) — он своё начало.
+        """
         world = b._load_world()
         world.setdefault("observations", {})[f"{head}|{relation}|{tail}"] = {
             "head": head, "relation": relation, "tail": tail,
             "confidence": 0.9, "negated": negated, "weight": weight,
-            "evidence": "t", "source": "text", "support": 1}
+            "evidence": "t", "source": source, "lineage": lineage,
+            "support": 1}
         b._save_world(world)
 
     def test_strong_ontology_without_experience_is_flagged(self):

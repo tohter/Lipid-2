@@ -19,8 +19,7 @@ from core.transitions import (TransitionTable, merge_json,
 from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
-from core.records import (action_name, add_witness, fact_weight,
-                          ground_of, lineage_of,
+from core.records import (action_name, add_witness, lineage_of, stamp_ground,
                           meaningful_categories,
                           merge_entity,
                           name_variants, normalize_actions,
@@ -441,28 +440,22 @@ class Lipid2Brain:
                 key = f"{head}|{relation}|{tail}"
                 obs = observations.get(key)
                 if obs is None:
-                    observations[key] = {
+                    # ОСНОВАНИЕ И ВЕС СТАВИТ ОДНА ФУНКЦИЯ (stamp_ground).
+                    # Прежняя запись писала "ground"/"weight" руками, и таких
+                    # мест в проекте три: закон веса приходилось повторять
+                    # трижды, а мутация в любом из них проходила молча.
+                    observations[key] = stamp_ground({
                         "head": head, "relation": relation, "tail": tail,
                         "confidence": float(confidence), "negated": False,
                         "evidence": (evidence or "")[:220],
                         "source": source or "unknown",
                         "support": 1, "first_seen": now,
                         "provenance": [prov_entry],
-                        # ОСНОВАНИЕ, а не уверенность канала. ЧИСЛО confidence
-                        # здесь есть громкость канала (brain.CHANNEL_CONFIDENCE
-                        # приписывает wiki 0.85, llm 0.75), и оставить её как
-                        # единственное различие значило бы, что пересказ и
-                        # проверка различимы только по числу, которое сам
-                        # канал себе и выбрал.
-                        "ground": ground_of(source),
                         # ОТКУДА ПРИЕХАЛО. Пусто — если назвать нечем (модель,
                         # безымянный текст): свидетельство сохранится, но
                         # достоверности не прибавит.
                         "lineage": lineage,
-                        # ВЕС В ДАННЫХ, а не в голове процесса: без него
-                        # гипотеза и проверка неразличимы (ср. learner).
-                        "weight": fact_weight(confidence, False, relation, 1),
-                    }
+                    })
                     continue
                 # Повтор ТОЙ ЖЕ связи — подтверждение ТОЛЬКО если это
                 # ОТДЕЛЬНОЕ свидетельство: тот же канал и то же основание —

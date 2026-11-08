@@ -35,7 +35,9 @@
      уверенность, нажитая не своим опытом.
 
   3) вес наблюдения для этой записи вообще НЕ ЗАПИСАН (weight=None), хотя
-     единая формула core.records.fact_weight существует и умеет считать.
+     формула в ядре существует и умеет считать (тогда это был
+     core.records.fact_weight; с 08.11 ночь вес записи порождает сила
+     основания — core.records.weight_from_ground, см. test_6).
 
 ЧТО ЗАКРЕПЛЯЕТСЯ:
 
@@ -65,7 +67,7 @@ import shutil
 import tempfile
 import unittest
 
-from core.records import fact_weight, observation_weight
+from core.records import observation_weight
 from lang.ru.lemma import install as _install_lemma_service
 
 _install_lemma_service()
@@ -201,8 +203,24 @@ class TestEvidenceIsALink(unittest.TestCase):
             msg="чужая уверенность перетекла в эту связь")
 
     # ── 3. вес лежит В записи и различает гипотезу и знание ─────────
-    def test_6_weight_is_stored_and_grows(self):
-        """Одно свидетельство — нижняя половина шкалы, подтверждённое — выше."""
+    def test_6_weight_follows_ground_not_self_report(self):
+        """Вес = СИЛА ОСНОВАНИЯ, а не то, насколько уверенно канал высказался.
+
+        ЗАКОН ИЗМЕНЁН ОТКРЫТО (шаг 2.2/2.3 босса, 08.11 ночь). Прежняя
+        редакция этого теста запирала fact_weight(conf, ...), то есть
+        90 + 130*самоотчёт. ЗАМЕР, из-за которого формула снята
+        (experiments/measure_weight_authority.py):
+          * пять каналов с ОДНИМ основанием давали 161..220 — разница 59
+            точек там, где основание ОДНО;
+          * модель без всякого основания с самоотчётом 1.00 (220) перекрыла
+            ДВЕ названные книги (171);
+          * живой мир: три связи с НУЛЁМ названных оснований весили
+            120..210 из 255.
+        Проверка была НЕ лишней, а неверной: она сверяла запись с формулой,
+        но не спрашивала, ОТ ЧЕГО формула. Спрошено здесь.
+        """
+        from core.records import (GROUND_TESTIMONY, ground_of,
+                                  weight_from_ground)
         self.brain._record_observation("мяч", {"hierarchy": ["игрушка"]},
                                        confidence=0.5, evidence="один раз",
                                        source="llm")
@@ -210,20 +228,37 @@ class TestEvidenceIsALink(unittest.TestCase):
         self.assertIn("weight", once,
                       "в записи нет числа достоверности (замер: weight=None) — "
                       "отличить гипотезу от знания нечем")
+        self.assertEqual("ground-v2", once.get("weight_law"),
+                         "число лежит в данных без имени закона: читатель не "
+                         "может отличить вес от самоотчёта и обязан его "
+                         "пересчитать")
         w_once = observation_weight(once)
-        self.assertEqual(fact_weight(0.5, False, "IS_A", 1), w_once,
-                         "вес в записи не выводится единой формулой проекта")
+        # СВЕРКА ИДЁТ С ТЕМИ ОСНОВАНИЯМИ, что лежат в записи, а не с 1 «на
+        # глазок»: у этой связи основания нет вовсе (канал llm, документ не
+        # назван), и вес 20 — честное «назвать нечем». Прежняя сверка с
+        # единицей проходила только потому, что support завышал число.
+        from core.records import independent_bases
+        self.assertEqual(
+            weight_from_ground(ground_of("llm"), independent_bases(once),
+                               False), w_once,
+            "вес в записи выводится не из силы основания")
+        self.assertLess(w_once, 150,
+                        "одинокий чужой пересказ перешагнул порог диагноза "
+                        "«онтология без опыта»: диагноз начал бы срабатывать "
+                        "на громкости, а не на пустом опыте")
+        self.assertEqual(GROUND_TESTIMONY, once.get("ground"))
+
         self.brain._record_observation("мяч", {"hierarchy": ["игрушка"]},
                                        confidence=0.5, evidence="ещё раз",
                                        source="user")
-        self.brain._record_observation("мяч", {"hierarchy": ["игрушка"]},
-                                       confidence=0.5, evidence="и ещё",
-                                       source="wiki")
         thrice = list(read_world(self.dir)["observations"].values())[0]
-        w_thrice = observation_weight(thrice)
-        self.assertGreater(w_thrice, w_once,
+        w_owner = observation_weight(thrice)
+        self.assertGreater(w_owner, w_once,
                            "убеждённость и единичное наблюдение дают ОДНО "
                            "число: фазы «испугался» и «знаю» неразличимы")
+        self.assertEqual(weight_from_ground(ground_of("user"), 1, False),
+                         w_owner,
+                         "слово Хозяина не получило своей силы основания")
         self.assertLess(w_once, 255,
                         "первое же свидетельство уже на пике шкалы")
 

@@ -66,7 +66,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from core.records import observation_weight
+from core.records import EXPERIENCE_WEIGHT_LAW, observation_weight
 from core.transitions import (MAX_STRENGTH, PACK, TransitionTable,
                                   VERSION, table_from_world)
 from core.worldfile import world_transaction
@@ -263,6 +263,12 @@ def consolidate(world: dict, transitions: Optional[TransitionTable] = None,
                                    f"{strength}/{MAX_STRENGTH}",
                        "source": SOURCE, "support": 1, "first_seen": now,
                        "weight": w,
+                       # ЗАКОН НАЗВАН: это число посчитано ИЗ СИЛЫ ОПЫТА,
+                       # которой у формулы основания нет и не может быть.
+                       # Без имени закона читатель счёл бы его самоотчётом и
+                       # пересчитал по основанию — понижений сна перестали бы
+                       # доходить до графа (замер прошлой сессии 220 -> 190).
+                       "weight_law": EXPERIENCE_WEIGHT_LAW,
                        "consolidated_strength": strength}
                 if not dry_run:
                     obs[key] = rec
@@ -280,6 +286,12 @@ def consolidate(world: dict, transitions: Optional[TransitionTable] = None,
                 if new_w != cur_w:
                     if not dry_run:
                         existing["weight"] = new_w
+                        # СОН ПЕРЕИМЕНОВАЛ ЗАКОН. Число теперь посчитано из
+                        # силы ОПЫТА, и читатель обязан его беречь: оставить
+                        # тут чужой ground-v2 значило бы, что первое же
+                        # свидетельство пересчитает вес по основанию и
+                        # понижение опыта исчезнет молча.
+                        existing["weight_law"] = EXPERIENCE_WEIGHT_LAW
                         existing["weight_reason"] = (
                             f"сон: опыт {strength}/{MAX_STRENGTH} при весе "
                             f"{cur_w} — понижение до {new_w}")
@@ -298,6 +310,7 @@ def consolidate(world: dict, transitions: Optional[TransitionTable] = None,
             if new_w > cur_w:
                 if not dry_run:
                     existing["weight"] = new_w
+                    existing["weight_law"] = EXPERIENCE_WEIGHT_LAW
                     existing["weight_reason"] = (
                         f"сон: опыт {strength}/{MAX_STRENGTH} подтверждает")
                 rep.raised += 1

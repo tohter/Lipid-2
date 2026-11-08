@@ -46,11 +46,27 @@ from lang.ru.text import experience as ru_experience  # IR A2.4: разбор п
 
 
 def obs_rec(head, tail, weight, *, negated=False, conf=0.9, support=1,
-            relation="CAN_DO", source="text:t"):
-    return {f"{head}|{relation}|{tail}": {
+            relation="CAN_DO", source="text:t",
+            law="experience-v1"):
+    """Снимок наблюдения, в котором вес ПОСЧИТАН СНАМ (мир после консолидации).
+
+    ПОЧЕМУ ФИКСТУРА ОБЯЗАНА НАЗВАТЬ ЗАКОН (смена закона 08.11, шаг Г).
+    Прежняя фикстура клала голое число, и читатель принимал его за истину.
+    По новому закону голое число — САМООТЧЁТ канала, права голоса у него
+    нет: замер записей с source="text" и без основания давал веса 161..220
+    при ОДНОМ основании, а безымянная модель с self-report 1.00 (220)
+    перекрывала две названные книги (171). Поэтому фикстура, которая хочет
+    застать «вес уже установлен», обязана сказать КЕМ: experience-v1 —
+    сила опыта, посчитанная сном, единственный закон, чьё число нельзя
+    пересчитать на месте (силы опыта в самой записи нет).
+    """
+    rec = {
         "head": head, "relation": relation, "tail": tail,
         "confidence": conf, "negated": negated, "support": support,
-        "weight": weight, "source": source, "evidence": ""}}
+        "weight": weight, "source": source, "evidence": ""}
+    if law:
+        rec["weight_law"] = law
+    return {f"{head}|{relation}|{tail}": rec}
 
 
 def world_of(*records):
@@ -502,10 +518,31 @@ class TestWeightLivesInData(unittest.TestCase):
         ТО, ЧЕГО НЕ БЫЛО: experience_conflicts() читал obs["weight"], ключа
         weight не существовало — значит диагноз ontology_without_experience
         было НЕВОЗМОЖНО получить ни при каких данных.
+
+        ЗАКОН ПОМЕНЯЛСЯ ЗДЕСЬ ОТКРЫТО (08.11, шаг Г). Прежний вариант
+        добивался диагноза выученной фразой — и получал его только потому,
+        что вес был функцией САМООТЧЁТА: разбор сказал 0.9, формула дала
+        220, и «онтология сильна» означало «канал громко сказал». По новому
+        закону такая связь стоит 55 (наблюдение без названного основания) и
+        диагноз для неё ЧЕСТНО НЕ срабатывает: требовать его — значит
+        требовать прежней лжи. Сильной связь делают названные основания:
+        слово Хозяина (180). Инспектор обязан его увидеть — это и проверяет
+        прежний дефект (вес читается ИЗ ДАННЫХ), не проверяя больше силу
+        болтовни.
         """
         from brain.lipid2_brain import Lipid2Brain
         brain = Lipid2Brain(memory_dir=self.dir)
         brain.learn_from_text("Кит ныряет глубоко.", allow_teacher=False)
+        key = "кит|CAN_DO|нырять"
+        weak = brain.experience_conflicts()
+        self.assertEqual(
+            [c for c in weak if c["kind"] == "ontology_without_experience"],
+            [], "безымянное наблюдение не имеет права выглядеть сильным: "
+                "именно так и выглядел прежнее враньё самоотчёта")
+        world = brain._load_world()
+        world["observations"][key]["source"] = "user"
+        world["observations"][key]["lineage"] = "owner"
+        brain._save_world(world)
         conflicts = brain.experience_conflicts()
         self.assertTrue(any(c["kind"] == "ontology_without_experience"
                             for c in conflicts),
@@ -519,11 +556,21 @@ class TestWeightLivesInData(unittest.TestCase):
         """Старый файл без weight — НЕ «уверенность 0», а вывод по формуле."""
         from core.records import observation_weight
         old = {"head": "кит", "relation": "CAN_DO", "tail": "нырять",
+               "source": "user", "lineage": "owner",
                "confidence": 0.9, "support": 2, "negated": False}
         self.assertGreater(observation_weight(old), 100,
                            "старая запись не обязана выглядеть пустой")
-        self.assertEqual(observation_weight({"weight": 77}), 77,
-                         "записанное число авторитетнее вывода")
+        # ПРЕЖНЕЕ УТВЕРЖДЕНИЕ («записанное число авторитетнее вывода»)
+        # СНЯТО КАК ЗАКОН И ОНО ЖЕ БЫЛО ДЫРОЙ. Замер
+        # experiments/measure_weight_authority.py: пять каналов с ОДНИМ
+        # основанием дали 161..220 — разброс 59 очков из 255 там, где
+        # различались только числа, которые каналы назвали о самих себе.
+        # Число без имени закона при чтении ВЫВОДИТСЯ заново.
+        self.assertEqual(observation_weight({"weight": 77}), 20,
+                         "голое число — самоотчёт, он не имеет права голоса")
+        self.assertEqual(observation_weight({"weight": 77,
+                                             "weight_law": "experience-v1"}),
+                         77, "число сна пересчитать на месте нечем")
         self.assertEqual(observation_weight(None), 0)
 
 
@@ -548,7 +595,11 @@ class TestGraphProjectionIsExact(unittest.TestCase):
         b.learn_from_text("Кит ныряет глубоко.", allow_teacher=False)
         key = "кит|CAN_DO|нырять"
         w = b._load_world()
+        # 220 здесь — вес, ПОЛОЖЕННЫЙ СНАМ (см. obs_rec): голое число по
+        # новому закону читатель пересчитывает, и проверка перестала бы
+        # видеть понижение вообще.
         w["observations"][key]["weight"] = 220
+        w["observations"][key]["weight_law"] = "experience-v1"
         w["observations"][key]["support"] = 2
         b._save_world(w)
         b.learner.replay_observations(w)
@@ -670,6 +721,15 @@ class TestSleepNowIntegration(unittest.TestCase):
         b = self._brain()
         b.learn_from_text("Кит ныряет глубоко.", allow_teacher=False)
         b.transitions.confirm("кит", "нырять", 1)
+        # Сила берётся словом Хозяина: прежний вариант полагался на вес
+        # выученной фразы (220), а он был самоотчётом разбора. Без названного
+        # основания связь стоит 55 и понижения вообще не происходит —
+        # проверять пол на ней не на чем.
+        key = "кит|CAN_DO|нырять"
+        world = b._load_world()
+        world["observations"][key]["source"] = "user"
+        world["observations"][key]["lineage"] = "owner"
+        b._save_world(world)
         weights = []
         for _ in range(6):
             r = b.sleep_now()

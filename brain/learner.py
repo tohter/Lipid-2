@@ -52,9 +52,10 @@ if __package__ in (None, ""):        # прямой запуск: python brain/l
 from core.extract import Fact, SimpleExtractor
 from core.logchannel import status as _status
 from core.morph import Morph
-from core.records import (add_witness, fact_weight, ground_of, lineage_of,
+from core.records import (add_witness, lineage_of, record_weight,
                           merge_entity, merge_observation,
-                          merge_unknown_entry, observation_weight)
+                          merge_unknown_entry, observation_weight,
+                          stamp_ground)
 from core.storage import NodeType, RelationType
 
 # Ядро само себя языком не снабжает (C_core_reaches_lang = 0 вечен). Ученик —
@@ -949,20 +950,23 @@ class Learner:
                 key = f"{variant}|SYNONYM_OF|{canon}"
                 obs = observations.get(key)
                 if obs is None:
-                    observations[key] = {
+                    # ОСНОВАНИЕ И ВЕС СТАВИТ ОДНА ФУНКЦИЯ (stamp_ground) —
+                    # здесь и в двух других местах записи. Держать формулу
+                    # веса в трёх писателях значило бы иметь три закона:
+                    # мутирование показало, что красный тест при этом всё
+                    # равно остаётся зелёным, если повредить не то место.
+                    observations[key] = stamp_ground({
                         "head": variant, "relation": "SYNONYM_OF",
                         "tail": canon, "confidence": 0.9, "negated": False,
                         "evidence": sf.sentence[:220], "source": source,
                         "support": 1, "first_seen": int(time.time()),
-                        "ground": ground_of(source),
-                        "weight": fact_weight(0.9, False, "SYNONYM_OF", 1),
                         # ОТКУДА ПРИЕХАЛО (tests/test_lineage_contract.py,
                         # тест 13): без имени документа запись остаётся без
                         # происхождения, и любое её повторение навечно
                         # повисает UNKNOWN. Честно, но дорого: вызывающий
                         # обязан назвать файл, когда читает файл.
                         "lineage": lineage_of(source, document),
-                    }
+                    })
                     rep.observations_new += 1
                 else:
                     # Рост поддержки — ЧЕРЕЗ ОБЩЕЕ ПРАВИЛО, а не прямым
@@ -1133,27 +1137,20 @@ class Learner:
         key = f"{head}|{rel_name}|{tail}"
         obs = observations.get(key)
         if obs is None:
-            observations[key] = {
+            # ОСНОВАНИЕ И ВЕС СТАВИТ ОДНА ФУНКЦИЯ (см. синонимную ветку
+            # выше). ВЕС ЗАПИСЫВАЕТСЯ В ДАННЫЕ: раньше он существовал только
+            # внутри процесса, а experience_conflicts() читал его из
+            # observations и вечно получал 0 (core/records.py).
+            observations[key] = stamp_ground({
                 "head": head, "relation": rel_name, "tail": tail,
                 "confidence": fact.confidence, "negated": bool(fact.negated),
                 "evidence": (fact.evidence or sf.sentence)[:220],
                 "source": source, "support": 1, "first_seen": int(time.time()),
-                # ОСНОВАНИЕ, а не уверенность. ВЫЧИСЛЯЕТСЯ из канала, а не
-                # принимается от него: «мне показалось» и «я проверил» должны
-                # быть различимы после перезапуска процесса (замер: поле
-                # confidence = 0.6 у любой записи разбора, откуда бы фраза
-                # ни пришла).
-                "ground": ground_of(source),
                 # ПРОИСХОЖДЕНИЕ: имя документа, из которого приехала фраза.
                 # Пусто — значит назвать нечем, и это UNKNOWN: свидетельство
                 # сохранится в журнале, но достоверности не добавит.
                 "lineage": lineage_of(source, document),
-                # ВЕС ЗАПИСЫВАЕТСЯ В ДАННЫЕ. До этого он существовал только
-                # внутри процесса (синапсы графа) и пересчитывался при каждом
-                # replay, а experience_conflicts() читал его из observations и
-                # вечно получал 0 — см. core/records.py::fact_weight.
-                "weight": fact_weight(fact.confidence, fact.negated, rel_name, 1),
-            }
+            })
             rep.observations_new += 1
         else:
             # ПЕРЕСКАЗ НЕ ПОДТВЕРЖДАЕТ (слова Хозяина 08.11, замер
@@ -1175,9 +1172,12 @@ class Learner:
             tn = self.core.get_or_create_node(tail, self._tail_type(fact),
                                               source=source)
             rel = REL[rel_name]
-            self._connect(hn, tn, rel, self._weight(fact.confidence,
-                                                    fact.negated, rel,
-                                                    int(observations[key].get("support", 1))))
+            # ГРАФ ПОЛУЧАЕТ ТОТ ЖЕ ЧИСЛО, ЧТО ЛЕЖИТ В ЗАПИСИ, а не пересчёт
+            # от самоотчёта разбора. Прежнее self._weight(fact.confidence, ...)
+            # умножало на уверенность экстрактора: две одинаковые по основанию
+            # связи получали в графе разную силу потому, что разбор фразы
+            # оказался убедительнее (замер: 161..220 при одном основании).
+            self._connect(hn, tn, rel, record_weight(observations[key]))
 
     def _store_action(self, entities: dict, sf, verb: str, source: str,
                       rep: LearningReport) -> None:
@@ -1306,20 +1306,6 @@ class Learner:
             if weight == have:
                 return
         hn.connect_to(tn, rel_type=rel, weight=weight)
-
-    @staticmethod
-    def _weight(conf: float, negated: Optional[bool], rel: RelationType,
-                support: int = 1) -> int:
-        """
-        ЧИСЛО УВЕРЕННОСТИ — из core.records.fact_weight, ЕДИНОЙ формулы.
-
-        Раньше формула была телом этого метода, и потому «weight» нельзя было
-        посчитать ниоткуда, кроме обучающего: в observations она не попадала
-        (замер — в docstring fact_weight), и инспектор расхождений онтология
-        ⟷ опыт читал из записей нули. Числа НЕ менялись: перенос дословный.
-        """
-        name = getattr(rel, "name", rel)
-        return fact_weight(conf, negated, name, support)
 
     @staticmethod
     def _tail_type(fact: Fact) -> int:

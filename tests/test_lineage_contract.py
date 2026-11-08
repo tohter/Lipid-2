@@ -280,17 +280,24 @@ class TestRefinementCountsOnce(unittest.TestCase):
                            document="Кит")
         self.assertTrue(grew, "уточнённое происхождение не засчитано: "
                              "хранить UNKNOWN тогда не за чем")
-        self.assertEqual(2, int(rec["support"]))
-        self.assertEqual(1, independent_bases(rec),
-                         "число оснований разошлось с числом засчитанных "
-                         "подтверждений")
+        # ПОДДЕРЖКА = ОСНОВАНИЯ, а не «+1 за засчёт». ОТКРЫТАЯ СМЕНА ЗАКОНА
+        # 08.11 (шаг Г): прежний вариант ждал support=2 при bases=1. То же
+        # враньё, с которым боролся этот кирпич, но в другом поле: запись
+        # «видела 2 раза» стояла на ОДНОМ названном основании, и reading
+        # «предположительно (видела 2 раза)» (tests/test_certainty_contract)
+        # показывал пользователю подтверждение, которого не было. Замер
+        # расхождения: experiments/measure_support_vs_bases.py, случай A.
+        self.assertEqual(1, int(rec["support"]))
+        self.assertEqual(1, independent_bases(rec))
+        self.assertEqual(int(rec["support"]), independent_bases(rec),
+                         "поддержка обязана равняться числу оснований")
         # Повторное уточнение тем же документом не имеет права греть снова.
         grew = add_witness(rec, source="llm",
                            evidence="Киты — млекопитающие.",
                            confidence=0.6, relation="IS_A",
                            document="Кит")
         self.assertFalse(grew, "уточнение посчитали подтверждением дважды")
-        self.assertEqual(2, int(rec["support"]))
+        self.assertEqual(1, int(rec["support"]))
 
     def test_17_anonymous_witness_is_kept_but_names_nothing(self):
         """Безымянный свидетель сохраняется, но НЕ приписывает происхождения.
@@ -332,7 +339,11 @@ class TestRefinementCountsOnce(unittest.TestCase):
         self.assertTrue(add_witness(rec, source="wiki",
                                     evidence="Кит — млекопитающее.",
                                     confidence=0.9, document="Кит"))
-        self.assertEqual(2, int(rec["support"]))
+        # Рост ЗАСЧИТАН (grew=True выше), но числом он становится только
+        # там, где есть ОТДЕЛЬНОЕ основание: здесь оно одно. Молчание в
+        # меньшую сторону — сознательная цена (закон проекта: ложная
+        # уверенность хуже дыры), floor 1 при этом сохранён.
+        self.assertEqual(1, int(rec["support"]))
         self.assertEqual(1, independent_bases(rec))
 
 
