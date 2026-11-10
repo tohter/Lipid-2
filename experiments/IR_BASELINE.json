@@ -217,6 +217,7 @@
   "lang/ru/ability.py",
   "lang/ru/lemma.py",
   "lang/ru/questions.py",
+  "lang/ru/speaker.py",
   "lang/ru/text.py"
  ],
  "outer_seams": {
@@ -276,14 +277,14 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 831,
-  "files": 68,
+  "checks_comparing_russian": 838,
+  "files": 69,
   "checks_with_russian_message_only": 902
  },
  "totals": {
   "D_debt_files": 3,
   "C_core_reaches_lang": 0,
-  "L_lang_files": 6,
+  "L_lang_files": 7,
   "S_seam_sites": 6,
   "S_demo_seam_sites": 0,
   "S_seam_files": 4,
@@ -295,8 +296,8 @@
   "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 645,
-  "P_ir_output_price": 831,
-  "P_ir_output_files": 68,
+  "P_ir_output_price": 838,
+  "P_ir_output_files": 69,
   "P_msg_only_checks": 902,
   "U_outer_seam_sites": 7,
   "U_outer_seam_files": 6,
