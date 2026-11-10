@@ -82,7 +82,7 @@
    },
    {
     "module": "lang.ru.ability",
-    "line": 1480,
+    "line": 1486,
     "nested": true,
     "demo": false
    }
@@ -276,9 +276,9 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 817,
-  "files": 67,
-  "checks_with_russian_message_only": 901
+  "checks_comparing_russian": 831,
+  "files": 68,
+  "checks_with_russian_message_only": 902
  },
  "totals": {
   "D_debt_files": 3,
@@ -295,9 +295,9 @@
   "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 645,
-  "P_ir_output_price": 817,
-  "P_ir_output_files": 67,
-  "P_msg_only_checks": 901,
+  "P_ir_output_price": 831,
+  "P_ir_output_files": 68,
+  "P_msg_only_checks": 902,
   "U_outer_seam_sites": 7,
   "U_outer_seam_files": 6,
   "G_lang_import_sites": 10,

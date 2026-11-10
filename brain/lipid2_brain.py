@@ -1449,6 +1449,12 @@ class Lipid2Brain:
             return self._handle_interaction(ir_intent.subjects)
         elif intent_type == "ACTION":
             return self._handle_actions(subject)
+        elif intent_type == "COMPARE_DIFF":
+            return self._handle_compare_diff(ir_intent.subjects)
+        elif intent_type == "COMPARE_COMMON":
+            return self._handle_compare_common(ir_intent.subjects)
+        elif intent_type == "WHO_HAS":
+            return self._handle_who_has(subject)
         else:
             # ВОПРОС О СПОСОБНОСТИ («может ли X сделать Y»). IR-парсер его не
             # знает и честно возвращает UNKNOWN; раньше тут заканчивалось
@@ -1852,6 +1858,201 @@ class Lipid2Brain:
                     f"(сила {predicted[0]['strength']}/15).")
         return (f"[Lipid-2]: '{name}' умеет: "
                 f"{', '.join(ordered)}.{hint}")
+
+    # ------------------------------------------------------------------ #
+    # СРАВНЕНИЕ И ОБЛАДАНИЕ (режим глубокого обучения из вопроса)        #
+    # ------------------------------------------------------------------ #
+    def _entity_snapshot(self, concept: str) -> dict:
+        """Плоский срез сущности для сравнения: объединяет свою и
+        унаследованную запись (base+derived) в одно множество свойств,
+        категорий и действий. Никогда не врёт про пустоту: поля, которых
+        нет, остаются пустыми списками."""
+        found = self.find_in_memory(concept)
+        if not found:
+            return None
+        base = found.get("base_entity") or {}
+        derived = found.get("derived_entity") or {}
+
+        def _merge(a, b):
+            out = list(a or [])
+            for x in (b or []):
+                if x not in out:
+                    out.append(x)
+            return out
+
+        return {
+            "name": found.get("matched_concept", concept),
+            "properties": _merge(base.get("properties"), derived.get("properties")),
+            "hierarchy": _merge(base.get("hierarchy"), derived.get("hierarchy")),
+            "actions": _merge(base.get("actions"), derived.get("actions")),
+            "definition": (derived.get("definition") or base.get("definition") or ""),
+        }
+
+    def _split_quality(self, q: str) -> str:
+        """Из свойства вида «есть крылья» / «имеет крылья» / «с крыльями»
+        вычленяет существительное-сущность и лемматизирует его: «крыло».
+        Пустые фразы оставляем как есть — их сущностью не сделать."""
+        q = (q or "").strip()
+        low = q.lower()
+        for prefix in ("есть ", "имеет ", "есть ", "с ", "на ", "в "):
+            if low.startswith(prefix):
+                q = q[len(prefix):].strip()
+                break
+        try:
+            lemma = self.ir_parser._lemmatize(q)
+            if lemma and " " not in lemma:
+                return lemma
+        except Exception:
+            pass
+        return q
+
+    def _learn_shared_qualities(self, shared: list, world_path: str) -> int:
+        """РЕЖИМ ГЛУБОКОГО ОБУЧЕНИЯ ИЗ ВОПРОСА.
+
+        Общее качество, замеченное при сравнении двух сущностей, вводится
+        как ОТДЕЛЬНАЯ сущность в базу. Это НЕ выдумка: качество извлечено
+        из уже известных свойств обеих сущностей (птица и самолёт оба
+        имеют «крыло»), а не сгенерировано. Источник помечаем прямо — чтобы
+        отличать честное обобщение от фантазии.
+
+        Возвращает число введённых сущностей."""
+        import copy
+        world = self._load_world()
+        entities = world.setdefault("entities", {})
+        made = 0
+        for q in shared:
+            concept = self._split_quality(q).lower()
+            if not concept or len(concept) < 2:
+                continue
+            if concept in entities:
+                continue
+            entities[concept] = {
+                "concept": concept,
+                "hierarchy": [],
+                "properties": ["часть, встречающаяся у многих сущностей"],
+                "actions": [],
+                "definition": f"общее качество, введённое из вопроса сравнения",
+                "source": "из вопроса",
+            }
+            made += 1
+        if made:
+            from core.worldfile import world_transaction
+            with world_transaction(world_path) as tx:
+                tx.update(world)
+        return made
+
+    def _handle_compare_diff(self, subjects: list) -> str:
+        """«Чем отличается X от Y» — разность по свойствам/иерархии/действиям.
+
+        Отвечаем НЕ угадыванием, а перебором реальных записей двух сущностей:
+        у X есть то, чего нет у Y, и наоборот. Пустая разность — честно
+        «ничем не отличается» (не выдумываем отличий).
+        """
+        if len(subjects) < 2:
+            return "[Lipid-2]: Сравнение требует двух сущностей."
+        a, b = self._entity_snapshot(subjects[0]), self._entity_snapshot(subjects[1])
+        if a is None or b is None:
+            return (f"[Lipid-2]: Не знаю достаточно данных, чтобы сравнить "
+                    f"'{subjects[0]}' и '{subjects[1]}'.")
+        name_a, name_b = a["name"], b["name"]
+
+        def _diff(a_list, b_list):
+            return [x for x in a_list if x not in b_list]
+
+        only_a = (_diff(a["properties"], b["properties"])
+                  + _diff(a["hierarchy"], b["hierarchy"]))
+        only_b = (_diff(b["properties"], a["properties"])
+                  + _diff(b["hierarchy"], a["hierarchy"]))
+
+        # Общее качество (то, что есть у обоих) уходит в дообучение: модель
+        # из вопроса учит понятие, чтобы потом ответить «у кого есть X».
+        shared = [x for x in a["properties"] if x in b["properties"]]
+        if shared:
+            try:
+                self._learn_shared_qualities(shared, self.world_filepath)
+            except Exception:
+                pass  # дообучение — улучшение, его сбой не роняет ответ
+
+        lines = []
+        if only_a:
+            lines.append(f"{name_a} — {', '.join(only_a)}")
+        if only_b:
+            lines.append(f"{name_b} — {', '.join(only_b)}")
+        if not lines:
+            lines.append("по свойствам не различаются")
+        return (f"[Lipid-2]: Отличия {name_a} и {name_b}: "
+                + "; ".join(lines) + ".")
+
+    def _handle_compare_common(self, subjects: list) -> str:
+        """«Что общего у X и Y» — пересечение свойств/действий/категорий."""
+        if len(subjects) < 2:
+            return "[Lipid-2]: Сравнение требует двух сущностей."
+        a, b = self._entity_snapshot(subjects[0]), self._entity_snapshot(subjects[1])
+        if a is None or b is None:
+            return (f"[Lipid-2]: Не знаю достаточно данных, чтобы сравнить "
+                    f"'{subjects[0]}' и '{subjects[1]}'.")
+        name_a, name_b = a["name"], b["name"]
+
+        def _common(a_list, b_list):
+            return [x for x in a_list if x in b_list]
+
+        shared_prop = _common(a["properties"], b["properties"])
+        shared_act = _common(a["actions"], b["actions"])
+        shared_hier = _common(a["hierarchy"], b["hierarchy"])
+
+        # Дообучение из вопроса: общие свойства становятся сущностями.
+        try:
+            self._learn_shared_qualities(shared_prop, self.world_filepath)
+        except Exception:
+            pass
+
+        parts = []
+        if shared_prop:
+            parts.append("общее: " + ", ".join(shared_prop))
+        if shared_act:
+            parts.append("оба умеют: " + ", ".join(shared_act))
+        if shared_hier:
+            parts.append("оба — " + ", ".join(shared_hier))
+        if not parts:
+            return (f"[Lipid-2]: Общего между {name_a} и {name_b} пока не вижу "
+                    f"в известных данных.")
+        return (f"[Lipid-2]: Что общего у {name_a} и {name_b}: "
+                + "; ".join(parts) + ".")
+
+    def _handle_who_has(self, quality: str) -> str:
+        """«У кого есть X» — обратный поиск по свойствам всех сущностей.
+
+        Ищем X в properties (и свойствах) каждой известной сущности, а также
+        в связях HAS_PROPERTY/HAS_PART. Отвечаем списком имён."""
+        world = self._load_world()
+        entities = world.get("entities", {})
+        q = self._split_quality(quality).lower()
+        holders = []
+        for key, ent in entities.items():
+            if not isinstance(ent, dict):
+                continue
+            props = ent.get("properties") or []
+            low_props = [str(p).lower() for p in props]
+            hit = any(q in p for p in low_props) or \
+                  any(p == q for p in low_props) or \
+                  any(q in self._split_quality(p).lower() for p in low_props)
+            if hit:
+                holders.append(key)
+        # Плюс обратный поиск по связям HAS_PROPERTY / HAS_PART
+        from brain.simulator import StaticKnowledge
+        sk = StaticKnowledge(world)
+        for rel in ("HAS_PROPERTY", "HAS_PART"):
+            try:
+                refs = sk.referenced_by(q, rel)
+            except KeyError:
+                continue  # узла нет в мире — обратный поиск не применяется
+            for h, _ in refs:
+                if h not in holders:
+                    holders.append(h)
+
+        if not holders:
+            return (f"[Lipid-2]: Пока не знаю, у кого есть '{quality}'.")
+        return (f"[Lipid-2]: «{quality}» есть у: {', '.join(holders)}.")
 
     @staticmethod
     def _describe_action(concept: str, ent: dict, properties: bool = False) -> str:
