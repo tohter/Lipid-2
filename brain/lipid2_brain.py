@@ -1536,6 +1536,11 @@ class Lipid2Brain:
                 moved = self.curiosity.promote(
                     lambda: StaticKnowledge(self._load_world()),
                     self.hormone_gate, answer_found=True)
+                # Добытые РЕБРА (например, синонимия) тоже становятся знанием:
+                # сущность уже вошла через promote, но observations из карантинной
+                # копии накоплены отдельно и обязаны лечь в базу вместе с ней,
+                # иначе на следующий раз модель снова будет добывать их у учителя.
+                self._absorb_staging_observations()
                 # Знание вошло — карточка-копия закрыта (её содержимое в базе).
                 self.curiosity.clear_staging()
                 self._say(f"цель закрыта: связь нашлась, тревога упала, "
@@ -1567,6 +1572,25 @@ class Lipid2Brain:
             rec = item.get("record")
             if key and isinstance(rec, dict):
                 ents[key] = merge_entity(ents.get(key), dict(rec))
+        # ДОБЫТОЕ РЕБРО ИМЕЕТ ПРАВО ДОЙТИ ДО ДУМАЛКИ. Учитель (локальная
+        # модель/Вики) пишет добытое в карантинную КОПИЮ (staging), а наблюдения
+        # там лежат не только в сущностях, но и в observations (например,
+        # синонимия «потушить SYNONYM_OF гасить»). Кандидаты несут только
+        # entity-записи, поэтому думалка обязана подмешать observations прямо
+        # из карантинного файла — иначе добытое ребро теряется и модель не
+        # может «сама догадаться», хоть данных достаточно.
+        # Замер (09.11, tests/test_dug_edge_reaches_thinker_contract): до этой
+        # правки «может ли дождь потушить лесной пожар» отвечало «не нашёл»,
+        # потому что синонимия не доезжала до второго прохода думалки.
+        obs = world.setdefault("observations", {})
+        try:
+            with open(self.curiosity.staging_path(), encoding="utf-8") as fh:
+                staging = json.load(fh)
+        except Exception:
+            staging = {}
+        for key, rec in (staging.get("observations") or {}).items():
+            if isinstance(rec, dict) and rec.get("head") and rec.get("tail"):
+                obs.setdefault(key, rec)
         return world
 
     # ── ОБРАБОТЧИКИ ────────────────────────────────────────
@@ -1938,3 +1962,36 @@ class Lipid2Brain:
     #: None = писать в живую базу как обычно. Ставится только на время
     #: окна поиска в _handle_ability (и снимается в finally).
     _staging_target: Optional[str] = None
+
+    def _absorb_staging_observations(self) -> int:
+        """Перенести observations из карантинной копии в живую базу.
+
+        Вызывается ТОЛЬКО в ветке найденного ответа (_handle_ability), после
+        promote: сущность-кандидат уже вошла, а добытые РЕБРА (например,
+        синонимия «потушить SYNONYM_OF гасить») лежат в observations
+        карантинного файла, и без переноса они бы потерялись при
+        clear_staging(). Живая база не трогается до ответа: этот метод зовётся
+        только когда связь найдена и дофамин уже разрешил запись.
+        """
+        written = 0
+        try:
+            with open(self.curiosity.staging_path(), encoding="utf-8") as fh:
+                staging = json.load(fh)
+        except Exception:
+            return 0
+        new_obs = {}
+        for key, rec in (staging.get("observations") or {}).items():
+            if isinstance(rec, dict) and rec.get("head") and rec.get("tail"):
+                new_obs[key] = rec
+        if not new_obs:
+            return 0
+        with world_transaction(self.world_filepath) as world:
+            observations = world.setdefault("observations", {})
+            for key, rec in new_obs.items():
+                if key in observations:
+                    continue
+                observations[key] = dict(rec)
+                written += 1
+        if written:
+            self._world_sig = None      # кэш мира обязан протухнуть
+        return written
