@@ -45,6 +45,7 @@ _GRAM = {
     "sg": "sing", "pl": "plur",
     "m": "masc", "f": "femn", "n": "neut",
     "past": "past",
+    "3per": "3per", "pres": "pres", "inf": "INFN",
 }
 
 
@@ -164,40 +165,133 @@ def _build_place(place: str, time: Optional[str]) -> str:
     return f"{_PLACE_PREP} {form}"
 
 
+def _build_cause(cause: dict) -> str:
+    """«от ужаса» / «от приятной музыки»: от + род., прилаг. согласуется.
+    Вход: {lemma, adjective?}. Прилагательное причины берётся согласованным
+    с существительным (род., ж.р., ед.ч. -> «приятной»)."""
+    lemma = cause.get("lemma", "")
+    adj = cause.get("adjective")
+    case = "gen"
+    pn = _number_of(None, lemma)
+    pg = _gender_of(lemma)
+    form = _infl(lemma, {case}, lemma)
+    if adj:
+        aword = _case_adjective(adj, case, pn, pg)
+        return f"от {aword} {form}"
+    return f"от {form}"
+
+
+def _build_view(view: dict) -> str:
+    """«при виде чудовища»: идиома «при виде» + дополнение в род. падеже.
+    Вход: {lemma}."""
+    lemma = view.get("lemma", "")
+    gen = _infl(lemma, {"gen"}, lemma)
+    return f"при виде {gen}"
+
+
+def _build_along(along: dict) -> str:
+    """«по коже»: по + дат. падеж. Вход: {lemma}."""
+    lemma = along.get("lemma", "")
+    dat = _infl(lemma, {"dat"}, lemma)
+    return f"по {dat}"
+
+
+def _object_word(obj, obj_case: str) -> Optional[str]:
+    """Объект в падеже управления глагола.
+    Вход: лемма-строка ИЛИ {lemma, possessor:{lemma, possessive?}}.
+    possessive-оборот: «трубу ТВОЕГО ДОМА» — посессор в род., притяж.
+    прилагательное согласуется с ним (род. ед.ч.)."""
+    if isinstance(obj, dict):
+        lemma = obj.get("lemma", "")
+        ow = _infl(lemma, {obj_case}, lemma)
+        poss = obj.get("possessor")
+        if poss:
+            plemma = poss.get("lemma", "")
+            ppos = poss.get("possessive")
+            pn = _number_of(None, plemma)
+            pg = _gender_of(plemma)
+            pgen = _infl(plemma, {"gen"}, plemma)
+            if ppos:
+                pword = _case_adjective(ppos, "gen", pn, pg)
+                return f"{ow} {pword} {pgen}"
+            return f"{ow} {pgen}"
+        return ow
+    return _infl(obj, {obj_case}, obj) if obj else None
+
+
 def speaker_sentence(frame: Dict) -> str:
     """
     Ролевая структура -> предложение.
 
-    frame: {predicate, subject, object?, place?, time?, subject_number?}
+    frame: {predicate, subject?, object?, place?, time?, subject_number?,
+            predicate_tense?, cause?, view?, along?}
     Вход рукописный (кирпич №1). Думалка сюда НЕ подключается.
+
+    Расширение (примеры 2/3/4 постановки хозяина):
+      * predicate_tense: "past" (по умолчанию) | "present";
+      * cause: {lemma, adjective?} -> «от ужаса» / «от приятной музыки»;
+      * view: {lemma} -> «при виде чудовища»;
+      * along: {lemma} -> «по коже»;
+      * object: лемма ИЛИ {lemma, possessor:{lemma, possessive?}} ->
+        «трубу твоего дома».
+    Без субъекта — безличный инфинитив: глагол ведёт, затем обстоятельства.
     """
     pred = frame.get("predicate", "")
-    subj = frame.get("subject", "")
+    subj = frame.get("subject")
     obj = frame.get("object")
     place = frame.get("place")
     time = frame.get("time")
     subj_number = frame.get("subject_number")
+    tense = frame.get("predicate_tense", "past")
+    cause = frame.get("cause")
+    view = frame.get("view")
+    along = frame.get("along")
 
-    # субъект в именительном
-    snum = _number_of(subj_number, subj)
-    sgen = _gender_of(subj)
-    subj_word = _infl(subj, {"nom"}, subj)
-
-    # глагол прошедшего времени, согласован с субъектом
-    verb_word = _verb_past(pred, snum, sgen)
-
-    # объект: падеж по управлению глагола
     obj_case = VERB_GOVERNMENT.get(pred, _DEFAULT_OBJ_CASE)
-    obj_word = _infl(obj, {obj_case}, obj) if obj else None
 
-    # обстоятельство места (согласовано с временем-прилагательным)
+    # число субъекта — общее для подлежащего и согласования глагола
+    snum = _number_of(subj_number, subj) if subj is not None else None
+
+    # ── глагол: инфинитив / настоящее / прошедшее ──
+    if subj is None:
+        verb_word = _infl(pred, {"inf"}, pred)
+    elif tense == "present":
+        verb_word = _infl(pred, {"3per", snum}, pred)
+    else:
+        sgen = _gender_of(subj)
+        verb_word = _verb_past(pred, snum, sgen)
+
+    cause_word = _build_cause(cause) if cause else None
+    view_word = _build_view(view) if view else None
+    along_word = _build_along(along) if along else None
+    obj_word = _object_word(obj, obj_case) if obj else None
     place_word = _build_place(place, time) if place else None
 
-    parts: List[str] = [subj_word, verb_word]
-    if obj_word:
-        parts.append(obj_word)
-    if place_word:
-        parts.append(place_word)
+    parts: List[str] = []
+    if subj is None:
+        # безличный инфинитив: глагол ведёт, затем обстоятельства
+        parts.append(verb_word)
+        if cause_word:
+            parts.append(cause_word)
+        if view_word:
+            parts.append(view_word)
+    else:
+        # с субъектом: обстоятельства причины и «по» открывают. При «по»-
+        # обстоятельстве — экзистенциальная инверсия: глагол перед подлежащим
+        # («по коже бегут мурашки»). Без него — подлежащее ведёт.
+        if cause_word:
+            parts.append(cause_word)
+        if along_word:
+            parts.append(along_word)
+            parts.append(verb_word)
+            parts.append(_infl(subj, {"nom", snum}, subj))
+        else:
+            parts.append(_infl(subj, {"nom", snum}, subj))
+            parts.append(verb_word)
+        if obj_word:
+            parts.append(obj_word)
+        if place_word:
+            parts.append(place_word)
     return " ".join(parts)
 
 
@@ -210,6 +304,16 @@ if __name__ == "__main__":
         {"predicate": "освещать", "subject": "фонарь", "subject_number": "pl",
          "object": "аптека", "place": "улица", "time": "ночь"},
         {"predicate": "освещать", "subject": "фонарь", "object": "аптека"},
+        {"predicate": "дрожать", "cause": {"lemma": "ужас"},
+         "view": {"lemma": "чудовище"}},
+        {"predicate": "бежать", "predicate_tense": "present",
+         "subject": "мурашка", "subject_number": "pl",
+         "cause": {"lemma": "музыка", "adjective": "приятный"},
+         "along": {"lemma": "кожа"}},
+        {"predicate": "шатать", "predicate_tense": "present",
+         "subject": "ветер",
+         "object": {"lemma": "труба",
+                     "possessor": {"lemma": "дом", "possessive": "твой"}}},
     ]
     for f in samples:
         print(speaker_sentence(f))
