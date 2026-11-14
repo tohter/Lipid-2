@@ -81,8 +81,14 @@
     "demo": false
    },
    {
+    "module": "lang.ru.why",
+    "line": 1490,
+    "nested": true,
+    "demo": false
+   },
+   {
     "module": "lang.ru.ability",
-    "line": 1486,
+    "line": 1544,
     "nested": true,
     "demo": false
    }
@@ -219,7 +225,8 @@
   "lang/ru/parser.py",
   "lang/ru/questions.py",
   "lang/ru/speaker.py",
-  "lang/ru/text.py"
+  "lang/ru/text.py",
+  "lang/ru/why.py"
  ],
  "outer_seams": {
   "tools/genitive_writer.py": [
@@ -278,9 +285,9 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 875,
-  "files": 72,
-  "checks_with_russian_message_only": 917
+  "checks_comparing_russian": 896,
+  "files": 74,
+  "checks_with_russian_message_only": 933
  },
  "totals": {
   "D_debt_files": 3,
@@ -297,9 +304,9 @@
   "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 645,
-  "P_ir_output_price": 889,
-  "P_ir_output_files": 73,
-  "P_msg_only_checks": 921,
+  "P_ir_output_price": 896,
+  "P_ir_output_files": 74,
+  "P_msg_only_checks": 933,
   "U_outer_seam_sites": 7,
   "U_outer_seam_files": 6,
   "G_lang_import_sites": 11,

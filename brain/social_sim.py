@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
 # Корень проекта в sys.path — чтобы можно было запускать как `python brain/social_sim.py`
@@ -175,6 +175,94 @@ class Violation:
     applied: float         # итоговый заряд = charge * closeness
 
 
+@dataclass
+class RelationState:
+    """
+    ПОПАРНОЕ ОТНОШЕНИЕ-СОСТОЯНИЕ между двумя участниками (близость/доверие).
+
+    Живёт ТОЛЬКО в симуляторе, в базу знаний НЕ пишется (решение хозяина +
+    схождение советчиков: consult/близость_консультация_вывод.md).
+    Отвечает на вопрос «из каких событий текста и по какому правилу это взял»:
+      closeness — степень близости A->B (множитель заряда обиды);
+      trust      — насколько A рассчитывает на B (создаётся актом доверения);
+      confidence — уверенность вывода (понижается у одиночных признаков);
+      provenance — текст / вывод по правилу / аксиома / ручное-эталон;
+      sources    — события-источники (число согласованных признаков).
+    """
+    closeness: float = 0.0
+    trust: float = 0.0
+    confidence: float = 0.0
+    provenance: str = ""
+    sources: List[str] = field(default_factory=list)
+
+
+# ── АКСИОМЫ-ТРИГГЕРЫ БЛИЗОСТИ (словарь-признаки, провенанс AXIOM) ──
+#
+# Переводит леммы текста в ПРИЗНАКИ близости. Это НЕ «высокое доверие», а
+# свидетельство социальной близости; доверие создаёт отдельный акт (см.
+# derive_closeness/derive_trust). Словарь маленький на вертикальный срез —
+# оба советчика велели не строить большой сразу. Признаки суммируются
+# правилом: несколько согласованных -> выше близость, одиночный -> ниже
+# (формула босса: «одно "живёт с" низко, "живёт с + дружно + весело
+# играет" высоко»).
+_CLOSENESS_FEATURES: Dict[str, float] = {
+    # совместность / сожительство
+    "жить": 1.0,
+    # положительная манера совместного взаимодействия
+    "дружно": 0.3,
+    "весело": 0.2,
+    "хорошо": 0.2,
+    "любить": 0.3,
+    # совместная активность
+    "играть": 0.2,
+}
+# Слова-триггеры семьи/долгой совместности (расширяемо).
+_KIN_TOGETHER = {"семья", "муж", "жена", "коллега", "долго", "вместе"}
+
+
+def _features_of(sf) -> List[str]:
+    """Признаки близости, найденные в извлечённом предложении (леммы)."""
+    L = set(sf.content_lemmas or [])
+    feats = []
+    for word, _score in _CLOSENESS_FEATURES.items():
+        if word in L:
+            feats.append(word)
+    if L & _KIN_TOGETHER:
+        feats.append("kin_together")
+    return feats
+
+
+def derive_closeness(sf, a: str, b: str) -> RelationState:
+    """
+    ПРАВИЛО-СУММА: признаки копятся в степень близости a->b.
+
+    Провенанс «вывод по правилу» (не задана, не текст). Уверенность растёт с
+    числом согласованных признаков (страховка от ложного завышения порога).
+    """
+    feats = _features_of(sf)
+    score = sum(_CLOSENESS_FEATURES.get(w, 0.0) for w in feats
+                if w != "kin_together")
+    if "kin_together" in feats:
+        score += 0.5
+    conf = min(1.0, 0.3 + 0.2 * len(feats))
+    return RelationState(closeness=score, confidence=conf,
+                         provenance="вывод по правилу", sources=feats or [])
+
+
+def derive_trust(a: str, b: str, sf, src: str = "") -> RelationState:
+    """
+    ДОВЕРИЕ создаёт АКТ ДОВЕРЕНИЯ: A доверяет B тайну/просит не разглашать.
+
+    Это отдельное отношение от близости: первое предложение про совместную
+    жизнь доверия НЕ даёт (советчики). Акт доверия — «попросила не
+    рассказывать тайну» — уже порождает Expectation, значит holder->target
+    доверие есть.
+    """
+    return RelationState(trust=1.0, confidence=0.9,
+                         provenance="вывод по правилу",
+                         sources=[src or "акт доверия"])
+
+
 class SocialSimulator(Simulator):
     """
     Расширяет Simulator ожиданиями и эмоциями агентов.
@@ -192,6 +280,10 @@ class SocialSimulator(Simulator):
         self.expectations: List[Expectation] = []
         self.violations: List[Violation] = []
         self.tick_index: int = 0
+        # ПОПАРНЫЕ ОТНОШЕНИЯ-СОСТОЯНИЯ (близость/доверие) между участниками.
+        # Ключ (a, b). Живут ТОЛЬКО в симуляторе, в базу НЕ пишутся (решение
+        # хозяина + советчики, consult/близость_консультация_вывод.md).
+        self.relations: Dict[Tuple[str, str], RelationState] = {}
         # Параметры шкал по умолчанию для агентов, которых заводит сценарий.
         self.defaults = {"attack": attack, "decay": decay}
         # Снимок эмоций ВСЕХ агентов на момент каждого события. Нужен, чтобы
@@ -227,8 +319,6 @@ class SocialSimulator(Simulator):
         Возвращает число выполненных директив; неизвестная директива —
         громкий пропуск (не молчание).
         """
-        if closeness is None:
-            closeness = CLOSENESS_LIVING_TOGETHER
         done = 0
         # Уже заведенные ожидания — чтобы одно и то же не выросло дважды из
         # мира (секция expectations) и из фразы события.
@@ -242,16 +332,28 @@ class SocialSimulator(Simulator):
                            attack=d.get("attack", self.defaults.get("attack")),
                            decay=d.get("decay", self.defaults.get("decay")))
             elif kind == "please":
+                _pl_cl = d.get("closeness")
+                if _pl_cl is not None:
+                    _pl_cl = float(_pl_cl)
+                else:
+                    # please — добрая шкала; её близость не близость обиды,
+                    # поэтому при None берём дефолтный пол, а не выводим.
+                    _pl_cl = (closeness if closeness is not None
+                              else CLOSENESS_LIVING_TOGETHER)
                 self.agent(str(d.get("name", ""))).please(
-                    int(d.get("amount", 0)),
-                    closeness=float(d.get("closeness", closeness)))
+                    int(d.get("amount", 0)), closeness=_pl_cl)
             elif kind == "ticks":
                 self.ticks(int(d.get("n", 0)))
             elif kind == "event":
+                _ev_cl = d.get("closeness")
+                if _ev_cl is not None:
+                    _ev_cl = float(_ev_cl)
+                else:
+                    _ev_cl = closeness   # может быть None -> act() выведет из текста
                 self.act(str(d.get("subject", "")), str(d.get("action", "")),
                          obj=str(d.get("obj", "")),
                          text=str(d.get("text", "")),
-                         closeness=float(d.get("closeness", closeness)))
+                         closeness=_ev_cl)
                 # ОЖИДАНИЕ ИЗ ТЕКСТА (штрих A): если событие — просьба, то
                 # её фраза сама сообщает ожидание. Директива expect больше не
                 # нужна: на «Кошка попросила канарейку не рассказывать тайну»
@@ -262,6 +364,36 @@ class SocialSimulator(Simulator):
                 if phrase:
                     sf = _extractor().extract(phrase,
                                               order=int(d.get("order", 0)))
+                    # ВЫВОД ПОПАРНОЙ БЛИЗОСТИ из текста (вертикальный срез).
+                    # Словарь-признаки + правило-сумма (см. derive_closeness).
+                    subj = str(d.get("subject", "")).lower().strip()
+                    obj = str(d.get("obj", "")).lower().strip()
+                    if subj and obj:
+                        rs = derive_closeness(sf, subj, obj)
+                        key = (subj, obj)
+                        old = self.relations.get(key)
+                        # Складываем признаки через события текста: два пересказа
+                        # одного события не должны дать двойной вес, поэтому
+                        # берём макс/первое, а не сумму (советчики: провенанс).
+                        if old is None or rs.closeness > old.closeness:
+                            # Не храним рёбра с НУЛЕВОЙ близостью: «рассказала
+                            # тайну» даёт пару (канарейка, тайна) без социальных
+                            # признаков — это не участник, а объект.
+                            if rs.closeness > 0:
+                                self.relations[key] = rs
+                        # Акт доверия: просьба «не рассказывать» порождает
+                        # Expectation (holder->target), значит это и акт доверия
+                        # subj->obj. Доверие создаёт именно акт доверения.
+                        if sf.expectations:
+                            trs = derive_trust(subj, obj, sf, src=phrase)
+                            tkey = (subj, obj)
+                            cur = self.relations.get(tkey)
+                            if cur is None:
+                                self.relations[tkey] = trs
+                            elif cur.trust < trs.trust:
+                                cur.trust = trs.trust
+                                cur.provenance = trs.provenance
+                                cur.sources = trs.sources
                     for ex in sf.expectations:
                         if (ex.holder, ex.target, ex.action) in _seen:
                             continue
@@ -401,10 +533,20 @@ class SocialSimulator(Simulator):
             if exp.violated_by(ev) and exp.born_tick <= ev.order:
                 emo = self.agent(exp.holder)
                 self.agent(exp.target)          # у обеих сторон есть эмоции
-                emo.hurt(base_charge, closeness=closeness)
+                # БЛИЗОСТЬ из попарного отношения, если она выведена из текста
+                # и вызывающий НЕ задал свою явно. Если вызвал (клиф, калибровка,
+                # замер) — его число авторитетно: вертикальный срез не должен
+                # тайно двигать замер порога. Близость направленная: кого
+                # обидели и кем — близость holder->target.
+                eff_close = closeness
+                if eff_close is None:
+                    pair = self.relations.get((exp.holder, exp.target))
+                    eff_close = (pair.closeness if pair is not None
+                                 else CLOSENESS_LIVING_TOGETHER)
+                emo.hurt(base_charge, closeness=eff_close)
                 viol = Violation(expectation=exp, event=ev, charge=base_charge,
-                                 closeness=closeness,
-                                 applied=base_charge * closeness)
+                                 closeness=eff_close,
+                                 applied=base_charge * eff_close)
                 self.violations.append(viol)
                 hit.append(viol)
         # Снимок ПОСЛЕ применения заряда: тогда состояние на момент события
@@ -573,7 +715,7 @@ CLOSENESS_LIVING_TOGETHER = 2.0    # «жили вместе», «кошка л�
 RIPEN_TICKS = 8
 
 
-def build_cat_canary_simulator(closeness: float = CLOSENESS_LIVING_TOGETHER,
+def build_cat_canary_simulator(closeness: float = None,
                                between_ticks: int = RIPEN_TICKS,
                                attack: int = None, decay: int = None
                                ) -> SocialSimulator:
