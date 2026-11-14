@@ -1455,6 +1455,11 @@ class Lipid2Brain:
             return self._handle_compare_common(ir_intent.subjects)
         elif intent_type == "WHO_HAS":
             return self._handle_who_has(subject)
+        elif intent_type == "WHY":
+            # ВОПРОС О ПРИЧИНЕ («почему/зачем X сделал Y»). Честный уровень 1
+            # (оба советчика): причинная цепочка из СОБЫТИЙ рассказа, без
+            # учителей, без записи в базу, абстракции — только с пометкой.
+            return self._handle_why(text)
         else:
             # ВОПРОС О СПОСОБНОСТИ («может ли X сделать Y»). IR-парсер его не
             # знает и честно возвращает UNKNOWN; раньше тут заканчивалось
@@ -1465,6 +1470,59 @@ class Lipid2Brain:
                 return ability
             return (f"🤔 [Lipid-2]: Интент '{intent_type}' распознан, но "
                     f"обработчик для него ещё в разработке.")
+
+    def _handle_why(self, text: str) -> Optional[str]:
+        """«Почему/зачем X сделал Y» — честный уровень 1.
+
+        Причинная цепочка из СОБЫТИЙ рассказа (world['events']), без учителей
+        и без записи в базу — это первая ступень обоих советчиков (вслепую
+        сошлись): пока не научились объяснять то, что в рассказе уже есть,
+        уровень 2 (абстрактная мотивация «предательство») строить не на чем.
+
+        Правила честности:
+        - событие вопроса ищется по глаголу (и агенту, если он назван);
+          глагол вопроса ОБЯЗАН участвовать в пути;
+        - цепочка собирается из событий того же агента в том же «моменте»
+          (одинаковый order) до действия вопроса;
+        - события нет или агент не тот — честный отказ, а не додумка;
+        - ничего в базу не пишется (только чтение).
+        """
+        from lang.ru.why import parse_why, render_why
+        roles = parse_why(text)
+        if not roles.get("action"):
+            return None   # не про «почему» — говорит другой обработчик
+        action = roles["action"]
+        subject = roles.get("subject", "")
+        obj = roles.get("object", "")
+
+        world = self._load_world()
+        events = [e for e in (world.get("events") or []) if isinstance(e, dict)]
+        matched = [e for e in events
+                   if e.get("action") == action
+                   and (not subject or e.get("subject") == subject)]
+        if not matched:
+            return f"[Lipid-2]: {render_why(subject, action, obj, [], found=False)}"
+
+        e = matched[0]
+        try:
+            ei = events.index(e)
+        except ValueError:
+            ei = 0
+        eorder = e.get("order", 0)
+        # Тот же «момент» (order) того же агента до действия вопроса.
+        same = [x for x in events[:ei]
+                if x.get("subject") == e.get("subject")
+                and x.get("order") == eorder]
+        chain = [x.get("action") for x in same] + [action]
+        # НЕ берём предыдущий момент: «разрабатывать -> поделиться» — это
+        # КОНТЕКСТ рассказа, а не причина злости. Причинная цепочка уровня 1
+        # честна ровно в границах одного момента; шире — будет выглядеть
+        # причиной, а это додумка. Если в том же моменте причин нет и поле
+        # cause пусто — честный «причина не названа».
+        cause = e.get("cause") or ""
+        evidence = e.get("evidence") or ""
+        self._say(f"почему: {action} -> причина по событиям")
+        return f"[Lipid-2]: {render_why(subject, action, obj, chain, cause, True, evidence)}"
 
     def _handle_ability(self, text: str) -> Optional[str]:
         """«Может ли X сделать Y» — поиск пути, а не угадывание ответа.

@@ -89,6 +89,11 @@ class IRParser:
         self._morph = pymorphy3.MorphAnalyzer() if HAS_PYMORPHY else None
 
         self.patterns = [
+            # 0. ПОЧЕМУ: "почему X сделал Y", "зачем X ..." — раньше всех,
+            #    чтобы не уехать в DEFINITION/PROPERTIES. Смысл вытаскивает
+            #    отдельный обработчик WHY (brain), роль-парсер в lang/ru/why.py.
+            ("WHY", rf"^(?:почему|зачем)\s+{PH}"),
+
             # 1. ОПРЕДЕЛЕНИЕ: "что такое X", "кто такой X"
             ("DEFINITION", rf"^(?:что|кто)\s+(?:такое|такой|такая|такие)\s+{PH}"),
 

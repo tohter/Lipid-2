@@ -285,7 +285,7 @@
  "totals": {
   "D_debt_files": 3,
   "C_core_reaches_lang": 0,
-  "L_lang_files": 8,
+  "L_lang_files": 9,
   "S_seam_sites": 6,
   "S_demo_seam_sites": 0,
   "S_seam_files": 4,
@@ -297,12 +297,12 @@
   "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 645,
-  "P_ir_output_price": 875,
-  "P_ir_output_files": 72,
-  "P_msg_only_checks": 917,
+  "P_ir_output_price": 889,
+  "P_ir_output_files": 73,
+  "P_msg_only_checks": 921,
   "U_outer_seam_sites": 7,
   "U_outer_seam_files": 6,
-  "G_lang_import_sites": 10,
+  "G_lang_import_sites": 11,
   "G_lang_import_files": 8
  }
 }
