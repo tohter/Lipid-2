@@ -63,6 +63,24 @@ def make_pair(first_text, second_text=None):
     return sim, sim.relations.get(("кошка", "канарейка"))
 
 
+def make_trust_event(verb_text, action="доверить"):
+    """Собрать симулятор из ОДНОГО события-акта доверия.
+
+    Вернуть (sim, relation): проверяет, что глагол доверия («доверила»,
+    «доверилась», «вверила») из ТЕКСТА даёт ребро доверия кошка->канарейка,
+    не опираясь на просьбу-ожидание. Явный `action` — только для директивы;
+    настоящий глагол берётся из фразы.
+    """
+    script = [
+        {"do": "agent", "name": "кошка"},
+        {"do": "agent", "name": "канарейка"},
+        {"do": "event", "subject": "кошка", "action": action,
+         "obj": "канарейка", "text": verb_text},
+    ]
+    sim = SocialSimulator(load_world(), script=script)
+    return sim, sim.relations.get(("кошка", "канарейка"))
+
+
 class TestClosenessDerivedFromText(unittest.TestCase):
     """Близость выводится из признаков текста с провенансом, не дана рукой."""
 
@@ -136,6 +154,47 @@ class TestTrustIsSeparateFromCloseness(unittest.TestCase):
         if back is not None:
             self.assertEqual(back.trust, 0.0,
                              "просьба кошки не создаёт доверие канарейка->кошка")
+
+    def test_trust_act_verb_doverila_creates_trust(self):
+        """«доверила тайну» — АКТ доверия сам по себе, без просьбы-ожидания."""
+        sim, r = make_trust_event("Кошка доверила канарейке свою тайну.")
+        self.assertIsNotNone(r, "глагол «доверила» должен дать ребро доверия")
+        self.assertGreaterEqual(r.trust, 1.0,
+                                "«доверила тайну» — акт доверия кошка->канарейка")
+        self.assertEqual(r.closeness, 0.0,
+                         "акт доверия НЕ поднимает близость (близость != доверие)")
+
+    def test_trust_act_verb_doverilas_creates_trust(self):
+        """«доверилась канарейке» — акт доверия (рефлексив), даёт доверие."""
+        sim, r = make_trust_event("Кошка доверилась канарейке.", action="довериться")
+        self.assertIsNotNone(r)
+        self.assertGreaterEqual(r.trust, 1.0,
+                                "«доверилась» — акт доверия кошка->канарейка")
+
+    def test_trust_act_verb_vverila_creates_trust(self):
+        """«вверила свой секрет» — акт доверия, даёт доверие."""
+        sim, r = make_trust_event("Кошка вверила канарейке свой секрет.",
+                                  action="вверить")
+        self.assertIsNotNone(r)
+        self.assertGreaterEqual(r.trust, 1.0,
+                                "«вверила секрет» — акт доверия кошка->канарейка")
+
+    def test_trust_act_verb_rasskazat_creates_no_trust(self):
+        """«рассказала» НЕ акт доверия сам по себе (неоднозначно, шаг 5).
+
+        Рассказ может быть и актом доверия, и предательством (если было
+        ожидание «не рассказывать»). Поэтому «рассказала тайну» без контекста
+        доверия НЕ даёт — это дыра 4, отдельный шаг.
+        """
+        sim, r = make_trust_event("Кошка рассказала канарейке тайну.",
+                                  action="рассказать")
+        self.assertIsNone(r, "«рассказала» без контекста не создаёт доверия")
+
+    def test_trust_act_verb_razboltala_creates_no_trust(self):
+        """«разболтала» — предательство, НЕ акт доверия."""
+        sim, r = make_trust_event("Канарейка разболтала секрет.",
+                                  action="разболтать")
+        self.assertIsNone(r, "«разболтала» — не акт доверия")
 
 
 class TestStoryUsesDerivedCloseness(unittest.TestCase):
