@@ -45,6 +45,26 @@ import time
 import tkinter as tk
 from tkinter import scrolledtext, ttk
 
+# Перетаскивание файлов в поле обучения: tkinterdnd2 живёт в .venv и несёт
+# свою tkdnd-библиотеку (Tcl 8.6, linux-x64). Импорт ЗАЩИЩЁН: если библиотеки
+# нет (headless, системный python), окно работает как прежде — остаётся кнопка
+# «+», а DnD просто не регистрируется.
+_DND = None
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    _DND = TkinterDnD
+except Exception:
+    DND_FILES = None
+    TkinterDnD = None
+
+
+def _DND_Tk():
+    """Корень окна с поддержкой drag-and-drop, либо обычный tk.Tk."""
+    if TkinterDnD is not None:
+        return TkinterDnD.Tk()
+    return tk.Tk()
+
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -424,6 +444,9 @@ class Lipid2GUI:
                          "story": (self.story_entry, self.story_btn)}.get(
             key, (self.learn_entry, self.learn_btn))
         button.pack(side="right", padx=(6, 0))
+        # Кнопка «▤ файл» есть только у вкладки обучения.
+        if key == "learn":
+            self.learn_file_btn.pack(side="right", padx=(0, 4))
         entry.pack(side="left", fill="x", expand=True)
         entry.focus_set()
 
@@ -965,6 +988,14 @@ class Lipid2GUI:
                                    relief="flat", bd=0, cursor="hand2",
                                    font=("DejaVu Sans", 10, "bold"),
                                    padx=18, pady=6, state="disabled")
+        # Кнопка «файл» вкладки обучения. Вставляет содержимое текстового файла
+        # в поле и запускает обучение (или только заливает текст — решает do_learn
+        # по поднятому флагу _learn_from_file).
+        self.learn_file_btn = tk.Button(self.entry_host, text="▤ файл",
+                                        command=self._choose_file, bg=BG_TAB_ON,
+                                        fg=FG, relief="flat", bd=0,
+                                        cursor="hand2", font=("DejaVu Sans", 10),
+                                        padx=12, pady=6)
 
         self.sim_entry = self._make_input(
             "спроси о том, что уже в памяти: «что такое флюгер» · "
@@ -994,6 +1025,7 @@ class Lipid2GUI:
                                  bg=BG_TAB_ON, fg="#dcdcaa",
                                  font=("DejaVu Sans", 9), padx=8, pady=4)
         self.statusbar.pack(fill="x", side="bottom")
+        self._register_dnd()
 
     def _make_input(self, hint: str) -> tk.Text:
         """Text, а не Entry: одно слово и абзац — один и тот же ввод, а Entry
@@ -1028,6 +1060,73 @@ class Lipid2GUI:
 
     def _entry_text(self, box) -> str:
         return box.get("1.0", "end").strip()
+
+    # ── файлы в поле обучения: кнопка «+» и перетаскивание ──
+    def _register_dnd(self):
+        """Подключить drag-and-drop текстового файла в поле обучения.
+
+        Требует корень окна TkinterDnD.Tk (run.py его создаёт). Если библиотеки
+        нет или корень обычный, регистрация тихо пропускается: кнопка «▤ файл»
+        остаётся рабочим способом открыть файл.
+        """
+        try:
+            box = self.learn_entry
+            box.drop_target_register(DND_FILES)
+            box.dnd_bind("<<Drop>>", self._file_dropped)
+        except Exception:
+            pass
+
+    def _file_dropped(self, event):
+        """В поле бросили файл(ы). Берём первый, заливаем и учим."""
+        data = event.data or ""
+        # tkdnd отдаёт пути через { } и пробелами. Собираем первый путь.
+        path = self._first_dropped_path(data)
+        if path:
+            self._load_file_into_learn(path)
+
+    @staticmethod
+    def _first_dropped_path(data: str):
+        """Первый путь из строки события tkdnd ({путь} {путь}...)."""
+        import re as _re
+        tokens = _re.findall(r"\{([^{}]+)\}|(\S+)", data or "")
+        for braced, bare in tokens:
+            cand = (braced or bare).strip()
+            if cand:
+                return cand
+        return None
+
+    def _choose_file(self):
+        """Кнопка «▤ файл»: диалог выбора текстового файла."""
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title="Открыть текст для обучения",
+            filetypes=[("Текстовые файлы", "*.txt *.md *.text"),
+                       ("Все файлы", "*")])
+        if path:
+            self._load_file_into_learn(path)
+
+    def _load_file_into_learn(self, path: str):
+        """Прочитать файл и отдать его на обучение тем же путём, что и ввод."""
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                content = fh.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            self.journal.add(
+                f"⛔ файл не прочитан: {os.path.basename(path)} "
+                f"({type(exc).__name__}: {exc})", "error")
+            self._pending_status = "файл не открылся"
+            return
+        if not content.strip():
+            self.journal.add(
+                f"⚠ файл {os.path.basename(path)} пуст — учить нечего", "warn")
+            self._pending_status = "файл пуст"
+            return
+        self.learn_entry.delete("1.0", "end")
+        self.learn_entry.insert("1.0", content)
+        self.journal.add(
+            f"📄 файл {os.path.basename(path)}: {len(content.split())} слов "
+            f"загружено в поле обучения", "status")
+        self.do_learn()
 
     # ══════════════════════════════════════════════════════
     #  ДЕЙСТВИЯ
@@ -1191,6 +1290,12 @@ class Lipid2GUI:
                            text="…работает" if busy else label)
             except tk.TclError:
                 pass
+        # Кнопка «файл» гасится тем же вызовом, но подпись не меняет.
+        try:
+            self.learn_file_btn.config(
+                state="disabled" if busy else "normal")
+        except (tk.TclError, AttributeError):
+            pass
         # Кнопка сна гасится ТЕМ ЖЕ вызовом: сон идёт через jobs, и если бы
         # его состояние держалось отдельно, окно показывало бы «можно учить»
         # во время записи памяти.
