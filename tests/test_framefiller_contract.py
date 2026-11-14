@@ -228,6 +228,54 @@ class TestExample3And4NoHallucination(unittest.TestCase):
                          "объект дан в наборе, выводом является только принадлежность")
 
 
+class TestPlaceIsNotAFreeForAll(unittest.TestCase):
+    """Пункт 9 диагноза: думалка молча встроила не-место («воры»,
+    «жемчуг») в слот места. Думалка не угадывает место из воздуха: она
+    берёт его ТОЛЬКО из рёбра LOCATED_IN, и НЕ принимает в качестве места
+    деятеля (CAN_DO-агента) — деятель участник, а не пассивная локация."""
+
+    def test_no_place_when_base_is_silent(self):
+        """Честная база: «сторожить склад» без ребра места — места нет,
+        «воры» в место НЕ встают (это противник, не локация)."""
+        w = obs(
+            ("сторож", "CAN_DO", "сторожить"),
+            ("сторожить", "OBJECT_OF", "склад"),
+        )
+        world = {"entities": {"сторож": {"concept": "сторож"},
+                               "склад": {"concept": "склад"},
+                               "воры": {"concept": "воры"}},
+                 "observations": w}
+        f = fill_frame(["сторож", "склад", "воры"], StaticKnowledge(world))
+        self.assertEqual(f.outcome, "SUCCESS", f.gaps)
+        self.assertEqual(f.frame.get("predicate"), "сторожить")
+        self.assertEqual(f.frame.get("object"), "склад")
+        self.assertNotIn("place", f.frame,
+                         "база не называет место — думалка его не выдумывает")
+        self.assertNotIn("воры", f.frame.values(),
+                      "воры без ребра места не встают ни в один слот — это "
+                      "противник, а не локация")
+
+    def test_agent_never_becomes_place(self):
+        """База ошибочно даёт «склад LOCATED_IN воры», но воры — деятель
+        (CAN_DO красть). Думалка НЕ ставит деятеля в слот места."""
+        w = obs(
+            ("сторож", "CAN_DO", "сторожить"),
+            ("сторожить", "OBJECT_OF", "склад"),
+            ("склад", "LOCATED_IN", "воры"),
+            ("воры", "CAN_DO", "красть"),
+        )
+        world = {"entities": {"сторож": {"concept": "сторож"},
+                               "склад": {"concept": "склад"},
+                               "воры": {"concept": "воры"}},
+                 "observations": w}
+        f = fill_frame(["сторож", "склад", "воры"], StaticKnowledge(world))
+        self.assertEqual(f.outcome, "SUCCESS", f.gaps)
+        self.assertEqual(f.frame.get("place"), None,
+                         "деятель «воры» не может быть местом, даже если "
+                         "база по ошибке назвала его LOCATED_IN")
+        self.assertNotIn("place", f.frame)
+
+
 class TestExplicitSubjectAndAmbiguity(unittest.TestCase):
     """Данный в наборе деятель — EXPLICIT; равные кандидаты — ASK."""
 

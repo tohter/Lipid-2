@@ -218,9 +218,17 @@ def _place_time(k, best: Dict[str, Any],
     place = None
     for head in (best["object"], best["subject"]):
         for p in k.related(head, "LOCATED_IN"):
-            if p in remaining:
-                place = p
-                break
+            if p not in remaining:
+                continue
+            # ДЕЯТЕЛЬ НЕ МЕСТО (пункт 9 диагноза): существительное с CAN_DO
+            # — участник, а не пассивная локация. «сторож сторожит склад ОТ
+            # ВОРОВ»: если база по ошибке дала «склад LOCATED_IN воры», а
+            # воры умеют красть, это деятель, а не место — не ставить его
+            # в слот места, иначе выйдет ложное «на ворах».
+            if k.related(p, "CAN_DO"):
+                continue
+            place = p
+            break
         if place is not None:
             break
     time = None
