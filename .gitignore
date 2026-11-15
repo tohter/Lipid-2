@@ -27,3 +27,4 @@ experiments/*.pkl
 # резервные копии миграции памяти и артефакты прогонов
 *.pre-clean
 consult/
+data/fasttext/
