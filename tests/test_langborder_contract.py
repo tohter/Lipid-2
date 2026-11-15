@@ -543,9 +543,11 @@ class TestPriceIsKnown(unittest.TestCase):
         # по содержанию «рассказала детали проекта»; 3 новых теста
         # (TestTrustByContentNotName) дали ещё +1 сверок с русской строкой.
         # msg_only 954 -> 958: ещё +4 проверки, где русское только в msg=.
-        self.assertEqual((checked, files), (903, 74),
+        # 903 -> 904: TestMutualCloseness (шаг 6, взаимная близость) — ещё
+        # одна сверка с русской строкой, цена IR-шага выросла на 1.
+        self.assertEqual((checked, files), (904, 74),
                          f"цена A4 = ({checked}, {files}), а в IR_BOUNDARY.md "
-                         f"написано (903, 74) — обнови документ СЕЙЧАС")
+                         f"написано (904, 74) — обнови документ СЕЙЧАС")
         # 645 -> 656 -> 657 -> 663 -> 668 -> 675 на фазе 2 и её дополнениях.
         # Файл tests/test_genitive_theft_contract.py платит ПОФРАЙЛОВО и не
         # один раз: первый вариант дал (0 сравнений, 11 сообщений) — он
@@ -686,9 +688,11 @@ class TestPriceIsKnown(unittest.TestCase):
         # 954 -> 958 на контент-матчинге (15.11): 3 новых теста
         # (TestTrustByContentNotName) дали ещё +4 сообщения только в msg=,
         # сверок +1 (см. цену A4). Снято той же мерой.
-        self.assertEqual(msg_only, 958,
+        # 958 -> 962 на шаге 6 (взаимная близость): TestMutualCloseness —
+        # ещё 4 сообщения только в msg=. Снято той же мерой.
+        self.assertEqual(msg_only, 962,
                          f"проверок только-с-сообщением {msg_only}, а в "
-                         f"IR_BOUNDARY.md написано 958 — документ врёт, "
+                         f"IR_BOUNDARY.md написано 962 — документ врёт, "
                          f"обнови цифру СЕЙЧАС")
         self.assertGreater(msg_only, 0,
                            "проверки только-с-сообщением перестали считаться: "

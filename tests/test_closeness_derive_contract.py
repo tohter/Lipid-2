@@ -477,5 +477,53 @@ class TestNoDbWrites(unittest.TestCase):
         self.assertNotIn("trust", blob)
 
 
+class TestMutualCloseness(unittest.TestCase):
+    """Шаг 6 (советчики): близость совместной жизни ВЗАИМНАЯ.
+
+    Эталон social_golden_check (R4, ручное чтение рассказа): «дружно жили
+    вместе, весело играли» — близость ОБЕИХ сторон. Движок раньше заводил
+    ребро только от субъекта фразы (кошка->канарейка), и канарейка
+    оказывалась никем для кошки, хотя текст говорит «ЖИЛИ ВМЕСТЕ».
+    «Любила» — не взаимна (направленный глагол): канарейка кошку не любила.
+    """
+
+    def _sim(self, first_text):
+        script = [
+            {"do": "agent", "name": "кошка"},
+            {"do": "agent", "name": "канарейка"},
+            {"do": "event", "subject": "кошка", "action": "жить",
+             "obj": "канарейка", "text": first_text},
+        ]
+        return SocialSimulator(load_world(), script=script)
+
+    def test_togetherness_is_mutual(self):
+        """«дружно жили вместе, весело играли» даёт близость В ОБЕ СТОРОНЫ."""
+        sim = self._sim("Кошка дружно жила вместе с канарейкой и весело с ней играла.")
+        fwd = sim.relations.get(("кошка", "канарейка"))
+        rev = sim.relations.get(("канарейка", "кошка"))
+        self.assertIsNotNone(fwd)
+        self.assertIsNotNone(rev,
+                "совместная жизнь обязана вывести близость канарейка->кошка")
+        self.assertGreater(rev.closeness, 1.0,
+                "взаимная близость обязана быть высокой в обе стороны")
+
+    def test_love_is_not_mutual(self):
+        """«любила» — направленный глагол: обратной близости НЕ рождает."""
+        sim = self._sim("Кошка любила канарейку.")
+        fwd = sim.relations.get(("кошка", "канарейка"))
+        rev = sim.relations.get(("канарейка", "кошка"))
+        self.assertIsNotNone(fwd)
+        self.assertTrue(rev is None or rev.closeness == 0,
+                "«любила» не обязана делать канарейку близкой к кошке")
+
+    def test_mutual_sources_independent(self):
+        """Провенанс взаимного ребра — своё правило-вывод, не копия прямого."""
+        sim = self._sim("Кошка дружно жила вместе с канарейкой и весело с ней играла.")
+        rev = sim.relations.get(("канарейка", "кошка"))
+        self.assertEqual(rev.provenance, "вывод по правилу")
+        self.assertTrue(rev.sources,
+                "взаимное ребро обязано нести свои признаки-источники")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

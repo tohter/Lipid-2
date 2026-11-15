@@ -300,6 +300,34 @@ def derive_closeness(sf, a: str, b: str) -> RelationState:
                          provenance="вывод по правилу", sources=feats or [])
 
 
+# Признаки СОВМЕСТНОСТИ: они по своей природе СИММЕТРИЧНЫ («жили вместе»,
+# «играли» не бывает односторонним). Направленные признаки («любила»,
+# «заботился») сюда НЕ входят: их обратная сторона из текста не следует.
+_MUTUAL_FEATURES = {"жить", "играть", "kin_together"}
+
+
+def derive_closeness_reverse(sf) -> RelationState:
+    """
+    ВЗАИМНАЯ близость (шаг 6: расхождение эталона R4, social_golden_check).
+
+    Если во фразе есть признаки совместности, из ТЕХ ЖЕ признаков выводится
+    ОБРАТНОЕ ребро: «Кошка дружно жила вместе с канарейкой и весело с ней
+    играла» делает канарейку близкой к кошке — совместная жизнь не бывает
+    односторонней. Направленные признаки («любила») в обратную сторону НЕ
+    переносятся: любовь симметрией не обладает. None — взаимных признаков нет.
+    """
+    feats = [f for f in _features_of(sf) if f in _MUTUAL_FEATURES]
+    if not feats:
+        return None
+    score = sum(_CLOSENESS_FEATURES.get(w, 0.0) for w in feats
+                if w != "kin_together")
+    if "kin_together" in feats:
+        score += 0.5
+    conf = min(1.0, 0.3 + 0.2 * len(feats))
+    return RelationState(closeness=score, confidence=conf,
+                         provenance="вывод по правилу", sources=feats)
+
+
 def derive_trust(a: str, b: str, sf, src: str = "") -> RelationState:
     """
     ДОВЕРИЕ создаёт АКТ ДОВЕРЕНИЯ: A доверяет B тайну/просит не разглашать.
@@ -476,6 +504,16 @@ class SocialSimulator(Simulator):
                             # признаков — это не участник, а объект.
                             if rs.closeness > 0:
                                 self.relations[key] = rs
+                        # ВЗАИМНАЯ БЛИЗОСТЬ (шаг 6: расхождение эталона R4):
+                        # признаки совместности симметричны, из них выводится
+                        # и обратное ребро. «Любила» в обратную сторону не
+                        # переносится (derive_closeness_reverse вернёт None).
+                        rs_rev = derive_closeness_reverse(sf)
+                        if rs_rev is not None and rs_rev.closeness > 0:
+                            rkey = (obj, subj)
+                            oldr = self.relations.get(rkey)
+                            if oldr is None or rs_rev.closeness > oldr.closeness:
+                                self.relations[rkey] = rs_rev
                         # АКТ ДОВЕРЕНИЯ — два источника (советчики: близость не
                         # создаёт доверие, доверие создаёт акт):
                         #   1) просьба «не рассказывать» порождает Expectation
