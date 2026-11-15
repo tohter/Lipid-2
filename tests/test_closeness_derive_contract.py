@@ -379,6 +379,60 @@ class TestTrustFromBaseMarker(unittest.TestCase):
                                msg="и разболтала рушит доверие до 0")
 
 
+class TestTrustByContentNotName(unittest.TestCase):
+    """Дорога А + 3-й эксперт: предательство ловится по СОДЕРЖАНИЮ, не по слову.
+
+    «доверила ПРОЕКТ» порождает ожидание «не рассказывать проект» (obj_lemmas
+    = {проект}). Позже «рассказала ДЕТАЛИ проекта на всю улицу» нарушает это
+    ожидание ПО СОДЕРЖАНИЮ: событие делит лемму «проект» с секретом, хотя
+    объект события — «деталь», а слово «секрет» не сказано. Контроль: без
+    публичности («поделилась наедине») то же разглашение — НЕ предательство.
+    """
+
+    def _script(self, предательская_фраза):
+        return [
+            {"do": "agent", "name": "кошка"},
+            {"do": "agent", "name": "канарейка"},
+            {"do": "please", "name": "кошка", "amount": 120},
+            {"do": "event", "subject": "кошка", "action": "доверить",
+             "obj": "канарейка",
+             "text": "Кошка доверила канарейке свой проект."},
+            {"do": "ticks", "n": 2},
+            {"do": "event", "subject": "канарейка", "action": "рассказать",
+             "obj": "детали", "text": предательская_фраза},
+        ]
+
+    def test_expect_holds_content_not_just_name(self):
+        """Ожидание из акта доверия фиксирует содержание (obj_lemmas), даже без слова «секрет»."""
+        sim = SocialSimulator(load_world(), script=self._script(
+            "Канарейка рассказала детали проекта на всю улицу."))
+        exps = [(e.holder, e.target, e.obj, e.obj_lemmas)
+                for e in sim.expectations]
+        self.assertIn(("кошка", "канарейка", "проект", frozenset({"проект"})),
+                      exps,
+                      "«доверила проект» должно дать ожидание «не рассказывать проект»")
+
+    def test_content_matching_catches_betrayal_without_word_secret(self):
+        """«рассказала детали проекта» на улицу = предательство, хоть слова «секрет» нет."""
+        sim = SocialSimulator(load_world(), script=self._script(
+            "Канарейка рассказала детали проекта на всю улицу."))
+        self.assertEqual(len(sim.violations), 1,
+                         "предательство распознано по СОДЕРЖАНИЮ (проект), а не по слову «секрет»")
+        pair = sim.relations.get(("кошка", "канарейка"))
+        self.assertAlmostEqual(pair.trust, 0.0, places=4,
+                               msg="доверие упало после предательства проекта")
+
+    def test_content_betrayal_without_publicity_is_not_betrayal(self):
+        """Контроль: то же разглашение НАЕДИНЕ (без публичности) — не предательство."""
+        sim = SocialSimulator(load_world(), script=self._script(
+            "Канарейка рассказала детали проекта своей подруге."))
+        self.assertEqual(len(sim.violations), 0,
+                         "шёпот подруге не разглашение; предательство требует публичности")
+        pair = sim.relations.get(("кошка", "канарейка"))
+        self.assertGreater(pair.trust, 0.0,
+                           "без публичного разглашения доверие держится")
+
+
 class TestStoryUsesDerivedCloseness(unittest.TestCase):
     """Полный рассказ: близость ВЫВЕДЕНА из текста и двигает заряд обиды."""
 

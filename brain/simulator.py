@@ -102,6 +102,9 @@ class Event:
     obj: str = ""
     order: int = 0
     text: str = ""
+    # Содержательные леммы события (для контент-матчинга предательства,
+    # 3-й эксперт). Заполняется в act/add_event из извлечённой фразы.
+    content_lemmas: frozenset = frozenset()
 
     def describe(self) -> str:
         tail = f" -> {self.obj}" if self.obj else ""

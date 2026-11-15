@@ -137,6 +137,12 @@ class Expectation:
     negated: bool = True
     born_tick: int = 0
     source: str = ""
+    # Содержание секрета из акта доверия (3-й эксперт: «нарушение ловится
+    # по совпадению СОДЕРЖАНИЯ, а не имени»). «доверила ПРОЕКТ» кладёт
+    # obj_lemmas={проект}; «рассказала ДЕТАЛИ проекта» делит с ним «проект»
+    # по лемме — предательство распознаётся без слова «секрет», через то,
+    # что именно доверили, а не как это названо.
+    obj_lemmas: frozenset = frozenset()
 
     def violated_by(self, ev: Event) -> bool:
         """
@@ -161,10 +167,22 @@ class Expectation:
         # («рассказать»/«рассказала»), ЛИБО объект confidential выдан глаголом
         # разглашения («разболтала тайну» — общий корень с «рассказывать»
         # отсутствует, но это прямое разглашение того, что ждали не выдавать).
+        # ТРЕТИЙ путь (3-й эксперт): нарушение ловится по СОДЕРЖАНИЮ, а не по
+        # имени. «не рассказывать проект» (obj_lemmas={проект}) нарушается
+        # «рассказала ДЕТАЛИ проекта» — слово «проект» всплывает в леммах
+        # события, хотя объект события «деталь». «рассказать» двусмыслен, поэтому
+        # контент-матчинг срабатывает только на глаголы разглашения или на
+        # «рассказать»+публичность: так «доверила проект, поделилась им наедине»
+        # не становится предательством.
         obj_ok = bool(self.obj) and bool(ev.obj) and ev.obj == self.obj
+        content_hit = bool(self.obj_lemmas) and (
+            self.obj_lemmas & set(ev.content_lemmas or []))
+        content_act = (content_hit and ev.action in _BETRAY_VERBS) or (
+            content_hit and verbs_related(ev.action, self.action) and (
+                set(ev.content_lemmas or []) & _BETRAY_PUBLIC))
         act_ok = (ev.action == self.action) or (
             obj_ok and verbs_related(ev.action, self.action)) or (
-            obj_ok and ev.action in _BETRAY_VERBS)
+            obj_ok and ev.action in _BETRAY_VERBS) or content_act
         if not act_ok:
             return False
         return self.negated
@@ -426,10 +444,11 @@ class SocialSimulator(Simulator):
                     _ev_cl = float(_ev_cl)
                 else:
                     _ev_cl = closeness   # может быть None -> act() выведет из текста
-                self.act(str(d.get("subject", "")), str(d.get("action", "")),
-                         obj=str(d.get("obj", "")),
-                         text=str(d.get("text", "")),
-                         closeness=_ev_cl)
+                _ev0, _hit0 = self.act(
+                    str(d.get("subject", "")), str(d.get("action", "")),
+                    obj=str(d.get("obj", "")),
+                    text=str(d.get("text", "")),
+                    closeness=_ev_cl)
                 # ОЖИДАНИЕ ИЗ ТЕКСТА (штрих A): если событие — просьба, то
                 # её фраза сама сообщает ожидание. Директива expect больше не
                 # нужна: на «Кошка попросила канарейку не рассказывать тайну»
@@ -485,6 +504,21 @@ class SocialSimulator(Simulator):
                                         hit = L & cw
                                         if hit:
                                             secret_obj = sorted(hit)[0]
+                                    # Дорога А + 3-й эксперт: даже если
+                                    # confidential-слова в базе нет, сам АКТ
+                                    # «доверить X» делает X приватным — это
+                                    # знание из глагола, не догадка. Берём
+                                    # содержательный объект доверения (не
+                                    # субъект, не адресат, не глагол), чтобы
+                                    # «доверила ПРОЕКТ» породило ожидание
+                                    # «не рассказывать проект» без слова
+                                    # «секрет».
+                                    if not secret_obj:
+                                        stop = {_ev.subject, _ev.obj,
+                                                _ev.action}
+                                        cand = [w for w in L if w not in stop]
+                                        if cand:
+                                            secret_obj = sorted(cand)[0]
                                     break
                         if trust_here:
                             trs = derive_trust(subj, obj, sf, src=phrase)
@@ -506,7 +540,10 @@ class SocialSimulator(Simulator):
                             if trust_from_verb and secret_obj:
                                 self.expect(subj, obj, "рассказывать",
                                             negated=True, obj=secret_obj,
-                                            source="акт доверия")
+                                            source="акт доверия",
+                                            obj_lemmas=(
+                                                L - {_ev.subject, _ev.obj,
+                                                      _ev.action}))
                     for ex in sf.expectations:
                         if (ex.holder, ex.target, ex.action) in _seen:
                             continue
@@ -589,13 +626,14 @@ class SocialSimulator(Simulator):
 
     def expect(self, holder: str, target: str, action: str,
                negated: bool = True, source: str = "",
-               obj: str = "") -> Expectation:
+               obj: str = "", obj_lemmas=None) -> Expectation:
         exp = Expectation(holder=holder.lower().strip(),
                           target=target.lower().strip(),
                           action=action.lower().strip(),
                           obj=obj.lower().strip(),
                           negated=negated, born_tick=self.tick_index,
-                          source=source)
+                          source=source,
+                          obj_lemmas=frozenset(obj_lemmas or ()))
         self.expectations.append(exp)
         return exp
 
@@ -621,6 +659,15 @@ class SocialSimulator(Simulator):
         близкого ранит сильнее, от чужого — слабее.
         """
         ev = self.add_event(subject, action, obj, text)
+        # Контент-матчинг предательства (3-й эксперт): событие сразу несёт
+        # свои содержательные леммы (из текста), чтобы ожидание-секрет
+        # («не рассказывать ПРОЕКТ») могло распознать нарушение по СОДЕРЖАНИЮ
+        # («рассказала ДЕТАЛИ проекта» делит «проект»), а не только по прямому
+        # имени объекта. Извлекается здесь, а не после act, иначе на момент
+        # проверки violation лемм ещё нет.
+        if text and text.strip():
+            _sf = _extractor().extract(text.strip(), order=ev.order)
+            ev.content_lemmas = frozenset(_sf.content_lemmas or [])
         hit: List[Violation] = []
         # ГРОМКИЙ ЗАМЕР ВИДОВОГО РАЗРЫВА (задача 34).
         # Ожидание из текста берётся из ИНФИНИТИВА просьбы («не рассказывать»,
