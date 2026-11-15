@@ -157,9 +157,14 @@ class Expectation:
         """
         if ev.subject != self.target:
             return False
+        # act_ok: действие совпало по глаголу, ЛИБО по объекту + родству вида
+        # («рассказать»/«рассказала»), ЛИБО объект confidential выдан глаголом
+        # разглашения («разболтала тайну» — общий корень с «рассказывать»
+        # отсутствует, но это прямое разглашение того, что ждали не выдавать).
+        obj_ok = bool(self.obj) and bool(ev.obj) and ev.obj == self.obj
         act_ok = (ev.action == self.action) or (
-            bool(self.obj) and bool(ev.obj) and ev.obj == self.obj
-            and verbs_related(ev.action, self.action))
+            obj_ok and verbs_related(ev.action, self.action)) or (
+            obj_ok and ev.action in _BETRAY_VERBS)
         if not act_ok:
             return False
         return self.negated
@@ -225,6 +230,27 @@ _KIN_TOGETHER = {"семья", "муж", "жена", "коллега", "долг
 # он может быть и актом доверия, и предательством — это шаг 5 (доверие
 # нарушаемым), не закладывать пока двусмысленность в постоянное правило.
 _TRUST_ACTS = {"доверить", "довериться", "доверять", "вверить"}
+
+# Глаголы РАЗГЛАШЕНИЯ (предательства): доверенное содержание выдано третьим.
+# Это то, что НЕ делает доверившийся: «разболтала/растрепала/раскрыла тайну»
+# = нарушение ожидания «не рассказывать». Отдельный набор от _TRUST_ACTS, потому
+# что «рассказать» двусмыслен (и акт доверия, и предательство), а эти — только
+# вниз. Живут пока в коде; тесты-вариации решат, не переносить ли в базу
+# маркером (как semantic:confidential) вслед за словами-носителями тайны.
+_BETRAY_VERBS = {"разболтать", "растрепать", "раскрыть", "выдать",
+                "разгласить", "проболтаться"}
+
+# Маркеры ПУБЛИЧНОСТИ в леммах: «рассказала на всю УЛИЦУ», «ВСЕМ», «ВЕСЬ двор».
+# Они отличают предательство от акта доверия, когда глагол нейтрален
+# («рассказать»): наедине — доверие, при всех — разглашение (3-й эксперт: нарушение
+# ловится по совпадению содержания и адресату-третьему). Тоже кандидат в базу.
+_BETRAY_PUBLIC = {"улица", "всем", "весь", "все", "двор", "толпа",
+                 "знакомый", "сосед", "публика"}
+
+# Секрет-объекты акта доверия: «доверил ТАЙНУ» / «вверил СЕКРЕТ» — то, что
+# доверяющий ждёт не разгласить. Ожидание «не рассказывать <секрет>» держит
+# это слово, чтобы позже «рассказала/разболтала <секрет>» = предательство.
+_SECRET_WORDS = {"тайна", "секрет", "план", "новость", "событие"}
 
 
 def _features_of(sf) -> List[str]:
@@ -311,6 +337,49 @@ class SocialSimulator(Simulator):
         self.load_expectations(world)
         self.load_script(script or [], closeness=closeness)
 
+    # ── ЧТЕНИЕ СОЦИАЛЬНЫХ МАРКЕРОВ ИЗ БАЗЫ (не из кода) ──
+    # Маркер semantic:confidential живёт в properties сущности, а не в
+    # списке _SECRET_WORDS кода. Движок сканирует леммы текста и по маркеру
+    # из базы решает, акт ли это доверия (советчики + 3-й эксперт: маркер =
+    # ИНДЕКС/категория, а не команда «создай доверие»). Синонимы сущности
+    # («тайна», «конфиденциальная информация») читаются вместе с названием.
+    _STOP_LEMMAS = {"для", "на", "в", "с", "к", "по", "о", "об", "и", "не"}
+
+    def _social_marker_entities(self, marker: str) -> Dict[str, set]:
+        """
+        Сущности базы, несущие маркер: имя -> значимые слова (название +
+        синонимы, предлоги/частицы выкинуты).
+
+        «конфиденциальную информацию» экстрактор лемматизирует в два слова
+        [конфиденциальный, информация], поэтому сравниваем по компонентам,
+        а не по строке (замер).
+        """
+        out: Dict[str, set] = {}
+        ents = (self.knowledge.world.get("entities") or {})
+        for name, ent in ents.items():
+            if not isinstance(ent, dict):
+                continue
+            props = ent.get("properties") or []
+            if marker not in props:
+                continue
+            words: set = set()
+            for phrase in [str(ent.get("concept") or "")] + \
+                    [str(x) for x in (ent.get("synonyms") or [])]:
+                for w in phrase.lower().split():
+                    w = w.strip(" ,.;:")
+                    if w and w not in self._STOP_LEMMAS:
+                        words.add(w)
+            if words:
+                out[name] = words
+        return out
+
+    def _confidential_words(self) -> set:
+        """Все значимые слова сущностей с semantic:confidential (единый пул)."""
+        pool: set = set()
+        for words in self._social_marker_entities("semantic:confidential").values():
+            pool |= words
+        return pool
+
     # ── ИНТЕРПРЕТАТОР СЦЕНАРИЯ ─────────────────────────────
     def load_script(self, raw: List[Dict],
                     closeness: float = None) -> int:
@@ -396,12 +465,26 @@ class SocialSimulator(Simulator):
                         #      вверила тайну») — событие само акт доверения.
                         # Доверие НАПРАВЛЕННОЕ: субъект -> адресат.
                         trust_here = False
+                        trust_from_verb = False
+                        secret_obj = ""
                         if sf.expectations:
                             trust_here = True
                         else:
                             for _ev in sf.events:
                                 if _ev.action in _TRUST_ACTS and _ev.subject and _ev.obj:
                                     trust_here = True
+                                    trust_from_verb = True
+                                    # секрет-объект акта доверия: «доверила
+                                    # ТАЙНУ» / «вверила СЕКРЕТ» — ищем в леммах.
+                                    # Слова-носители confidential берутся ИЗ БАЗЫ
+                                    # (сущности с маркером semantic:confidential,
+                                    # их название + синонимы), а не из списка кода.
+                                    L = set(sf.content_lemmas or [])
+                                    cw = self._confidential_words()
+                                    if cw:
+                                        hit = L & cw
+                                        if hit:
+                                            secret_obj = sorted(hit)[0]
                                     break
                         if trust_here:
                             trs = derive_trust(subj, obj, sf, src=phrase)
@@ -413,6 +496,17 @@ class SocialSimulator(Simulator):
                                 cur.trust = trs.trust
                                 cur.provenance = trs.provenance
                                 cur.sources = trs.sources
+                            # ШАГ 5: доверие НАРУШАЕМОЕ. Глагол-акт доверия
+                            # создаёт ОЖИДАНИЕ «не разглашать тайну»: holder
+                            # (доверившийся) ждёт, что target не расскажет секрет.
+                            # Это превращает позже «рассказала/разболтала тайну»
+                            # в ПРЕДАТЕЛЬСТВО (нарушение конкретного ожидания),
+                            # а не в пустое событие. Просьба-ожидание уж создаёт
+                            # своё ниже через sf.expectations — здесь не дублируем.
+                            if trust_from_verb and secret_obj:
+                                self.expect(subj, obj, "рассказывать",
+                                            negated=True, obj=secret_obj,
+                                            source="акт доверия")
                     for ex in sf.expectations:
                         if (ex.holder, ex.target, ex.action) in _seen:
                             continue
@@ -568,6 +662,15 @@ class SocialSimulator(Simulator):
                                  applied=base_charge * eff_close)
                 self.violations.append(viol)
                 hit.append(viol)
+                # ПРЕДАТЕЛЬСТВО рушит ДОВЕРИЕ (шаг 6): нарушенное ожидание
+                # «не рассказывать» исходило из акта доверия holder->target.
+                # Доверие направленное и ПАДАЕТ при разглашении — но не
+                # перезаписывается молча: на ребре остаётся доверие как факт
+                # (держит провенанс), а текущее значение падает (советчики +
+                # 3-й эксперт: не стирать историю, падает состояние).
+                tpair = self.relations.get((exp.holder, exp.target))
+                if tpair is not None and tpair.trust > 0:
+                    tpair.trust = 0.0
         # Снимок ПОСЛЕ применения заряда: тогда состояние на момент события
         # включает и его собственный эффект — так честнее.
         self.snapshots.append({name: emo.state()

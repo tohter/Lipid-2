@@ -197,6 +197,188 @@ class TestTrustIsSeparateFromCloseness(unittest.TestCase):
         self.assertIsNone(r, "«разболтала» — не акт доверия")
 
 
+def make_betrayal_story(first_text, trust_act=True, betrayal=True):
+    """Полный рассказ: близость + акт доверия (+ разглашение) + кара.
+
+    Возвращает (sim, why_acted, violations[0] if any).
+    """
+    script = [
+        {"do": "agent", "name": "кошка"},
+        {"do": "agent", "name": "канарейка"},
+        {"do": "please", "name": "кошка", "amount": 120},
+        {"do": "event", "subject": "кошка", "action": "жить",
+         "obj": "канарейка", "text": first_text},
+    ]
+    if trust_act:
+        script.append({"do": "event", "subject": "кошка",
+                       "action": "доверить", "obj": "канарейка",
+                       "text": "Кошка доверила канарейке свою тайну."})
+    script.append({"do": "ticks", "n": 2})
+    if betrayal:
+        script.append({"do": "event", "subject": "канарейка",
+                       "action": "рассказать", "obj": "тайна",
+                       "text": "Канарейка рассказала тайну."})
+    else:
+        script.append({"do": "event", "subject": "канарейка",
+                       "action": "спать", "obj": "гнездо",
+                       "text": "Канарейка спала в гнезде."})
+    script += [
+        {"do": "ticks", "n": 8},
+        {"do": "event", "subject": "кошка", "action": "съесть",
+         "obj": "канарейка", "text": "Кошка съела канарейку."},
+    ]
+    sim = SocialSimulator(load_world(), script=script)
+    why = sim.why_acted("кошка", "съесть")
+    viol = sim.violations[0] if sim.violations else None
+    return sim, why, viol
+
+
+class TestTrustIsViolableBetrayal(unittest.TestCase):
+    """ШАГ 5: доверие НАРУШАЕМОЕ — разглашение тайны после акта = предательство.
+
+    Акт доверия («доверила тайну») создаёт ОЖИДАНИЕ «не рассказывать тайну».
+    Позже «рассказала тайну» = НАРУШЕНИЕ (предательство), а не пустое событие.
+    Без акта доверия то же разглашение — НЕ предательство (нет ожидания).
+    """
+
+    def test_trust_act_creates_expectation_not_to_tell(self):
+        """Акт доверия создаёт ожидание «не рассказывать тайну»."""
+        sim, _, _ = make_betrayal_story(
+            "Кошка дружно жила с канарейкой и весело с ней играла.",
+            trust_act=True, betrayal=True)
+        exps = [(e.holder, e.target, e.action, e.obj, e.negated)
+                for e in sim.expectations]
+        self.assertIn(("кошка", "канарейка", "рассказывать", "тайна", True),
+                      exps, "акт доверия должен дать ожидание «не рассказывать тайну»")
+
+    def test_betrayal_after_trust_is_violation(self):
+        """Разглашение тайны после акта доверия = НАРУШЕНИЕ."""
+        sim, why, viol = make_betrayal_story(
+            "Кошка дружно жила с канарейкой и весело с ней играла.",
+            trust_act=True, betrayal=True)
+        self.assertIsNotNone(viol, "разглашение после доверия — предательство")
+        self.assertEqual(viol.expectation.holder, "кошка",
+                         "обижается тот, кто доверил тайну")
+        self.assertEqual(viol.expectation.target, "канарейка",
+                         "нарушила канарейка, что доверили тайну")
+
+    def test_betrayal_charge_uses_derived_closeness(self):
+        """Заряд предательства = base_charge x ВЫВЕДЕННАЯ близость."""
+        sim, why, viol = make_betrayal_story(
+            "Кошка дружно жила с канарейкой и весело с ней играла.",
+            trust_act=True, betrayal=True)
+        pair = sim.relations.get(("кошка", "канарейка"))
+        self.assertAlmostEqual(viol.applied, 200.0 * pair.closeness, places=4,
+                               msg="предательство ранит через близость к нарушителю")
+
+    def test_betrayal_without_trust_act_is_not_violation(self):
+        """Контроль: разглашение БЕЗ акта доверия — НЕ предательство."""
+        sim, why, viol = make_betrayal_story(
+            "Кошка дружно жила с канарейкой и весело с ней играла.",
+            trust_act=False, betrayal=True)
+        self.assertIsNone(viol,
+                          "без доверия нет ожидания — разглашение не предательство")
+
+    def test_no_disclosure_after_trust_is_no_violation(self):
+        """Контроль: доверие есть, но тайну НЕ разгласили — НЕ предательство."""
+        sim, why, viol = make_betrayal_story(
+            "Кошка дружно жила с канарейкой и весело с ней играла.",
+            trust_act=True, betrayal=False)
+        self.assertIsNone(viol,
+                          "без разглашения нет нарушения ожидания")
+
+    def test_betrayal_gives_aggression_with_high_closeness(self):
+        """Высокая близость + предательство -> заряд выше порога -> агрессия."""
+        sim, why, viol = make_betrayal_story(
+            "Кошка дружно жила с канарейкой и весело с ней играла.",
+            trust_act=True, betrayal=True)
+        self.assertTrue(why.ok,
+                        "близость 1.7 x 200 = 340 > 294 -> агрессия")
+
+    def test_betrayal_weak_closeness_no_aggression(self):
+        """Слабая близость + предательство -> заряд мал -> НЕ агрессия.
+
+        Близость — множитель, не причина (советчики): предательство есть
+        (нарушение), но без близости кошке почти всё равно.
+        """
+        sim, why, viol = make_betrayal_story(
+            "Кошка любила канарейку.", trust_act=True, betrayal=True)
+        self.assertIsNotNone(viol, "предательство распознано даже при слабой близости")
+        self.assertFalse(why.ok,
+                         "близость 0.3 x 200 = 60 < 294 -> нет агрессии")
+
+
+class TestTrustFromBaseMarker(unittest.TestCase):
+    """Дорога А: доверие читает confidential-слова ИЗ БАЗЫ (маркер на сущности).
+
+    Раньше слова-носители тайны жили в коде (_SECRET_WORDS). Теперь движок
+    сканирует базу: у сущности «секрет» маркер semantic:confidential, её
+    синонимы (тайна, конфиденциальная информация, для служебного пользования)
+    — источник слов. Расширение — правкой базы, не кода (советчики + 3-й
+    эксперт: маркер = индекс, а не команда).
+    """
+
+    def test_confidential_words_read_from_base(self):
+        """Слова-носители confidential приходят из сущности «секрет» (база), а не кода."""
+        sim = SocialSimulator(load_world())
+        words = sim._confidential_words()
+        self.assertIn("тайна", words, "синоним «тайна» сущности «секрет» должен быть в пуле")
+        self.assertIn("информация", words,
+                      "синоним «конфиденциальная информация» даёт значимые слова")
+        self.assertIn("секрет", words, "название сущности — тоже слово-носитель")
+
+    def test_confidential_marker_controls_trigger(self):
+        """Маркер в базе решает: убрать его — confidential-пул пустеет."""
+        w = load_world()
+        ent = w["entities"]["секрет"]
+        had = [p for p in ent.get("properties", []) if p == "semantic:confidential"]
+        ent["properties"] = [p for p in ent.get("properties", [])
+                              if p != "semantic:confidential"]
+        sim = SocialSimulator(w)
+        self.assertEqual(sim._confidential_words(), set(),
+                         "без маркера в базе confidential-слов нет")
+        ent["properties"] += had
+
+    def test_betrayal_drops_trust_to_zero(self):
+        """ПРЕДАТЕЛЬСТВО рушит доверие: trust падает до 0 (главная дыра Дороги А)."""
+        sim, why, viol = make_betrayal_story(
+            "Кошка дружно жила с канарейкой и весело с ней играла.",
+            trust_act=True, betrayal=True)
+        pair = sim.relations.get(("кошка", "канарейка"))
+        self.assertIsNotNone(pair, "ребро кошка->канарейка должно существовать")
+        self.assertAlmostEqual(pair.trust, 0.0, places=4,
+                               msg="разглашение тайны должно УРОНИТЬ доверие до 0")
+
+    def test_trust_survives_without_betrayal(self):
+        """Контроль: без разглашения доверие НЕ падает."""
+        sim, why, viol = make_betrayal_story(
+            "Кошка дружно жила с канарейкой и весело с ней играла.",
+            trust_act=True, betrayal=False)
+        pair = sim.relations.get(("кошка", "канарейка"))
+        self.assertIsNotNone(pair, "ребро должно быть (акт доверия был)")
+        self.assertGreater(pair.trust, 0.0,
+                           "без предательства доверие держится")
+
+    def test_betrayal_verb_razboltala_is_violation(self):
+        """Глагол разглашения «разболтала» = нарушение ожидания (был пробел)."""
+        script = [
+            {"do": "agent", "name": "кошка"},
+            {"do": "agent", "name": "канарейка"},
+            {"do": "please", "name": "кошка", "amount": 120},
+            {"do": "event", "subject": "кошка", "action": "доверить",
+             "obj": "канарейка", "text": "Кошка доверила канарейке свою тайну."},
+            {"do": "ticks", "n": 2},
+            {"do": "event", "subject": "канарейка", "action": "разболтать",
+             "obj": "тайна", "text": "Канарейка разболтала тайну на всю улицу."},
+        ]
+        sim = SocialSimulator(load_world(), script=script)
+        self.assertEqual(len(sim.violations), 1,
+                         "«разболтала тайну» после «доверила тайну» — предательство")
+        pair = sim.relations.get(("кошка", "канарейка"))
+        self.assertAlmostEqual(pair.trust, 0.0, places=4,
+                               msg="и разболтала рушит доверие до 0")
+
+
 class TestStoryUsesDerivedCloseness(unittest.TestCase):
     """Полный рассказ: близость ВЫВЕДЕНА из текста и двигает заряд обиды."""
 
