@@ -552,9 +552,12 @@ class TestPriceIsKnown(unittest.TestCase):
         # 906/75 -> 909/76 (16.11, дыра 4): добавлен test_double_edge_contract.py
         # (7 замков, из них 6 сверяют русские слова с ответом системы) — ещё
         # +3 сверки и +1 файл. msg_only 968 -> 969.
-        self.assertEqual((checked, files), (909, 76),
+        # 909/76 -> 918/77 (16.11, дыра 5): добавлен test_teacher_definition_contract.py
+        # (6 замков на разборе определений учителя через extract_text) — ещё
+        # +9 сверок и +1 файл. msg_only 969 не двинулся.
+        self.assertEqual((checked, files), (918, 77),
                          f"цена A4 = ({checked}, {files}), а в IR_BOUNDARY.md "
-                         f"написано (909, 76) — обнови документ СЕЙЧАС")
+                         f"написано (918, 77) — обнови документ СЕЙЧАС")
         # 645 -> 656 -> 657 -> 663 -> 668 -> 675 на фазе 2 и её дополнениях.
         # Файл tests/test_genitive_theft_contract.py платит ПОФРАЙЛОВО и не
         # один раз: первый вариант дал (0 сравнений, 11 сообщений) — он

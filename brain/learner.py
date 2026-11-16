@@ -569,8 +569,13 @@ class Learner:
                         f"лимит обращений к Учителя ({self.max_teacher_calls}) "
                         f"исчерпан")
             asked = (outcome == "ok") or (outcome == "empty")
+            # ДЫРА 5 (ПРОБЕЛ УЧИТЕЛЯ): определение — полноценное содержимое
+            # записи. Запись с одним definition («Невестка — жена сына»)
+            # раньше отбрасывалась как degenerate: hierarchy/properties пусты,
+            # а definition не учитывался. Непустое определение = знание.
             usable = bool(entity) and bool(entity.get("hierarchy")
-                                        or entity.get("properties"))
+                                        or entity.get("properties")
+                                        or entity.get("definition"))
             if outcome == "ok" and not usable:
                 # Ответ ПРИШЕЛ, но в нём нет ни категории, ни свойств: брать
                 # нечего. Это НЕ сбой канала и НЕ «молчание» — Учитель ответил
@@ -584,8 +589,8 @@ class Learner:
                     "empty": f"«{lemma}»: Учитель ответил «не знаю» — спрашивать "
                              f"повторно не будем",
                     "degenerate": f"«{lemma}»: ответ Учителя ПУСТ по составу "
-                                  f"(ни категории, ни свойств) — спрашивать "
-                                  f"повторно не будем",
+                                  f"(ни категории, ни свойств, ни определения) — "
+                                  f"спрашивать повторно не будем",
                     "disabled": f"«{lemma}»: Учитель НЕ СПРАШИВАЛСЯ — {why}; "
                                 f"слово оставлено КАК НЕСПРОШЕННОЕ",
                     "broken": f"учитель по «{lemma}» НЕ ОТВЕТИЛ: {why}; "
@@ -1281,7 +1286,52 @@ class Learner:
                                               weight=200)
             except Exception:
                 pass
+            # ДЫРА 5 (ПРОБЕЛ УЧИТЕЛЯ): определение учителя разбирается через
+            # extract_text. Принимаются только ОПРЕДЕЛЯЮЩИЕ связи — IS_A/IS_ROLE
+            # (голова = концепт) и RELATION_TO (родственные отношения). Шум
+            # (OBJECT_OF/LOCATED_IN/ABOUT/PART_OF/HAS_PROPERTY из определения)
+            # отбрасывается: эти поля приходят от учителя структурированно
+            # (hierarchy, properties), иначе «экосистема ... на поверхности
+            # Земли» дало бы экосистема OBJECT_OF земля.
+            self._integrate_definition(lemma, merged.get("definition"),
+                                       source, evidence)
 
+    def _integrate_definition(self, lemma: str, definition, source: str,
+                              evidence: str) -> None:
+        """Разобрать определение учителя в рёбра графа (дыра 5).
+
+        Определение — текстовый источник, а не второй набор готовых рёбер:
+        его нельзя интегрировать без промежуточной проверки. Разбор делает
+        тот же extract_text, но принимается УЗКИЙ список отношений, иначе
+        родственное определение «невестка — жена сына» теряло бы RELATION_TO,
+        а шумное «экосистема ... на поверхности Земли» замусоривало бы граф
+        ребром OBJECT_OF земля (вердикт Жозефины).
+        """
+        if not definition or self.core is None or self.extractor is None:
+            return
+        try:
+            for sf in self.extractor.extract_text(str(definition)):
+                for f in sf.facts:
+                    if f.negated:
+                        continue
+                    rel = f.relation
+                    if rel in ("IS_A", "IS_ROLE") and f.head == lemma:
+                        pass  # определяющая связь про сам концепт
+                    elif rel == "RELATION_TO":
+                        pass  # родственное отношение из определения
+                    else:
+                        continue  # шум: в граф не входит
+                    try:
+                        hn = self.core.get_or_create_node(
+                            f.head, NodeType.ENTITY, source=source,
+                            evidence=(f.evidence or "")[:200])
+                        tn = self.core.get_or_create_node(
+                            f.tail, NodeType.ENTITY, source=source)
+                        self._connect(hn, tn, REL[rel], 200)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
     # ── мелочь, но с решением ──────────────────────────────
 
     @staticmethod

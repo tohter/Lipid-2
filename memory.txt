@@ -699,3 +699,63 @@ llama_gui.py ИСПРАВЛЕН (бэкап .bak.20261116_215542): добавл�
 Миграция тестов (читавших по-старому): learning_contract 674 (edges через raw_edges), graph_source 124/135 ([цель] совместим), sleep 636 (поиск цели через raw_edges). Сбой sleep 620 (55!=190) сам починился после обновления веса.
 
 ИЗМЕРИТЕЛЬНЫЙ СДВИГ (после любых правок тестов): тесты 1227 -> 1234 (+7), строк в tests/ вырос. P_ir_output_price 906->909, P_ir_output_files 75->76, P_msg_only 968->969, Z_language_ruslits 684 без изменений. Обновлены: IR_BASELINE.json, IR_BOUNDARY.md A4 (909 в 76), test_langborder_contract (строки 552 и 700 + история), PRESENTATION.md (presnum --fix -> «расхождений нет»). Полный прогон 1234 теста ВСЕ OK (196с), гигиена ЧИСТО.
+
+
+ДЫРА 5 «ПРОБЕЛ УЧИТЕЛЯ» (16.11, ЗАКРЫТА)
+=======================================
+СИМПТОМ: определения учителя (поле definition) не проходили через extract_text.
+1) Запись учителя с ТОЛЬКО definition (hierarchy/properties пусты) отбрасывалась
+как «degenerate» — знание терялось целиком («Невестка — жена сына» не имело
+иерархии и погибало).
+2) Даже при наличии hierarchy definition не разбиралось в рёбра графа: думалка
+могла только процитировать строку, но не рассуждать («жена RELATION_TO сын» не
+создавалось).
+
+ПОЧЕМУ ДЫРА ЖДАЛА РЕШЕНИЙ 0.1-0.3: родственное определение разбирается в
+RELATION_TO («жена RELATION_TO сын»), а до миграции был бы PART_OF-мусор.
+
+ВЕРДИКТ ЖОЗЕФИНЫ (советчик): определение — текстовый источник, а не второй
+набор готовых рёбер. Нельзя интегрировать без промежуточной проверки. Разбор
+делает тот же extract_text, но принимается УЗКИЙ список «определяющих» связей;
+всё остальное — в диагностику, не в граф. Принцип «смысловой центр»: принимать
+связи, раскрывающие сущность X, а не все связи между словами.
+
+ПРАВИЛО ПРИНЯТИЯ из определения:
+- IS_A/IS_ROLE, где ГОЛОВА = концепт  («невестка IS_ROLE жена», «слон IS_ROLE животное»)
+- RELATION_TO (любой)                («жена RELATION_TO сын»)
+- ОТБРАСЫВАЕТСЯ: OBJECT_OF, LOCATED_IN, ABOUT, PART_OF, INSTRUMENT, CAN_DO,
+  HAS_PROPERTY-из-определения, и всё где голова != концепт (кроме RELATION_TO).
+  Иначе «экосистема ... на поверхности Земли» дало бы экосистема OBJECT_OF земля,
+  латинская скобка «(лат. Felis catus)» — OBJECT_OF лат, «кошка — домашнее
+  животное» — OBJECT_OF животное. HAS_PROPERTY/IS_A приходят структурированно
+  (properties, hierarchy) — определение их НЕ дублирует.
+
+РЕАЛИЗАЦИЯ (brain/learner.py):
+- usable (было строка 572): добавлено `or entity.get("definition")` — непустое
+  определение = знание, запись не отбрасывается. Текст degenerate обновлён
+  («ни категории, ни свойств, ни определения»).
+- _integrate_definition(lemma, definition, source, evidence): новый метод в Learner,
+  вызывается из _store_entity ПОСЛЕ integrate_knowledge. Прогоняет definition
+  через self.extractor.extract_text, отфильтровывает по правилу, добавляет рёбра
+  через self._connect(hn, tn, REL[rel], 200) с NodeType.ENTITY.
+
+КРАСНЫЙ КОНТРАКТ: tests/test_teacher_definition_contract.py (6 замков):
+- запись только с definition НЕ degenerate (идёт через learn_from_text, fake teacher)
+- невестка -> IS_ROLE жена, жена -> RELATION_TO сын
+- слон -> IS_ROLE животное (из определения, не только IS_A из hierarchy)
+- экосистема НЕ даёт OBJECT_OF земля / LOCATED_IN поверхность
+- кошка НЕ даёт OBJECT_OF животное / HAS_PROPERTY домашний из определения
+- скобка (лат. Felis catus) НЕ даёт OBJECT_OF лат
+
+ДВЕ МУТАЦИИ УБИТЫ:
+- убрать `or entity.get("definition")` из usable -> невестка отброшена как
+  degenerate (узел не создан), тест 1 краснеет
+- сделать _integrate_definition no-op -> рёбра IS_ROLE/RELATION_TO исчезают,
+  тесты 2 и 4 краснеют
+
+ЗАМЕР: полный прогон 1240 тестов ВСЕ OK (194с), гигиена ЧИСТО.
+ИЗМЕРИТЕЛЬНЫЙ СДВИГ (новый файл контракта): тесты 1234 -> 1240 (+6),
+P_ir_output_price 909->918, P_ir_output_files 76->77, P_msg_only 969 без изменений,
+Z_language_ruslits 684 без изменений. Обновлены: IR_BASELINE.json,
+IR_BOUNDARY.md A4 (918 в 77), test_langborder_contract (строка 556 + история),
+PRESENTATION.md (presnum --fix, «расхождений нет»).
