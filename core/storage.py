@@ -4,6 +4,7 @@ import os
 from enum import IntEnum
 from typing import Dict, List, Optional
 from core.sdr import SDR1024
+from core.synapses import SynapseList
 from core.encoder import get_encoder
 from core.records import merge_entity   # noqa: F401 — правило слияния ОДНО на все каналы
 from core.worldfile import atomic_write_json, default_memory_dir
@@ -105,9 +106,22 @@ class StorageManager:
             if evidence:
                 node_data["evidence"] = evidence
 
-            # Сохраняем исходящие синапсы
+            # Сохраняем исходящие синапсы. Дыра 4: итерируем ВСЕ рёбра
+            # (raw_edges), а не .items() — тот отдаёт только первое ребро на
+            # цель. Иначе при записи второе отношение к той же цели снова
+            # терялось бы, уже на пороге диска.
             if hasattr(node, 'out_synapses_typed'):
-                for target_name, syn_info in node.out_synapses_typed.items():
+                if hasattr(node.out_synapses_typed, 'raw_edges'):
+                    iterable = node.out_synapses_typed.raw_edges()
+                else:
+                    iterable = node.out_synapses_typed.items()
+                for edge in iterable:
+                    if isinstance(edge, dict) and "target" in edge:
+                        target_name = edge["target"]
+                        syn_info = edge
+                    else:
+                        # совместимость с dict-формой {target: info}
+                        target_name, syn_info = edge[0], edge[1]
                     syn = {
                         "target_label": target_name,
                         "rel_type": syn_info["rel_type"],
@@ -264,15 +278,17 @@ if __name__ == "__main__":
             self.canonical_id = 0
             self.sdr = SDR1024(name)
             self.action_profile = [0, 0, 0]
-            self.out_synapses_typed = {}
+            self.out_synapses_typed = SynapseList()
 
     node_cat = DummyNode("кошка", NodeType.ENTITY)
     node_hip = DummyNode("гиппопотам", NodeType.ENTITY)
     node_beg = DummyNode("бегемот", NodeType.ENTITY)
 
-    # Синонимическая связь: гиппопотам -> бегемот
-    node_hip.out_synapses_typed["бегемот"] = {"rel_type": RelationType.SYNONYM_OF, "weight": 255}
-    node_cat.out_synapses_typed["кошачьи"] = {"rel_type": RelationType.IS_A, "weight": 255}
+    # Синонимическая связь: гиппопотам -> бегемот (ребро с "target")
+    node_hip.out_synapses_typed.append(
+        {"target": "бегемот", "rel_type": RelationType.SYNONYM_OF, "weight": 255})
+    node_cat.out_synapses_typed.append(
+        {"target": "кошачьи", "rel_type": RelationType.IS_A, "weight": 255})
 
     test_nodes = {
         "кошка": node_cat,

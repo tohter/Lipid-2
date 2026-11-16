@@ -122,9 +122,11 @@ class TestSignatureIntegrity(unittest.TestCase):
         g.integrate_knowledge({"concept": "кошка", "category": "животное",
                                "properties": ["пушистая"]}, weight=200)
         syn = g.nodes["кошка"].out_synapses_typed
-        self.assertIn("животное", syn)
+        # Дыра 4: список рёбер; доступ по ключу цели отдаёт первое ребро к ней.
         self.assertEqual(syn["животное"]["rel_type"], RelationType.IS_A)
         self.assertEqual(syn["животное"]["weight"], 200)
+        targets = {e["target"] for e in syn.raw_edges()}
+        self.assertIn("животное", targets)
 
     def test_positional_weight_argument_kept(self):
         """weight передаётся ПОЗИЦИОННО (learner вызывает weight=200 именовано,
@@ -132,6 +134,7 @@ class TestSignatureIntegrity(unittest.TestCase):
         нельзя."""
         g = GraphMemory()
         g.integrate_knowledge({"concept": "стол", "category": "мебель"}, 130)
+        # Дыра 4: [цель] отдаёт первое ребро к цели (мебель у стола — одно).
         self.assertEqual(g.nodes["стол"].out_synapses_typed["мебель"]["weight"],
                          130)
 

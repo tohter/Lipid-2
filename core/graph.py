@@ -10,6 +10,7 @@ if __package__ in (None, ""):
 from core.sdr import SDR1024, prewarm
 from core.index import SdrIndex
 from core.storage import StorageManager, NodeType, RelationType
+from core.synapses import SynapseList
 
 
 class NoSurfaceForms:
@@ -80,8 +81,10 @@ class Node:
         self.sdr = SDR1024(self.name)
         # Профиль действий для ACTION узлов: [kinetic, metabolic, semiotic] (0..255)
         self.action_profile = [0, 0, 0]
-        # Синапсы: {target_name: {"rel_type": int, "weight": int}}
-        self.out_synapses_typed: Dict[str, dict] = {}
+        # Синапсы: СПИСОК рёбер. Каждое ребро: {"target", "rel_type", "weight"[, "source"]}.
+        # НЕ словарь по цели — см. SynapseList (дыра 4): два отношения к одной
+        # и той же цели обязаны пережить запись.
+        self.out_synapses_typed: SynapseList = SynapseList()
         # Откуда узел взялся: "teacher:llm", "teacher:wiki", "text:<tag>",
         # "user". Не косметика: знание, извлечённое из одного рассказа,
         # обязано быть ОТЛИЧНО от онтологии, проверенной двумя источниками,
@@ -93,14 +96,29 @@ class Node:
 
     def connect_to(self, target_node: 'Node', rel_type: int, weight: int = 255,
                    source: str = ""):
-        """Создает типированную направленную связь к target_node."""
+        """Создает типированную направленную связь к target_node.
+
+        Дыра 4: ребро ДОБАВЛЯЕТСЯ в список, а не пишется в словарь по цели —
+        два РАЗНЫХ отношения к одной цели не затирают друг друга. Но ребро с
+        тем же (target, rel_type) ОБНОВЛЯЕТ вес: иначе повторы одного факта
+        плодили бы копии, и «сон понизил вес» не находил бы живой граф.
+        """
         clamped_weight = max(0, min(255, weight))
-        self.out_synapses_typed[target_node.name] = {
+        # тот же тип к той же цели -> обновить существующее ребро
+        for edge in self.out_synapses_typed:
+            if edge.get("target") == target_node.name and edge.get("rel_type") == rel_type:
+                edge["weight"] = clamped_weight
+                if source:
+                    edge["source"] = source
+                return
+        edge = {
+            "target": target_node.name,
             "rel_type": rel_type,
             "weight": clamped_weight
         }
         if source:
-            self.out_synapses_typed[target_node.name]["source"] = source
+            edge["source"] = source
+        self.out_synapses_typed.append(edge)
 
     def __repr__(self):
         return f"<Node '{self.name}' type={self.node_type} synapses={len(self.out_synapses_typed)}>"

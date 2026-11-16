@@ -633,7 +633,8 @@ class TestGraphProjectionIsExact(unittest.TestCase):
         self.assertEqual(rep["report"].created, 1, rep["text"])
         node = b.core.nodes.get("птенец")
         self.assertIsNotNone(node, "новое знание обязано стать СВЯЗЬЮ")
-        self.assertIn("летать", node.out_synapses_typed)
+        # Дыра 4: список рёбер — ищем по имени цели внутри рёбер.
+        self.assertIn("летать", [e["target"] for e in node.out_synapses_typed.raw_edges()])
 
     def test_replay_without_weight_still_never_lowers(self):
         """

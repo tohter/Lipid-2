@@ -671,8 +671,9 @@ class TestReplayAcrossRestart(unittest.TestCase):
         lr2 = Learner(load_world=self._read, save_world=self._write, core=core2)
         n = lr2.replay_observations(self._read())
         self.assertGreater(n, 0, "связи не восстановлены из наблюдений")
-        edges = {(h, t) for h, node in core2.nodes.items()
-                 for t in node.out_synapses_typed}
+        # Дыра 4: out_synapses_typed теперь список рёбер, target внутри ребра.
+        edges = {(h, e["target"]) for h, node in core2.nodes.items()
+                 for e in node.out_synapses_typed.raw_edges()}
         # Объект привязан к ДЕЙСТВИЮ, а не к субъекту — см. OBJECT_OF:
         # «кошка сторожит мышь» = кошка->сторожить->мышь.
         self.assertIn(("кошка", "сторожить"), edges)
