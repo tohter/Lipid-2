@@ -144,6 +144,22 @@ COPULA_STATE_RELS = ("HAS_PROPERTY", "IS_ROLE")
 NEGATIONS = {"не", "ни"}
 VERB_POS = ("VERB", "INFN", "PRTF", "GRND")
 
+# ОТНОСИТЕЛЬНЫЕ СУЩЕСТВИТЕЛЬНЫЕ (решение хозяина 0.1/0.3). Одушевлённый
+# определитель при них даёт RELATION_TO (семиотическую связь), а не состав
+# или владение: «жена Егора», «сын Зинаиды» — РОДСТВО, «кукла девочки» —
+# ПРЕДМЕТ. Одной одушевлённости мало (pymorphy даёт anim у «куклы»), решает
+# природа слова. Это будущий lang/ru-долг (см. D в IR_BOUNDARY.md), набор
+# закрыт контрактом tests/test_relation_naming_contract.py.
+_RELATION_NOUNS = {"жена", "муж", "мать", "отец", "сын", "дочь",
+                   "сестра", "брат", "невестка", "семья", "мама",
+                   "папа", "бабушка", "дедушка", "внук", "внучка",
+                   "тётя", "дядя", "племянник", "племянница",
+                   "свекровь", "тёща", "свёкор", "тесть",
+                   "родня", "родственник", "родственница",
+                   "деверь", "золовка", "шурин", "свояченица",
+                   "жених", "невеста", "сосед", "соседка",
+                   "друг", "подруга", "знакомый", "знакомая"}
+
 # Обстоятельственные существительные. Их НЕЛЬЗЯ выдавать за инструмент:
 # «солнце светит днём» — «днём» не орудие свечения (я именно так и получал
 # INSTRUMENT день). Это отдельный класс: время и мера отвечают на «когда» и
@@ -1693,8 +1709,21 @@ class SimpleExtractor:
                     # перекрывает эту строку. Мёртвый код, который притворяется
                     # починкой, опаснее отсутствия починки: по нему читают
                     # решение, которого нет.
+                    # ИМЯ ОТНОШЕНИЯ — ПО СМЫСЛУ, а не по ветке (решение
+                    # хозяина 0.1/0.3). «жена — НЕ часть мужа»: родственная
+                    # пара обязана давать RELATION_TO, а не PART_OF. Решает
+                    # НЕ одна одушевлённость (pymorphy даёт anim у «куклы»),
+                    # а природа слова: РОДСТВЕННОЕ существительное-владелец
+                    # (жена, мать, сын) + одушевлённый определитель = связь.
+                    # «хвост собаки» — неодуш. определитель и не родня —
+                    # остаётся PART_OF (часть целого).
+                    rel_name = ("RELATION_TO"
+                                if (owner_rel.get("animacy") == "anim"
+                                    and variant.get("animacy") == "anim"
+                                    and owner_rel["lemma"] in _RELATION_NOUNS)
+                                else "PART_OF")
                     res.facts.append(self._fact_from_variant(
-                        owner_rel["lemma"], t, "PART_OF", res.sentence, negs,
+                        owner_rel["lemma"], t, rel_name, res.sentence, negs,
                         variant))
                 continue
             # «кошка это животное» и «кит не рыба»: именная часть стоит в
@@ -1738,7 +1767,18 @@ class SimpleExtractor:
                              None)
                 if gvar is not None and owner is not None \
                         and gvar["lemma"] == variant["lemma"]:
-                    variant, rel = gvar, "PART_OF"
+                    # РОДСТВЕННАЯ ПАРА В ИМЕННОЙ ВЕТКЕ (решение хозяина
+                    # 0.1/0.3): «жена сына Зинаиды» — голова РОДСТВЕННОЕ
+                    # слово и оба конца одушевлённые — это RELATION_TO, а не
+                    # PART_OF. «Столица Франции» остаётся PART_OF (франция
+                    # неодуш., столица не родня).
+                    owner_v = self._pick(owner, ("NOUN", "ADJF"))
+                    anim_pair = (owner_v is not None
+                                 and owner_v.get("animacy") == "anim"
+                                 and gvar.get("animacy") == "anim"
+                                 and owner_v["lemma"] in _RELATION_NOUNS)
+                    variant, rel = gvar, ("RELATION_TO" if anim_pair
+                                          else "PART_OF")
                     t = owner
                     owner_head = owner["variants"][0]["lemma"]
                     owned_here = True
@@ -1766,7 +1806,12 @@ class SimpleExtractor:
                     # (переприсваивался только t, а голову брал subj), поэтому
                     # «жена сына Зинаиды» теряло связь жена->сын вовсе, а
                     # «зинаида» прилипало к Маше.
-                    rel, t = "PART_OF", owner
+                    owner_v = self._pick(owner, ("NOUN", "ADJF"))
+                    anim_pair = (owner_v is not None
+                                 and owner_v.get("animacy") == "anim"
+                                 and variant.get("animacy") == "anim"
+                                 and owner_v["lemma"] in _RELATION_NOUNS)
+                    rel, t = ("RELATION_TO" if anim_pair else "PART_OF"), owner
                     owner_head = owner["variants"][0]["lemma"]
             # ── ПРИЧИНА (очередь G): направление ПЕРЕВОРАЧИВАЕТ обычную
             # запись. Головой CAUSES обязан БЫТЬ причина, хвостом — следствие
@@ -1947,7 +1992,7 @@ class SimpleExtractor:
             cause=cause))
         # Факты этого предложения — ДИНАМИКА, а не онтология.
         for f in res.facts:
-            if f.relation == "PART_OF":
+            if f.relation in ("PART_OF", "RELATION_TO"):
                 continue
             f.predicate = "event"
 

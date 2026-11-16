@@ -69,9 +69,9 @@ def world_of(edges):
 
 # Кирпичи загадки в том виде, в каком их пишет разбор (замер).
 RIDDLE = [("невестка", "IS_ROLE", "жена"),
-          ("жена", "PART_OF", "сын"),
+          ("жена", "RELATION_TO", "сын"),
           ("егор", "IS_ROLE", "сын"),
-          ("сын", "PART_OF", "зинаида"),
+          ("сын", "RELATION_TO", "зинаида"),
           ("зинаида", "CAN_DO", "гостить"),
           ("гостить", "LOCATED_IN", "семья"),
           ("сын", "HAS_PROPERTY", "свой")]
@@ -102,7 +102,7 @@ class TestGeneralReadExists(unittest.TestCase):
         sk = StaticKnowledge(world_of(RIDDLE))
         want = {
             ("невестка", "IS_ROLE"): ["жена"],
-            ("жена", "PART_OF"): ["сын"],
+            ("жена", "RELATION_TO"): ["сын"],
             ("сын", "HAS_PROPERTY"): ["свой"],
             ("гостить", "LOCATED_IN"): ["семья"],
         }

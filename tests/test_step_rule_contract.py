@@ -72,8 +72,8 @@ FALSE_STORY = world(
 HONEST = world(
     [("невестка", "IS_ROLE", "жена"),
      ("егор", "IS_ROLE", "сын"),
-     ("жена", "PART_OF", "сын"),
-     ("сын", "PART_OF", "зинаида")])
+     ("жена", "RELATION_TO", "сын"),
+     ("сын", "RELATION_TO", "зинаида")])
 
 # ДРУГОЙ выдуманный рассказ, ДРУГИЕ слова, ДРУГИЕ отношения (ABOUT и
 # RECIPIENT вместо CAN_DO и OBJECT_OF), то же устройство: лицо -> событие ->
@@ -144,7 +144,7 @@ class TestHonestChainStillBuilds(unittest.TestCase):
         пройти через них: иначе отказ стал бы отказом от рассуждения.
         """
         w = world([("невестка", "IS_ROLE", "жена"),
-                   ("жена", "PART_OF", "сын"),
+                   ("жена", "RELATION_TO", "сын"),
                    ("егор", "IS_ROLE", "сын")])
         self.assertTrue(StaticKnowledge(w).identity_path("невестка", "егор").path)
 

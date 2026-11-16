@@ -137,7 +137,7 @@ class TestNestedKinshipChain(unittest.TestCase):
         """Цель правки: связь «жена -> сын» существует ОТДЕЛЬНО от «Маша ->
         жена». Пока её нет вовсе: оба родительных прилипают к Маше."""
         t = tripes("Маша — жена сына Зинаиды.")
-        self.assertIn(("жена", "PART_OF", "сын"), t,
+        self.assertIn(("жена", "RELATION_TO", "сын"), t,
                       f"нет связи определения с владельцем: {t}")
 
     def test_two_names_do_not_become_the_same_role(self):
@@ -150,7 +150,7 @@ class TestNestedKinshipChain(unittest.TestCase):
 
     def test_brother_of_husband_keeps_both_links(self):
         t = tripes("Брат мужа — это деверь.")
-        self.assertIn(("брат", "PART_OF", "муж"), t,
+        self.assertIn(("брат", "RELATION_TO", "муж"), t,
                       f"брат не привязан к мужу: {t}")
 
 
@@ -190,21 +190,21 @@ class TestInventedFamilyStories(unittest.TestCase):
     def test_snokha_gives_definition_through_people(self):
         t = self._facts("Оля — сноха Зинаиды. Сноха — это жена сына.")
         self.assertIn(("сноха", "IS_ROLE", "жена"), t, f"сноха не связана с женой: {t}")
-        self.assertIn(("жена", "PART_OF", "сын"), t,
+        self.assertIn(("жена", "RELATION_TO", "сын"), t,
                       f"определение потеряло второго человека: {t}")
         self._no_person_becomes_person(t)
 
     def test_shurin_gives_definition_through_people(self):
         t = self._facts("Тимур — шурин Маши. Шурин — брат жены.")
         self.assertIn(("шурин", "IS_ROLE", "брат"), t, f"{t}")
-        self.assertIn(("брат", "PART_OF", "жена"), t,
+        self.assertIn(("брат", "RELATION_TO", "жена"), t,
                       f"брат не привязан к жене — определение бесполезно: {t}")
         self._no_person_becomes_person(t)
 
     def test_dever_gives_definition_through_people(self):
         t = self._facts("Лёва — деверь Оли. Деверь — это брат мужа.")
         self.assertIn(("деверь", "IS_ROLE", "брат"), t, f"{t}")
-        self.assertIn(("брат", "PART_OF", "муж"), t, f"{t}")
+        self.assertIn(("брат", "RELATION_TO", "муж"), t, f"{t}")
         self._no_person_becomes_person(t)
 
     def test_cousin_keeps_both_people(self):
@@ -213,7 +213,7 @@ class TestInventedFamilyStories(unittest.TestCase):
         t = self._facts("Семён — двоюродный брат Вити.")
         self.assertIn(("семён", "HAS_PROPERTY", "двоюродный"), t,
                       f" степень родства потеряна: {t}")
-        self.assertIn(("брат", "PART_OF", "витя"), t,
+        self.assertIn(("брат", "RELATION_TO", "витя"), t,
                       f"Витя потерян из связи: {t}")
         self._no_person_becomes_person(t)
 
@@ -223,8 +223,8 @@ class TestInventedFamilyStories(unittest.TestCase):
         а другая нет, «это одно лицо» никогда не выведется."""
         a = self._facts("Маша — жена Егора.")
         b = self._facts("Невестка — жена сына.")
-        self.assertIn(("жена", "PART_OF", "егор"), a, f"жена Егора: {a}")
-        self.assertIn(("жена", "PART_OF", "сын"), b, f"жена сына: {b}")
+        self.assertIn(("жена", "RELATION_TO", "егор"), a, f"жена Егора: {a}")
+        self.assertIn(("жена", "RELATION_TO", "сын"), b, f"жена сына: {b}")
         rel_a = {r for _h, r, _tl in a if _h == "жена"}
         rel_b = {r for _h, r, _tl in b if _h == "жена"}
         self.assertEqual(rel_a, rel_b,

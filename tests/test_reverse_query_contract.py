@@ -78,9 +78,9 @@ def world_of(edges, negated=()):
 # именно её, путь построился мгновенно, и меряла бы я свой текст, а не систему.
 RIDDLE = [
     ("невестка", "IS_ROLE", "жена"),
-    ("жена", "PART_OF", "сын"),
+    ("жена", "RELATION_TO", "сын"),
     ("егор", "IS_ROLE", "сын"),
-    ("сын", "PART_OF", "зинаида"),
+    ("сын", "RELATION_TO", "зинаида"),
 ]
 
 # ЛОЖНЫЕ ВСТРЕЧИ из того же замера. Право на жизнь у них есть: это настоящие
@@ -113,14 +113,15 @@ class TestReverseQueryMissing(unittest.TestCase):
 
     def test_relation_type_is_respected_backwards(self):
         """Обратный запрос обязан различать ОТНОШЕНИЕ, а не всякую ссылку.
-        «жена PART_OF сын» и «егор IS_ROLE сын» — разные причины встретиться,
-        смешать их = потерять смысл связи."""
+        «жена RELATION_TO сын» и «егор IS_ROLE сын» — разные причины
+        встретиться, смешать их = потерять смысл связи. (Пара переведена
+        на RELATION_TO решением хозяина 0.1/0.3.)"""
         sk = StaticKnowledge(world_of(RIDDLE))
         fn = sk.referenced_by
         role = {h for h, r in fn("сын", "IS_ROLE")}
-        part = {h for h, r in fn("сын", "PART_OF")}
+        part = {h for h, r in fn("сын", "RELATION_TO")}
         self.assertEqual(role, {"егор"}, f"в ролях кто попало: {role}")
-        self.assertEqual(part, {"жена"}, f"в принадлежности кто попало: {part}")
+        self.assertEqual(part, {"жена"}, f"в связях кто попало: {part}")
 
 
 class TestReverseMirrorsForward(unittest.TestCase):
@@ -254,12 +255,13 @@ class TestMeetingIsNotIdentity(unittest.TestCase):
                             "подмена тождества встречей")
 
     def test_two_owners_of_one_slot_are_not_equal(self):
-        """«жена PART_OF сын» и «жена PART_OF муж»: у Жены два хозяина.
-        Ребёнок и муж — разные люди, хотя оба держат жену. Любая futura
-        «идентичность по общему хвосту» покраснеет здесь."""
+        """«жена RELATION_TO сын» и «жена RELATION_TO муж»: у Жены два
+        хозяина. Ребёнок и муж — разные люди, хотя оба держат жену. Любая
+        futura «идентичность по общему хвосту» покраснеет здесь. (Пара
+        переведена на RELATION_TO решением хозяина 0.1/0.3.)"""
         sk = StaticKnowledge(world_of([
-            ("жена", "PART_OF", "сын"), ("жена", "PART_OF", "муж")]))
-        self.assertEqual(sorted(t for t in sk._tails("жена", "PART_OF")),
+            ("жена", "RELATION_TO", "сын"), ("жена", "RELATION_TO", "муж")]))
+        self.assertEqual(sorted(t for t in sk._tails("жена", "RELATION_TO")),
                          ["муж", "сын"],
                          "роль обязана хранить ВСЕХ владельцев, а не выбрать "
                          "одного: выбор = молчаливое тождество")

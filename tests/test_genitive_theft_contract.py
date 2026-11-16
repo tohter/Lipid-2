@@ -229,14 +229,22 @@ class TestPhaseOneHandsEdgeToPhaseTwo(unittest.TestCase):
     отличием зелёный всегда (урок 81)."""
 
     def test_edge_now_exists_under_part_of(self):
+        # РЕШЕНИЕ ХОЗЯИНА 0.1/0.3: отношение имени выбирается по СМЫСЛУ.
+        # Одушевлённая родственная пара (жена/мать + имя) — RELATION_TO
+        # (семиотическая связь, «жена — не часть мужа»); неодушевлённый
+        # определитель (хозяйка дома) остаётся PART_OF (часть целого).
+        # Замок следит за парой {subj, thief}: ребро РОВНО одно, имя — по
+        # классу, направление не перевёрнуто.
         for sent, subj, _act, _obj, thief in STOLEN + GRID:
             with self.subTest(sentence=sent):
+                want_rel = ("RELATION_TO" if subj in ("жена", "мать")
+                            else "PART_OF")
                 got = [(h, r, t) for h, r, t in triples(sent)
                        if {h, t} == {subj, thief}]
                 self.assertEqual(
-                    got, [(subj, "PART_OF", thief)],
+                    got, [(subj, want_rel, thief)],
                     f"{sent!r}: фаза 2 обязана оставить РОВНО одно ребро "
-                    f"{subj!r} --PART_OF--> {thief!r}; получено {got}")
+                    f"{subj!r} --{want_rel}--> {thief!r}; получено {got}")
 
 
 class TestGenitiveFreeObjectSurvives(unittest.TestCase):
