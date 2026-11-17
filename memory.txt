@@ -860,3 +860,48 @@ confidence); support — счётчик повторений. НЕТ: конте
   кто дочинит шаг 2 (или хозяин разрешит Аманде дочинить). НЕ коммитить чужой
   WIP без явного слова. Наша работа здесь: закрыта дыра 5 (30e4bcf) и
   зафиксирован контекст 0.4.
+
+
+ТОЧКА ВХОДА ДЛЯ НОВОЙ ВЕТКИ (18.11, стоп-состояние после дочинки)
+====================================================================
+КОНТЕКСТ: работа шага 2 (context/interpretation) делалась в ПРЕДЫДУЩЕЙ ветке,
+которая зациклилась; форк сделан чуть раньше финального коммита. Эта работа
+НАША (не чужая), лежала незакоммиченной в working tree и была красной.
+
+ЧТО Я УСПЕЛА ДОЧИНИТЬ В ЭТОЙ ВЕТКЕ (проверено зелёным):
+1) brain/lipid2_brain.py:
+   - сигнатура _integrate_entity_into_core дополнена параметрами
+     context=None, interpretation=None (строка 312);
+   - при record=True: если context/interpretation даны как kwargs — вливаются
+     в копию data (rec_data), исходный словарь НЕ мутируется; затем
+     _record_observation(concept, rec_data, confidence, evidence, source);
+   - импорт из core.records дополнен: norm_context, norm_interpretation
+     (раньше НЕ были импортированы — это и был корень красного: NameError).
+2) core/records.py: норм_context/norm_interpretation УЖЕ были (из WIP),
+   я не меняла.
+3) ТЕСТ ШАГА 2 теперь ЗЕЛЁНЫЙ: tests.test_context_interpretation_contract
+   (8 тестов) + tests.test_byte_confidence_contract (9) = 17 OK.
+4) Смежное семейство зелёное: 96 OK (records, evidence_link, repeat_witness,
+   weight_authority, worldfile, world_transaction, teacher_definition,
+   teacher_relation, teacher_staging).
+
+ЗАМЕР (новый файл добавил +17 тестов, строк в tests/ выросло):
+- P_ir_output_price 918 -> 928, P_ir_output_files 77 -> 79,
+  P_msg_only_checks 969 -> 975. Z_language_ruslits 684 и M_core_messages 115
+  БЕЗ изменений. Тестов всего: 1240 -> 1257.
+- УЖЕ ОБНОВИЛА (в working tree, НЕ закоммичено):
+    experiments/IR_BASELINE.json  -> 928/79/975
+    experiments/IR_BOUNDARY.md    -> строка 61 «928 в 79 файла»
+
+ЧТО ЕЩЁ КРАСНОЕ (НЕ ДОДЕЛАНО — продолжить в новой ветке):
+- tests/test_langborder_contract.py: строки 552/558/708 ещё держат (918,77)
+  и 969 — НЕ обновлены под 928/79/975. Обновить + history-комментарий.
+- tools/presnum.py --fix НЕ запускала после новых строк -> PRESENTATION.md
+  устарела; tests/test_presentation_numbers_contract.py красный.
+- Полный прогон 1257 тестов: 10 failures, ВСЕ в измерительном слое
+  (langborder 7 + presentation_numbers 2 + ещё 1 langborder) — НЕ логические.
+
+ВАЖНО: эти правки (brain/lipid2_brain.py, core/records.py, IR_BASELINE.json,
+IR_BOUNDARY.md, test_context_interpretation_contract.py) НЕ закоммичены —
+это продолжение работы шага 2. При следующем визите: догнать langborder +
+presnum --fix, полный прогон, гигиена, memory-запись, коммит (код, затем memory).
