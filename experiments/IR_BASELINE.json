@@ -28,7 +28,7 @@
    },
    {
     "module": "core.morph",
-    "line": 1234,
+    "line": 1251,
     "nested": true,
     "demo": false
    }
@@ -82,13 +82,13 @@
    },
    {
     "module": "lang.ru.why",
-    "line": 1490,
+    "line": 1507,
     "nested": true,
     "demo": false
    },
    {
     "module": "lang.ru.ability",
-    "line": 1544,
+    "line": 1561,
     "nested": true,
     "demo": false
    }
@@ -139,12 +139,12 @@
    {
     "cls": "NegationScope",
     "method": "note",
-    "line": 409
+    "line": 425
    },
    {
     "cls": "ExpectationRecord",
     "method": "describe",
-    "line": 566
+    "line": 582
    }
   ],
   "core/schemes.py": [
@@ -158,12 +158,12 @@
    {
     "cls": "Lipid2Brain",
     "method": "sleep_now",
-    "line": 1421
+    "line": 1438
    },
    {
     "cls": "Lipid2Brain",
     "method": "process_input",
-    "line": 1438
+    "line": 1455
    }
   ],
   "brain/question.py": [
@@ -190,7 +190,7 @@
   "core/worldfile.py": 4
  },
  "language_ruslits": {
-  "core/extract.py": 273,
+  "core/extract.py": 312,
   "core/lemma.py": 49,
   "core/morph.py": 323
  },
@@ -285,9 +285,9 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 904,
-  "files": 74,
-  "checks_with_russian_message_only": 962
+  "checks_comparing_russian": 919,
+  "files": 78,
+  "checks_with_russian_message_only": 975
  },
  "totals": {
   "D_debt_files": 3,
@@ -304,9 +304,9 @@
   "X_core_demo": 98,
   "R_neutral_files": 9,
   "Z_language_ruslits": 684,
-  "P_ir_output_price": 918,
-  "P_ir_output_files": 77,
-  "P_msg_only_checks": 969,
+  "P_ir_output_price": 919,
+  "P_ir_output_files": 78,
+  "P_msg_only_checks": 975,
   "U_outer_seam_sites": 7,
   "U_outer_seam_files": 6,
   "G_lang_import_sites": 11,

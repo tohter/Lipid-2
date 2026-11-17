@@ -21,7 +21,7 @@ from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
 from core.records import (action_name, add_witness, byte_confidence, lineage_of, stamp_ground,
                           meaningful_categories,
-                          merge_entity,
+                          merge_entity, norm_context, norm_interpretation,
                           name_variants, normalize_actions,
                           normalize_provenance, observation_weight,
                           resolve_by_variant, same_word, strip_self_name)
@@ -309,7 +309,7 @@ class Lipid2Brain:
             print(f"[Lipid-2] Ядро загружено: {count} сущностей из Вселенной. "
                   f"SDR-кодировщик: {enc_name} (семантический={semantic}, cfg={cfg}).")
 
-    def _integrate_entity_into_core(self, concept: str, data: dict, confidence: float = None, evidence: str = None, source: str = None, record: bool = True):
+    def _integrate_entity_into_core(self, concept: str, data: dict, confidence: float = None, evidence: str = None, source: str = None, record: bool = True, context: str = None, interpretation: str = None):
         """Записывает одну сущность из мира в граф ядра (SDR-узел + синапсы).
         
         confidence: уверенность 0..1 (LLM=0.75, Wiki=0.85, User=1.0)
@@ -364,7 +364,17 @@ class Lipid2Brain:
 
         # Записываем наблюдение в observations (как в Learner)
         if record:
-            self._record_observation(concept, data, confidence, evidence, source)
+            rec_data = data
+            # 0.4, шаг 2: kwargs context/interpretation (тест передаёт их и как
+            # ключи data, и как параметры) — вливаем в data для записи, не
+            # трогая исходный словарь (он может быть общим для нескольких узлов).
+            if context is not None or interpretation is not None:
+                rec_data = dict(data)
+                if context is not None:
+                    rec_data["context"] = context
+                if interpretation is not None:
+                    rec_data["interpretation"] = interpretation
+            self._record_observation(concept, rec_data, confidence, evidence, source)
 
     def _record_observation(self, concept: str, data: dict, confidence: float,
                             evidence: str, source: str):
@@ -452,6 +462,12 @@ class Lipid2Brain:
                         "source": source or "unknown",
                         "support": 1, "first_seen": now,
                         "provenance": [prov_entry],
+                        # КОНТЕКСТ И ИНТЕРПРЕТАЦИЯ (0.4, шаг 2): где и в каком
+                        # смысле существует утверждение. Дефолт — реальный мир,
+                        # буквально (нормализация в core/records.py).
+                        "context": norm_context(data.get("context")),
+                        "interpretation": norm_interpretation(
+                            data.get("interpretation")),
                         # ОТКУДА ПРИЕХАЛО. Пусто — если назвать нечем (модель,
                         # безымянный текст): свидетельство сохранится, но
                         # достоверности не прибавит.
