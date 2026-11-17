@@ -70,8 +70,8 @@ PREP_CASES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "из":      (("gen",), "LOCATED_IN"),
     "изо":     (("gen",), "LOCATED_IN"),
     "из-за":   (("gen",), "LOCATED_IN"),
-    "к":       (("dat",), "LOCATED_IN"),
-    "ко":      (("dat",), "LOCATED_IN"),
+    "к":       (("dat",), "RECIPIENT"),
+    "ко":      (("dat",), "RECIPIENT"),
     "над":     (("ins",), "LOCATED_IN"),
     "под":     (("ins", "dat"), "LOCATED_IN"),
     "по":      (("dat",), "ABOUT"),
@@ -1558,7 +1558,15 @@ class SimpleExtractor:
                                             res.sentence, negs, variant=inf))
                 used.add(id(inf))
 
-        governed = [t for t in content if id(t) not in used and t["role"] != "property"]
+        governed = [t for t in content if id(t) not in used
+                    and (t["role"] != "property"
+                         # предложное прилагательное — НЕ свойство (кирпич «к»):
+                         # оно идёт в падёжный разбор, где «к» без живого
+                         # адресата честно откажется; без предлога — свойство,
+                         # как и было. Иначе «врач идёт к больному» теряло
+                         # «больному» молча: свойство-ветка его пропускала,
+                         # падёжная не видела.
+                         or t.get("prep") in ("к", "ко"))]
         # ИМЕННОЙ режим = сказуемое НЕ смысловой глагол (связка или
         # прилагательное): «хвост собаки мокрый» — «собаки» определитель при
         # «хвост» (PART_OF), объекта действия тут просто нет.
@@ -1581,6 +1589,17 @@ class SimpleExtractor:
             rel, variant = self._case_role(t, nominal=nominal)
             if rel is not None and variant is not None:
                 resolved.append((t, rel, variant))
+            elif t.get("prep") in ("к", "ко"):
+                # МОЛЧАЛИВЫЙ НОЛЬ ЗАПРЕЩЁН: «к окну», «к вечеру», «к победе»
+                # отказываются в _case_role (адресатом предмет и время не
+                # бывают, отношений направления/времени в реестре нет), и
+                # без этой заметки потеря связи выглядит как её отсутствие
+                # в тексте. Имя слова — в начале заметки (мера
+                # test_parse_notes_contract режет полосу первых 30 знаков).
+                res.notes.append(
+                    "«%s»: предложное «%s» без адресата — направление и "
+                    "время в реестре отношений отсутствуют, связь не записана"
+                    % (t["word"], t.get("prep")))
 
         # РОДИТЕЛЬНЫЙ без предлога двусмысленен: «боится грозы» — объект
         # глагола, «крышка гроба» — определитель существительного. Различает их
@@ -2704,6 +2723,14 @@ class SimpleExtractor:
             for c in cases:
                 v = self._pick(tok, ("NOUN", "ADJF"), case=c)
                 if v is not None:
+                    # «к»/«ко» с живым существом — адресат (письмо К БРАТУ,
+                    # мать придирается К СЫНУ). С предметом или временем
+                    # (к окну, к вечеру) RECIPIENT — ложь: окно ничего не
+                    # получает, вечер не адресат. Отношений направления и
+                    # времени в реестре нет — честный отказ вместо выдумки.
+                    if (prep in ("к", "ко") and rel == "RECIPIENT"
+                            and v.get("animacy") != "anim"):
+                        return None, None
                     return rel, v
             return None, None
 
@@ -2743,16 +2770,37 @@ class SimpleExtractor:
         Свойство цепляется к существительному, с которым СОГЛАСОВАНО в числе и
         падеже; из согласованных — к ближайшему. В «большой дом и высокая
         башня» без согласования свойства разъедутся не туда.
+
+        ПРЕДЛОГ И СВОЙСТВО (кирпич «к», решение по матрице): прилагательное
+        внутри предложной группы («на широком подоконнике») наследует предлог
+        и остаётся СВОЙСТВОМ своего существительного — того же предлога и
+        согласованного падежа. А вот согласованной пары без своего
+        существительного нет — это субстантивированное прилагательное при
+        глаголе («врач идёт к больному»), и свойством ПОДЛЕЖАЩЕГО оно не
+        становится: иначе врач записывается больным. Такое слово идёт в
+        падёжный разбор, где «к» + неодушевлённое честно откажется.
         """
         nouns = [t for t in content if t["role"] == "subject"]
         if not nouns:
             return
         for adj in [a for a in content if a["role"] == "property"
                     and id(a) not in used_ids]:
+            av = self._pick(adj, ("ADJF", "ADJS", "COMP"))
+            prep = adj.get("prep")
+            if prep:
+                # свойство — только своему существительному: тот же предлог
+                # и согласование в падеже и числе; нет пары — не свойство
+                cand = [n for n in nouns
+                        if n.get("prep") == prep and av is not None
+                        and self._pick(n, ("NOUN",), case=av["case"],
+                                       number=av["number"]) is not None]
+                if not cand:
+                    continue
+            else:
+                cand = nouns
             best, best_score = None, -1e9
-            for n in nouns:
+            for n in cand:
                 score = -abs(content.index(n) - content.index(adj)) * 2
-                av = self._pick(adj, ("ADJF", "ADJS", "COMP"))
                 nv = None
                 if av is not None:
                     # сущ. в том же падеже и числе — почти наверняка это пара
