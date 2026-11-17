@@ -19,7 +19,7 @@ from core.transitions import (TransitionTable, merge_json,
 from core.sdr import prewarm, encoder_info
 from core.lemma import LemmaResolver
 from core.logchannel import status as _status, request as _ask
-from core.records import (action_name, add_witness, lineage_of, stamp_ground,
+from core.records import (action_name, add_witness, byte_confidence, lineage_of, stamp_ground,
                           meaningful_categories,
                           merge_entity,
                           name_variants, normalize_actions,
@@ -43,12 +43,13 @@ class Lipid2Brain:
           3. Вопрос пользователю      -> через GUI (колбэк)
     """
 
-    # Уверенность по каналам (решено хозяином 14.10.26):
-    #   user   = 1.00 — человек отвечает прямо
-    #   wiki   = 0.85 — проверяемая энциклопедия
-    #   llm    = 0.75 — локальная модель, может выдумать
-    #   text   = 0.60 — извлечено из рассказа без учителя
-    CHANNEL_CONFIDENCE = {"user": 1.0, "wiki": 0.85, "llm": 0.75, "text": 0.6}
+    # Уверенность по каналам (решено хозяином 14.10.26; шкала байтовая
+    # 0..255 — Денди-философия, без сопроцессора; шаг 1 / 0.4):
+    #   user = 255 — человек отвечает прямо
+    #   wiki = 217 — проверяемая энциклопедия (round 0.85*255)
+    #   llm  = 191 — локальная модель, может выдумать (round 0.75*255)
+    #   text = 153 — извлечено из рассказа без учителя (round 0.60*255)
+    CHANNEL_CONFIDENCE = {"user": 255, "wiki": 217, "llm": 191, "text": 153}
 
     def __init__(self, memory_dir: str = None):
         self.memory_dir, self.world_filepath = default_memory_dir(memory_dir)
@@ -446,7 +447,7 @@ class Lipid2Brain:
                     # трижды, а мутация в любом из них проходила молча.
                     observations[key] = stamp_ground({
                         "head": head, "relation": relation, "tail": tail,
-                        "confidence": float(confidence), "negated": False,
+                        "confidence": byte_confidence(confidence), "negated": False,
                         "evidence": (evidence or "")[:220],
                         "source": source or "unknown",
                         "support": 1, "first_seen": now,
@@ -1072,7 +1073,7 @@ class Lipid2Brain:
             # текст справа от or превращался в llm. Неизвестный канал — это
             # «не знаю», а не «сказала модель».
             channel = ""
-        conf = float(data.get("confidence") or self.CHANNEL_CONFIDENCE.get(channel, 0.6))
+        conf = int(byte_confidence(data.get("confidence") or self.CHANNEL_CONFIDENCE.get(channel, 153)))
         evidence = data.get("definition") or data.get("evidence") or ""
         return conf, evidence, (f"teacher:{channel}" if channel else "")
 
