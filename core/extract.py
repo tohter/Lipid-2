@@ -668,9 +668,25 @@ class SimpleExtractor:
         # Леммы, которые ядро уже знает. Нужны только для снятия омонимии
         # при равных вероятностях (см. _pick).
         self.known = set(known_lemmas or ())
+        # ЗНАНИЕ О ПОЛЯХ СУЩНОСТИ (для «у X Y»): что является частью / местом
+        # / вещью / свойством. Заполняется снаружи (Учитель/мир/эксперимент),
+        # как и known. Пустые по умолчанию: без знания движок не выдумывает
+        # тип, а честно отказывается (закон «ложная связь хуже отсутствующей»).
+        self.entity_part: set = set()
+        self.entity_place: set = set()
+        self.entity_object: set = set()
+        self.entity_state: set = set()
 
     def set_known(self, lemmas: Iterable[str]) -> None:
         self.known = set(lemmas)
+
+    def set_entity_kind(self, part=(), place=(), obj=(), state=()) -> None:
+        """Передаёт движку поля сущностей для «у X Y»: множества лемм частей
+        тела/механизма, мест-ориентиров, вещей и свойств/состояний."""
+        self.entity_part = set(part)
+        self.entity_place = set(place)
+        self.entity_object = set(obj)
+        self.entity_state = set(state)
 
     # ── публичный вход ─────────────────────────────────────
 
@@ -1479,6 +1495,33 @@ class SimpleExtractor:
             self._attach_adjectives(res, content, used, negs)
             res.facts = self._dedup(res.facts)
             return res
+
+        # «у X Y» БЕЗ глагола и БЕЗ бытийного слова («у крокодила зубы») —
+        # указатель близости, тип выбирает ДВИЖОК по полю сущности (решение
+        # хозяина). Направление: ПРАВОЕ относится к ЛЕВОМУ (не наоборот).
+        # Срабатывает только когда нет сказуемого и possession не взял верх:
+        # иначе общий разбор/владение уже сказали своё. Сказуемое — прилагательное
+        # («у Аманды хороший вкус») — НЕ глагол, значит «у»-связь тоже нужна.
+        no_verb = pred is None or (pred is not None and pred.get("role") == "property")
+        if no_verb:
+            upair = self._u_phrase(toks)
+            if upair is not None:
+                left_tok, right_tok = upair
+                rel = self._u_relation(right_tok, left_tok)
+                if rel is not None:
+                    lv = self._pick(left_tok, ("NOUN",), case="gen") or left_tok["variants"][0]
+                    rv = self._pick(right_tok, ("NOUN",), case="nom") or right_tok["variants"][0]
+                    res.facts.append(self._fact_from_variant(
+                        rv["lemma"], left_tok, rel, res.sentence, negs, lv))
+                    used = {id(left_tok), id(right_tok), id(pred)}
+                    self._attach_adjectives(res, content, used, negs)
+                    res.facts = self._dedup(res.facts)
+                    return res
+                # Пара «у X Y» есть, но тип неизвестен: честный отказ. Ложная
+                # близость (LOCATED_IN) дороже пропуска — не отдаём общему разбору
+                # навесить её на незнакомую пару.
+                res.notes.append("у-связь: незнакомый тип сущности")
+                return res
 
         # 2) зависимые при сказуемом: объект / инструмент / получатель / место
         used = {subj_taken, id(pred)}
@@ -2499,6 +2542,45 @@ class SimpleExtractor:
                       if t is not owner and t["role"] == "subject"
                       and not t.get("prep")), None)
         return owner, thing
+
+    # ── «у X Y» без глагола ────────────────────────────────
+
+    def _u_phrase(self, toks: List[dict]) -> Optional[Tuple[dict, dict]]:
+        """Ищет пару (левое, правое) для «у X Y» без глагола. Левое — сущ. с
+        prep="у" (род.п.), правое — первое сущ. без prep (им.п.). Направление:
+        правое относится к левому. Возвращает (left_tok, right_tok) или None."""
+        left = None
+        right = None
+        for t in toks:
+            w = t.get("word", "")
+            if t.get("prep") == "у":
+                left = t
+            elif left is not None and t["pos"] == "NOUN" and not t.get("prep"):
+                right = t
+                break
+        if left is None or right is None:
+            return None
+        return (left, right)
+
+    def _u_relation(self, right_tok: dict, left_tok: dict) -> Optional[str]:
+        """Тип связи «у X Y» по полю сущности (решение хозяина: движок решает).
+        ПРИОРИТЕТ:
+          1. правое — часть -> PART_OF;
+          2. левое — место -> LOCATED_IN;
+          3. правое — свойство/состояние -> HAS_PROPERTY;
+          4. иначе правое — вещь -> OBJECT_OF;
+        Незнакомое слово -> None (честный отказ, связь не выдумывается)."""
+        rl = (right_tok.get("lemma") or right_tok["word"]).lower()
+        ll = (left_tok.get("lemma") or left_tok["word"]).lower()
+        if rl in self.entity_part:
+            return "PART_OF"
+        if ll in self.entity_place:
+            return "LOCATED_IN"
+        if rl in self.entity_state:
+            return "HAS_PROPERTY"
+        if rl in self.entity_object:
+            return "OBJECT_OF"
+        return None
 
     # ── сказуемое ──────────────────────────────────────────
 
