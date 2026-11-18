@@ -90,7 +90,7 @@ PREP_CASES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     # решением хозяина после четырёх кирпичей честных отказов.
     "с":       (("gen", "ins"), "SOURCE"),
     "со":      (("gen", "ins"), "SOURCE"),
-    "для":     (("gen",), "ABOUT"),
+    "для":     (("gen",), "RECIPIENT"),
     "без":     (("gen",), "ABSENCE"),
     "возле":   (("gen",), "LOCATED_IN"),
     "около":   (("gen",), "LOCATED_IN"),
@@ -1608,6 +1608,8 @@ class SimpleExtractor:
             rel, variant = self._case_role(t, nominal=nominal)
             if rel is not None and variant is not None:
                 resolved.append((t, rel, variant))
+            elif PREP_CASES.get(t.get("prep")) == (("gen",), "RECIPIENT"):
+                res.notes.append("%s: recipient requires an animate entity" % t["word"])
             elif PREP_CASES.get(t.get("prep"), ((), ""))[1] == "ABSENCE":
                 res.notes.append("%s: absence relation unavailable" % t["word"])
             elif t.get("prep") in ("к", "ко", "по", "с", "со"):
@@ -1663,8 +1665,10 @@ class SimpleExtractor:
             # перед сказуемым принадлежит имени (задание Эксперта, шаг 1).
             # После объекта при глаголе обе головы допустимы: без корпусного
             # подтверждения отказываемся, сохраняя заметку вместо догадки.
-            prep_relation = PREP_CASES.get(tok.get("prep"), ((), ""))[1]
-            if prep_relation not in ("SOURCE", "ABOUT", "RECIPIENT", "PATH"):
+            # Родительный RECIPIENT («для») не входит в правило шага 1.
+            prep_cases, prep_relation = PREP_CASES.get(tok.get("prep"), ((), ""))
+            if (prep_relation not in ("SOURCE", "ABOUT", "RECIPIENT", "PATH")
+                    or (prep_cases == ("gen",) and prep_relation != "SOURCE")):
                 return "", False
             pos = content.index(tok)
             start = pos
@@ -2792,7 +2796,7 @@ class SimpleExtractor:
                     # (к окну, к вечеру) RECIPIENT — ложь: окно ничего не
                     # получает, вечер не адресат. Отношений направления и
                     # времени в реестре нет — честный отказ вместо выдумки.
-                    if (prep in ("к", "ко") and rel == "RECIPIENT"
+                    if (rel == "RECIPIENT"
                             and v.get("animacy") != "anim"):
                         return None, None
                     # «по» (решение хозяина: PATH введён): слово времени ->
