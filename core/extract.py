@@ -96,7 +96,7 @@ PREP_CASES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "около":   (("gen",), "LOCATED_IN"),
     "вокруг":  (("gen",), "LOCATED_IN"),
     "после":   (("gen",), "TIME_ONLY"),
-    "через":   (("acc",), "ABOUT"),
+    "через":   (("acc",), "TIME_OR_ENDPOINT"),
     "внутри":  (("gen",), "LOCATED_IN"),
     "при":     (("loc", "dat"), "CONDITION"),
     # ── ПРИЧИНА (очередь G) ─────────────────────────────────

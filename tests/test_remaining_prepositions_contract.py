@@ -26,6 +26,22 @@ class TestRemainingPrepositions(unittest.TestCase):
                 word = sentence.rstrip('.').split()[-1]
                 self.assertTrue(any(n.startswith(word + ':') for n in result.notes))
 
+    def test_through_time_or_route(self):
+        extractor = SimpleExtractor()
+        cases = [('Поезд едет через час.', 'ехать', 'час', 'CIRCUMSTANCE'),
+                 ('Поезд едет через мост.', 'ехать', 'мост', None)]
+        for sentence, head, tail, relation in cases:
+            with self.subTest(sentence=sentence):
+                result = extractor.extract(sentence)
+                self.assertEqual([(f.head, f.relation, f.tail) for f in result.facts
+                                  if f.tail == tail], [(head, relation, tail)] if relation else [])
+                if not relation:
+                    self.assertTrue(any(n.startswith(tail + ':') for n in result.notes))
+                    extractor.set_entity_kind(place={tail})
+                    result = extractor.extract(sentence)
+                    self.assertEqual([(f.head, f.relation, f.tail) for f in result.facts
+                                      if f.tail == tail], [(head, 'PATH', tail)])
+
     def test_temporal_boundaries(self):
         cases = [('Дождь шёл до вечера.', 'идти', 'вечер'),
                  ('Кот спит перед рассветом.', 'спать', 'рассвет'),
