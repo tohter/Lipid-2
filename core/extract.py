@@ -65,11 +65,11 @@ PREP_CASES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "у":       (("gen",), "LOCATED_IN"),
     "о":       (("loc",), "ABOUT"),
     "об":      (("loc",), "ABOUT"),
-    "от":      (("gen",), "LOCATED_IN"),
+    "от":      (("gen",), "PATH"),
     "до":      (("gen",), "LOCATED_IN"),
-    "из":      (("gen",), "LOCATED_IN"),
-    "изо":     (("gen",), "LOCATED_IN"),
-    "из-за":   (("gen",), "LOCATED_IN"),
+    "из":      (("gen",), "PATH"),
+    "изо":     (("gen",), "PATH"),
+    "из-за":   (("gen",), "PAIR_TYPE_REQUIRED"),
     "к":       (("dat",), "RECIPIENT"),
     "ко":      (("dat",), "RECIPIENT"),
     "над":     (("ins",), "LOCATED_IN"),
@@ -121,9 +121,9 @@ CAUSE_PREPS = frozenset(p for p, (_c, rel) in PREP_CASES.items()
 # СПОРНЫЕ предлоги: один и тот же оборот читается и как место, и как причина.
 # Замер корпуса: МЕСТО 7/7 и ПРИЧИНА 6/6 дают ОДНО И ТО ЖЕ LOCATED_IN; морфо-
 # логия молчит («угла», «дождя», «куста» — все неодушевлённые существительные).
-# Перевод в CAUSES отложен РЕШЕНИЕМ ХОЗЯИНА: любой дефолт здесь обязан соврать
-# одной из групп (месту или причине). Дефолт оставлен месту, он заперт тестом
-# tests/test_cause_extraction_contract.py — менять только вместе с memory.txt.
+# Перевод в CAUSES отложен до доказанного типа пары. Прежний замер выше
+# описывает ложный LOCATED_IN; новый замок в test_cause_extraction_contract.py
+# проверяет отказ для «из-за». Для «от» действует решение PATH / CIRCUMSTANCE.
 AMBIGUOUS_CAUSE_PREPS = frozenset({"из-за", "от"})
 
 # Глаголы-связки: значения не несут, соединяют подлежащее с именной частью.
@@ -1612,6 +1612,8 @@ class SimpleExtractor:
                 res.notes.append("%s: recipient requires an animate entity" % t["word"])
             elif PREP_CASES.get(t.get("prep"), ((), ""))[1] == "ABSENCE":
                 res.notes.append("%s: absence relation unavailable" % t["word"])
+            elif PREP_CASES.get(t.get("prep"), ((), ""))[1] == "PAIR_TYPE_REQUIRED":
+                res.notes.append("%s: pair_type_unproved" % t["word"])
             elif t.get("prep") in ("к", "ко", "по", "с", "со"):
                 # МОЛЧАЛИВЫЙ НОЛЬ ЗАПРЕЩЁН: «к окну», «к вечеру», «к победе»,
                 # «поезд идёт по рельсам» и «чай с лимоном» отказываются
@@ -2786,7 +2788,7 @@ class SimpleExtractor:
         if prep:
             # Отсутствие не тема: для «без» отношения в реестре нет.
             cases, rel = PREP_CASES.get(prep, ((), "LOCATED_IN"))
-            if rel == "ABSENCE":
+            if rel in ("ABSENCE", "PAIR_TYPE_REQUIRED"):
                 return None, None
             for c in cases:
                 v = self._pick(tok, ("NOUN", "ADJF"), case=c)
@@ -2804,7 +2806,7 @@ class SimpleExtractor:
                     # остальное -> PATH (путь/поверхность: «поезд идёт ПО
                     # РЕЛЬСАМ», «дети бегают ПО ДВОРУ»). ABOUT (тема) здесь
                     # лгала и остаётся запрещённой.
-                    if prep == "по":
+                    if rel == "PATH":
                         if v["lemma"] in TIME_LEMMAS:
                             return "CIRCUMSTANCE", v
                         return "PATH", v

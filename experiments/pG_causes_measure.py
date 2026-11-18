@@ -79,6 +79,15 @@ def rels(sentence):
     return [f.relation for f in EX.extract(sentence, order=1).facts]
 
 
+def dependent_relation(sentence):
+    result = EX.extract(sentence, order=1)
+    word = sentence.rstrip('.').split()[-1]
+    relations = [f.relation for f in result.facts if f.relation != 'CAN_DO']
+    if relations:
+        return ','.join(relations)
+    return 'REFUSED' if any(n.startswith(word + ':') for n in result.notes) else 'MISSING'
+
+
 def count_rel(sentences, rel):
     return sum(1 for s in sentences for f in EX.extract(s, order=1).facts
                if f.relation == rel)
@@ -193,7 +202,7 @@ print("ИТОГ " + " ".join([
     f"vseledstvie={rels('Пожар погас вследствие дождя.')[1]}",
     f"vvidu={rels('Урожай сгорел ввиду жары.')[1]}",
     f"blagodarya={rels('Успех пришёл благодаря тренеру.')[1]}",
-    f"izza={rels('Пожар гаснет из-за дождя.')[1]}",
-    f"ugol={rels('Мальчик выглянул из-за угла.')[1]}",
+    f"izza={dependent_relation('Пожар гаснет из-за дождя.')}",
+    f"ugol={dependent_relation('Мальчик выглянул из-за угла.')}",
     f"manual_worlds={len(worlds)}",
 ]))

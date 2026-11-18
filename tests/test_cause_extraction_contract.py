@@ -16,11 +16,11 @@ tests/test_cause_extraction_contract.py — замок очереди G: при�
      «гаснуть ВЫЗЫВАЕТ дождь»: причину шиворот-навыворот. Поэтому замок на
      НАПРАВЛЕНИЕ здесь важнее замка на само отношение.
 
-ДВУСМЫСЛЕННОЕ («из-за», «от») намеренно НЕ тронуто: корпус замера — место
+ИСТОРИЯ: в очереди G двусмысленное («из-за», «от») намеренно не тронули: место
 7/7 и причина 6/6 дают ОДНО И ТО ЖЕ отношение, морфология неразличима
 («угла»/«дождя» оба неодушевлённые). Сменить дефолт молча = соврать одной из
-групп; это решение хозяина (записано в memory.txt, ЖДЁТ РЕШЕНИЯ). Замок ниже
-держит СТАТУС-КВО, чтобы смена произошла только вместе с решением.
+групп. В очереди предлогов решение записано в memory.txt: для «из-за»
+без типа пары отказ, для «от» общее правило PATH / CIRCUMSTANCE.
 
 Числа тест НЕ хранит в голове: ИТОГ пересобирается скриптом-замером командой
 (урок 16: цифра без команды замера — догадка).
@@ -127,35 +127,14 @@ class TestCauseDirection(unittest.TestCase):
                         f"CAUSES из «{s}» отсекается фильтром и мир его не увидит")
 
 
-class TestAmbiguousStaysOwnerDecision(unittest.TestCase):
-    """
-    «из-за» и «от» НЕ переведены в CAUSES: корпус замера — МЕСТО 7/7,
-    ПРИЧИНА 6/6, отношение ОДНО И ТО ЖЕ, морфология молчит. Дефолт выбирает
-    хозяин; замок держит статус-кво, чтобы смена была только с решением.
-    """
-
-    def test_place_reading_untouched(self):
-        got = triples("Мальчик выглянул из-за угла.")
-        self.assertIn(("выглянуть", "LOCATED_IN", "угол"), got,
-                      f"место сломано правкой: {got}")
-        self.assertFalse([t for t in got if t[1] == "CAUSES"],
-                         f"место стало причиной без решения хозяина: {got}")
-
-    def test_ambiguous_cause_still_located_in(self):
-        got = triples("Пожар гаснет из-за дождя.")
-        self.assertIn(("гаснуть", "LOCATED_IN", "дождь"), got,
-                      f"статус-кво сменён молча — это решение хозяина: {got}")
-        self.assertFalse([t for t in got if t[1] == "CAUSES"])
+class TestAmbiguousRequiresPairType(unittest.TestCase):
+    """Старый дефолт места заменён отказом: морфология не доказывает тип пары."""
 
     def test_ambiguous_prepositions_are_marked_as_open(self):
-        """Статус-кво обязан быть ВИДЕН как класс данных, а не забыт:
-        множество открыто и перечисляет спорные предлоги."""
         from core.extract import AMBIGUOUS_CAUSE_PREPS
         self.assertEqual(AMBIGUOUS_CAUSE_PREPS, frozenset({"из-за", "от"}))
-        for p in AMBIGUOUS_CAUSE_PREPS:
-            self.assertEqual(PREP_CASES[p][1], "LOCATED_IN",
-                             "дефолт спорных предлогов — предмет решения, "
-                             "менять можно только вместе с memory.txt")
+        self.assertEqual({PREP_CASES[p][1] for p in AMBIGUOUS_CAUSE_PREPS},
+                         {"PAIR_TYPE_REQUIRED", "PATH"})
 
 
 class TestPastTenseCauseIsStillRecorded(unittest.TestCase):
@@ -258,14 +237,13 @@ class TestMeasurementIsReproducible(unittest.TestCase):
     def test_relations_by_name(self):
         for key, want in (("vseledstvie", "CAUSES"), ("vvidu", "CAUSES"),
                           ("blagodarya", "CAUSES"),
-                          ("izza", "LOCATED_IN"), ("ugol", "LOCATED_IN")):
+                          ("izza", "REFUSED"), ("ugol", "REFUSED")):
             self.assertEqual(self.s[key], want,
                              f"{key}={self.s[key]}, ожидалось {want}")
 
-    def test_place_corpus_untouched(self):
-        """Корпус места: 7 связей LOCATED_IN (замер), причина: 6 — статус-кво."""
-        self.assertEqual(int(self.s["place_located"]), 7)
-        self.assertEqual(int(self.s["cause_poly_located"]), 6)
+    def test_ambiguous_corpus_no_longer_claims_location(self):
+        self.assertEqual(int(self.s["place_located"]), 0)
+        self.assertEqual(int(self.s["cause_poly_located"]), 0)
 
     def test_manual_world_count(self):
         """Миров с ручным CAUSES ровно 1 — от него проверяется ориентация."""

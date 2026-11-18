@@ -190,7 +190,7 @@
   "core/worldfile.py": 4
  },
  "language_ruslits": {
-  "core/extract.py": 357,
+  "core/extract.py": 356,
   "core/lemma.py": 49,
   "core/morph.py": 323
  },
@@ -285,9 +285,9 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 996,
+  "checks_comparing_russian": 994,
   "files": 83,
-  "checks_with_russian_message_only": 981
+  "checks_with_russian_message_only": 979
  },
  "totals": {
   "D_debt_files": 3,
@@ -303,10 +303,10 @@
   "M_core_messages": 115,
   "X_core_demo": 98,
   "R_neutral_files": 9,
-  "Z_language_ruslits": 729,
-  "P_ir_output_price": 996,
+  "Z_language_ruslits": 728,
+  "P_ir_output_price": 994,
   "P_ir_output_files": 83,
-  "P_msg_only_checks": 981,
+  "P_msg_only_checks": 979,
   "U_outer_seam_sites": 7,
   "U_outer_seam_files": 6,
   "G_lang_import_sites": 11,
