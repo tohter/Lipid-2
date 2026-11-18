@@ -139,12 +139,12 @@
    {
     "cls": "NegationScope",
     "method": "note",
-    "line": 435
+    "line": 443
    },
    {
     "cls": "ExpectationRecord",
     "method": "describe",
-    "line": 592
+    "line": 600
    }
   ],
   "core/schemes.py": [
@@ -190,7 +190,7 @@
   "core/worldfile.py": 4
  },
  "language_ruslits": {
-  "core/extract.py": 351,
+  "core/extract.py": 360,
   "core/lemma.py": 49,
   "core/morph.py": 323
  },
@@ -285,8 +285,8 @@
   ]
  },
  "tests_touching_russian": {
-  "checks_comparing_russian": 963,
-  "files": 82,
+  "checks_comparing_russian": 981,
+  "files": 83,
   "checks_with_russian_message_only": 981
  },
  "totals": {
@@ -303,9 +303,9 @@
   "M_core_messages": 115,
   "X_core_demo": 98,
   "R_neutral_files": 9,
-  "Z_language_ruslits": 723,
-  "P_ir_output_price": 963,
-  "P_ir_output_files": 82,
+  "Z_language_ruslits": 732,
+  "P_ir_output_price": 981,
+  "P_ir_output_files": 83,
   "P_msg_only_checks": 981,
   "U_outer_seam_sites": 7,
   "U_outer_seam_files": 6,
