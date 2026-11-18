@@ -73,7 +73,8 @@ class TestSWith(unittest.TestCase):
 
     def test_old_man_with_rod(self):
         t = triples("старик с удочкой сидел у реки")
-        self.assertIn(("сидеть", "WITH", "удочка"), t)
+        # Архитектурное решение Эксперта: группа перед глаголом при имени.
+        self.assertIn(("старик", "WITH", "удочка"), t)
         self.assertNotIn(("сидеть", "INSTRUMENT", "удочка"), t)
 
 
@@ -136,10 +137,10 @@ class TestSNoRegression(unittest.TestCase):
                       triples("сахар в чае"))
 
     def test_companionship_verb_head(self):
-        # спутник цепляется к БЛИЖАЙШЕМУ глаголу, а не к подлежащему:
-        # «пошла с ребёнком» — шла вместе, не «мать WITH ребёнок»
+        # Шаг 1 Эксперта меняет прежний замок: «мать с ребёнком» —
+        # группа при имени; «мать пошла с ребёнком» остаётся при глаголе.
         t = triples("мать с ребёнком пошла в поликлинику")
-        self.assertIn(("пойти", "WITH", "ребёнок"), t)
+        self.assertIn(("мать", "WITH", "ребёнок"), t)
         self.assertIn(("пойти", "LOCATED_IN", "поликлиника"), t)
 
 

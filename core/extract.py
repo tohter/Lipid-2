@@ -1656,6 +1656,27 @@ class SimpleExtractor:
                 return subj_lemma
             return content[best]["lemma"]
 
+        def attributive_head(tok):
+            # Атрибутивная группа непосредственно после существительного
+            # перед сказуемым принадлежит имени (задание Эксперта, шаг 1).
+            # После объекта при глаголе обе головы допустимы: без корпусного
+            # подтверждения отказываемся, сохраняя заметку вместо догадки.
+            prep_relation = PREP_CASES.get(tok.get("prep"), ((), ""))[1]
+            if prep_relation not in ("SOURCE", "ABOUT", "RECIPIENT", "PATH"):
+                return "", False
+            pos = content.index(tok)
+            start = pos
+            while start and content[start - 1].get("prep") == tok.get("prep"):
+                start -= 1
+            if not start:
+                return "", False
+            previous = content[start - 1]
+            if previous.get("pos") != "NOUN" or previous.get("prep"):
+                return "", False
+            if any(i < start for i in verbs_idx):
+                return "", True
+            return previous["lemma"], False
+
         if money_sentence or value_sentence:
             # ЦЕНА / МЕРА. До п.17 здесь было «ничего не записать и сказать
             # почему»: «пять тысяч рублей» свелось бы к узлам «тысяча» и
@@ -1745,6 +1766,11 @@ class SimpleExtractor:
             return None
 
         for t, rel, variant in resolved:
+            attribute_head, attachment_ambiguous = (attributive_head(t)
+                if rel in ("WITH", "ABOUT", "RECIPIENT", "PATH") else ("", False))
+            if attachment_ambiguous:
+                res.notes.append("%s: ambiguous prepositional attachment" % t["word"])
+                continue
             # Голова владельца сбрасывается КАЖДЫЙ раз: владение одного
             # зависимого не имеет права переехать на следующее слово.
             owner_head = ""
@@ -1931,7 +1957,7 @@ class SimpleExtractor:
                     "причина «%s» названа, а следствия нет — CAUSES не записан"
                     % variant["lemma"])
             res.facts.append(self._fact_from_variant(
-                owner_head or verb_head(content.index(t)) or head or subj_lemma,
+                owner_head or attribute_head or verb_head(content.index(t)) or head or subj_lemma,
                 t, rel, res.sentence, negs, variant))
 
         # Инфинитив после личного глагола = ЦЕЛЬ, а не второе умение:
