@@ -91,7 +91,7 @@ PREP_CASES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "с":       (("gen", "ins"), "SOURCE"),
     "со":      (("gen", "ins"), "SOURCE"),
     "для":     (("gen",), "ABOUT"),
-    "без":     (("gen",), "ABOUT"),
+    "без":     (("gen",), "ABSENCE"),
     "возле":   (("gen",), "LOCATED_IN"),
     "около":   (("gen",), "LOCATED_IN"),
     "вокруг":  (("gen",), "LOCATED_IN"),
@@ -1608,6 +1608,8 @@ class SimpleExtractor:
             rel, variant = self._case_role(t, nominal=nominal)
             if rel is not None and variant is not None:
                 resolved.append((t, rel, variant))
+            elif PREP_CASES.get(t.get("prep"), ((), ""))[1] == "ABSENCE":
+                res.notes.append("%s: absence relation unavailable" % t["word"])
             elif t.get("prep") in ("к", "ко", "по", "с", "со"):
                 # МОЛЧАЛИВЫЙ НОЛЬ ЗАПРЕЩЁН: «к окну», «к вечеру», «к победе»,
                 # «поезд идёт по рельсам» и «чай с лимоном» отказываются
@@ -2778,7 +2780,10 @@ class SimpleExtractor:
         """
         prep = tok.get("prep") or ""
         if prep:
+            # Отсутствие не тема: для «без» отношения в реестре нет.
             cases, rel = PREP_CASES.get(prep, ((), "LOCATED_IN"))
+            if rel == "ABSENCE":
+                return None, None
             for c in cases:
                 v = self._pick(tok, ("NOUN", "ADJF"), case=c)
                 if v is not None:
