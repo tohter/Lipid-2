@@ -52,7 +52,7 @@
 
 <!--presnum:relations-->
 ```
-`IS_A / HAS_PROPERTY / CAN_DO / SYNONYM_OF / CAUSES / IS_ROLE / LOCATED_IN / OBJECT_OF / PART_OF / INSTRUMENT / RECIPIENT / PURPOSE / ABOUT / HAS_PART / CIRCUMSTANCE / CONDITION / VALUE / RELATION_TO`
+`IS_A / HAS_PROPERTY / CAN_DO / SYNONYM_OF / CAUSES / IS_ROLE / LOCATED_IN / OBJECT_OF / PART_OF / INSTRUMENT / RECIPIENT / PURPOSE / ABOUT / HAS_PART / CIRCUMSTANCE / CONDITION / VALUE / RELATION_TO / WITH / PATH`
 ```
 
 Раньше здесь лежал список короче реестра, и длина его не выдавала: сверяться
@@ -217,11 +217,11 @@ brain/simulator.py:  « why прекратился пожар?»
 
 <!--presnum:numbers-->
 ```
-тестов всего:                  1 307
-контрактных тестов:            1 284
+тестов всего:                  1 311
+контрактных тестов:            1 288
 файлов с тестами:              93
 файлов контрактных тестов:     88
-отношений в реестре:           18
+отношений в реестре:           20
 отношений у экстрактора:       16
 отношений дошло до мира:       15
 шов языка внутри ядра:         0
@@ -229,11 +229,11 @@ brain/simulator.py:  « why прекратился пожар?»
 русских литералов в core/:     163
 методов ядра с русским выводом: 6
 файлов языка в lang/:          9
-строк в core/:                 9 863
+строк в core/:                 9 871
 строк в brain/:                7 945
-строк ядра (core+brain):       17 808
-строк в tests/:                26 483
-строк Python всего:            60 302
+строк ядра (core+brain):       17 816
+строк в tests/:                26 500
+строк Python всего:            60 327
 файлов Python всего:           200
 ```
 
