@@ -75,7 +75,7 @@ PREP_CASES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "над":     (("ins",), "LOCATED_IN"),
     "под":     (("ins", "dat"), "LOCATED_IN"),
     "по":      (("dat",), "PATH"),
-    "за":      (("ins", "acc"), "LOCATED_IN"),
+    "за":      (("ins", "acc"), "DURATION_OR_PLACE"),
     "перед":   (("ins",), "TIME_OR_PLACE"),
     "пред":    (("ins",), "TIME_OR_PLACE"),
     "между":   (("ins",), "LOCATED_IN"),
@@ -1613,7 +1613,8 @@ class SimpleExtractor:
             elif PREP_CASES.get(t.get("prep"), ((), ""))[1] == "ABSENCE":
                 res.notes.append("%s: absence relation unavailable" % t["word"])
             elif PREP_CASES.get(t.get("prep"), ((), ""))[1] in (
-                    "PAIR_TYPE_REQUIRED", "TIME_OR_ENDPOINT", "TIME_OR_PLACE", "TIME_ONLY"):
+                    "PAIR_TYPE_REQUIRED", "TIME_OR_ENDPOINT", "TIME_OR_PLACE",
+                    "TIME_ONLY", "DURATION_OR_PLACE"):
                 res.notes.append("%s: pair_type_unproved" % t["word"])
             elif t.get("prep") in ("к", "ко", "по", "с", "со"):
                 # МОЛЧАЛИВЫЙ НОЛЬ ЗАПРЕЩЁН: «к окну», «к вечеру», «к победе»,
@@ -2802,6 +2803,12 @@ class SimpleExtractor:
                     if (rel == "RECIPIENT"
                             and v.get("animacy") != "anim"):
                         return None, None
+                    if rel == "DURATION_OR_PLACE":
+                        if c == "acc" and v["lemma"] in TIME_LEMMAS:
+                            return "CIRCUMSTANCE", v
+                        if c == "ins" and v["lemma"] in self.entity_place:
+                            return "LOCATED_IN", v
+                        continue
                     if rel in ("TIME_OR_ENDPOINT", "TIME_OR_PLACE", "TIME_ONLY"):
                         if v["lemma"] in TIME_LEMMAS:
                             return "CIRCUMSTANCE", v

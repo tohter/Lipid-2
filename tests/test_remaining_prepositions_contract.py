@@ -26,6 +26,25 @@ class TestRemainingPrepositions(unittest.TestCase):
                 word = sentence.rstrip('.').split()[-1]
                 self.assertTrue(any(n.startswith(word + ':') for n in result.notes))
 
+    def test_za_distinguishes_duration_place_and_purpose(self):
+        cases = [('Кот вернулся за час.', 'вернуться', 'час', 'CIRCUMSTANCE', ()),
+                 ('Кот спит за шкафом.', 'спать', 'шкаф', 'LOCATED_IN', ('шкаф',)),
+                 ('Кот спит за шкафом.', 'спать', 'шкаф', None, ()),
+                 ('Мальчик пришёл за хлебом.', 'прийти', 'хлеб', None, ())]
+        for sentence, head, tail, relation, places in cases:
+            with self.subTest(sentence=sentence, places=places):
+                extractor = SimpleExtractor()
+                extractor.set_entity_kind(place=places)
+                result = extractor.extract(sentence)
+                actual = [(f.head, f.relation, f.tail) for f in result.facts
+                          if tail in (f.head, f.tail)]
+                self.assertEqual(actual, [(head, relation, tail)] if relation else [])
+                if relation is None:
+                    word = sentence.rstrip('.').split()[-1]
+                    self.assertTrue(any(n.startswith(word + ':') for n in result.notes))
+                self.assertTrue(any(f.relation == 'CAN_DO' and f.tail == head
+                                    for f in result.facts))
+
     def test_through_time_or_route(self):
         extractor = SimpleExtractor()
         cases = [('Поезд едет через час.', 'ехать', 'час', 'CIRCUMSTANCE'),
