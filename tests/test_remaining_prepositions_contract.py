@@ -26,6 +26,34 @@ class TestRemainingPrepositions(unittest.TestCase):
                 word = sentence.rstrip('.').split()[-1]
                 self.assertTrue(any(n.startswith(word + ':') for n in result.notes))
 
+    def test_temporal_boundaries(self):
+        cases = [('Дождь шёл до вечера.', 'идти', 'вечер'),
+                 ('Кот спит перед рассветом.', 'спать', 'рассвет'),
+                 ('Кот спит после заката.', 'спать', 'закат')]
+        for sentence, head, tail in cases:
+            with self.subTest(sentence=sentence):
+                result = SimpleExtractor().extract(sentence)
+                self.assertEqual([(f.head, f.relation, f.tail) for f in result.facts
+                                  if f.tail == tail], [(head, 'CIRCUMSTANCE', tail)])
+
+    def test_boundary_requires_evidence(self):
+        cases = [('Кот спит перед домом.', 'спать', 'дом', 'LOCATED_IN'),
+                 ('Турист дошёл до реки.', 'дойти', 'река', 'PATH'),
+                 ('Кот спит перед сном.', '', 'сон', ''),
+                 ('Рабочие ужинают после работы.', '', 'работа', '')]
+        for sentence, head, tail, relation in cases:
+            with self.subTest(sentence=sentence):
+                extractor = SimpleExtractor()
+                result = extractor.extract(sentence)
+                self.assertFalse(any(f.tail == tail for f in result.facts))
+                word = sentence.rstrip('.').split()[-1]
+                self.assertTrue(any(n.startswith(word + ':') for n in result.notes))
+                if relation:
+                    extractor.set_entity_kind(place={tail})
+                    result = extractor.extract(sentence)
+                    self.assertEqual([(f.head, f.relation, f.tail) for f in result.facts
+                                      if f.tail == tail], [(head, relation, tail)])
+
     def test_for_recipient(self):
         cases = [('Подарок для сына.', 'подарок', 'сын'),
                  ('Письмо для сестры.', 'письмо', 'сестра'),

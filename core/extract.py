@@ -66,7 +66,7 @@ PREP_CASES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "о":       (("loc",), "ABOUT"),
     "об":      (("loc",), "ABOUT"),
     "от":      (("gen",), "PATH"),
-    "до":      (("gen",), "LOCATED_IN"),
+    "до":      (("gen",), "TIME_OR_ENDPOINT"),
     "из":      (("gen",), "PATH"),
     "изо":     (("gen",), "PATH"),
     "из-за":   (("gen",), "PAIR_TYPE_REQUIRED"),
@@ -76,8 +76,8 @@ PREP_CASES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "под":     (("ins", "dat"), "LOCATED_IN"),
     "по":      (("dat",), "PATH"),
     "за":      (("ins", "acc"), "LOCATED_IN"),
-    "перед":   (("ins",), "LOCATED_IN"),
-    "пред":    (("ins",), "LOCATED_IN"),
+    "перед":   (("ins",), "TIME_OR_PLACE"),
+    "пред":    (("ins",), "TIME_OR_PLACE"),
     "между":   (("ins",), "LOCATED_IN"),
     # «при»: единственная запись CONDITION ниже; пространственное значение
     # требует отдельного выбора по типу пары (очередь предлогов).
@@ -95,7 +95,7 @@ PREP_CASES: Dict[str, Tuple[Tuple[str, ...], str]] = {
     "возле":   (("gen",), "LOCATED_IN"),
     "около":   (("gen",), "LOCATED_IN"),
     "вокруг":  (("gen",), "LOCATED_IN"),
-    "после":   (("gen",), "LOCATED_IN"),
+    "после":   (("gen",), "TIME_ONLY"),
     "через":   (("acc",), "ABOUT"),
     "внутри":  (("gen",), "LOCATED_IN"),
     "при":     (("loc", "dat"), "CONDITION"),
@@ -1612,7 +1612,8 @@ class SimpleExtractor:
                 res.notes.append("%s: recipient requires an animate entity" % t["word"])
             elif PREP_CASES.get(t.get("prep"), ((), ""))[1] == "ABSENCE":
                 res.notes.append("%s: absence relation unavailable" % t["word"])
-            elif PREP_CASES.get(t.get("prep"), ((), ""))[1] == "PAIR_TYPE_REQUIRED":
+            elif PREP_CASES.get(t.get("prep"), ((), ""))[1] in (
+                    "PAIR_TYPE_REQUIRED", "TIME_OR_ENDPOINT", "TIME_OR_PLACE", "TIME_ONLY"):
                 res.notes.append("%s: pair_type_unproved" % t["word"])
             elif t.get("prep") in ("к", "ко", "по", "с", "со"):
                 # МОЛЧАЛИВЫЙ НОЛЬ ЗАПРЕЩЁН: «к окну», «к вечеру», «к победе»,
@@ -2800,6 +2801,12 @@ class SimpleExtractor:
                     # времени в реестре нет — честный отказ вместо выдумки.
                     if (rel == "RECIPIENT"
                             and v.get("animacy") != "anim"):
+                        return None, None
+                    if rel in ("TIME_OR_ENDPOINT", "TIME_OR_PLACE", "TIME_ONLY"):
+                        if v["lemma"] in TIME_LEMMAS:
+                            return "CIRCUMSTANCE", v
+                        if rel != "TIME_ONLY" and v["lemma"] in self.entity_place:
+                            return ("PATH" if rel == "TIME_OR_ENDPOINT" else "LOCATED_IN"), v
                         return None, None
                     # «по» (решение хозяина: PATH введён): слово времени ->
                     # CIRCUMSTANCE («щека болит ПО УТРАМ» — «когда?»), всё
